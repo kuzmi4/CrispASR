@@ -6012,6 +6012,8 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
         if (s->parakeet_att_context_left != INT_MIN && s->parakeet_att_context_right != INT_MIN) {
             parakeet_set_att_context(s->parakeet_ctx, s->parakeet_att_context_left, s->parakeet_att_context_right);
         }
+        // spike(T0.3): session beam_size never reached parakeet (CLI-only).
+        parakeet_set_beam_size(s->parakeet_ctx, s->beam_size > 0 ? s->beam_size : 1);
         // Improvements Phase 1: unified dispatch — run the SAME orchestration as
         // the CLI backend adapter (parakeet_transcribe_segments) rather than the
         // divergent inline path below, so a fix/feature lands on every surface at

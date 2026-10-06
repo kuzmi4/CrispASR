@@ -3288,8 +3288,13 @@ extern "C" void parakeet_set_att_context(struct parakeet_context* ctx, int left,
 
 extern "C" void parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords,
                                       float boost) {
-    if (!ctx || !hotwords || n_hotwords <= 0)
+    if (!ctx)
         return;
+    if (!hotwords || n_hotwords <= 0) {
+        // spike(T0.3): clearing used to be a no-op, leaving the old trie active.
+        ctx->hotword_trie = decltype(ctx->hotword_trie){};
+        return;
+    }
     // Build a tokenizer that maps strings to SentencePiece token IDs
     // using the already-loaded vocab.
     auto tokenize = [&](const std::string& word) -> std::vector<int32_t> {
