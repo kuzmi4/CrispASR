@@ -5660,7 +5660,25 @@ struct whisper_vad_context* whisper_vad_init_with_params(struct whisper_model_lo
     return vctx;
 }
 
+static bool whisper_vad_detect_speech_impl(struct whisper_vad_context* vctx, const float* samples, int n_samples,
+                                           bool reset_state);
+
 bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* samples, int n_samples) {
+    return whisper_vad_detect_speech_impl(vctx, samples, n_samples, /*reset_state=*/true);
+}
+
+// Continue a stateful Silero run: LSTM state and the 64-sample source
+// context carry over from the previous call instead of being reset — what
+// calling the TorchScript wrapper once per chunk does. hikari's policy asks
+// for one probability per 80 ms decision on the newest 512 samples.
+bool crispasr_silero_detect_continue(struct whisper_vad_context* vctx, const float* samples, int n_samples) {
+    if (!vctx)
+        return false;
+    return whisper_vad_detect_speech_impl(vctx, samples, n_samples, /*reset_state=*/false);
+}
+
+static bool whisper_vad_detect_speech_impl(struct whisper_vad_context* vctx, const float* samples, int n_samples,
+                                           bool reset_state) {
     int n_chunks = n_samples / vctx->n_window;
     if (n_samples % vctx->n_window != 0) {
         n_chunks += 1; // Add one more chunk for remaining samples.
@@ -5670,7 +5688,8 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
     CRISPASR_LOG_INFO("%s: n_chunks: %d\n", __func__, n_chunks);
 
     // Reset LSTM hidden/cell states
-    ggml_backend_buffer_clear(vctx->buffer, 0);
+    if (reset_state)
+        ggml_backend_buffer_clear(vctx->buffer, 0);
 
     vctx->probs.resize(n_chunks);
     CRISPASR_LOG_INFO("%s: props size: %u\n", __func__, n_chunks);
@@ -5683,7 +5702,8 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
     }
     auto& window = vctx->window_buf;
     // The released wrapper resets waveform context along with LSTM state.
-    std::fill(window.begin(), window.begin() + carry, 0.0f);
+    if (reset_state)
+        std::fill(window.begin(), window.begin() + carry, 0.0f);
 
     auto& sched = vctx->sched.sched;
 
