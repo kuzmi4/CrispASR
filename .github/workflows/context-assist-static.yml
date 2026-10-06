@@ -1,0 +1,46 @@
+# Static arm64 + Metal archive for the Context-Assist voice-worker.
+# Tag `ca-*` publishes a GitHub Release; dispatch only uploads an artifact.
+name: context-assist-static
+
+on:
+  push:
+    tags: ["ca-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      # Pinned toolchain: the archive is bit-reproducible only with the same Xcode.
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: ggml submodule (c2pa-audio is not needed)
+        run: git submodule update --init --depth 1 ggml
+      - name: Tools
+        run: |
+          brew install ninja
+          xcodebuild -version
+          cmake --version
+      - name: Build
+        run: |
+          TAG="${GITHUB_REF_NAME#ca-}"
+          [ "$GITHUB_REF_TYPE" = tag ] || TAG="$(git rev-parse --short=12 HEAD)"
+          CRISPASR_DIST_TAG="$TAG" context-assist/build-static.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crispasr-macos-arm64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*/BUILD-INFO
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 \
+            --title "$GITHUB_REF_NAME" --notes-file dist/*/BUILD-INFO
