@@ -1,5 +1,7 @@
 # Static arm64 + Metal archive for the Context-Assist voice-worker.
-# Tag `ca-*` publishes a GitHub Release; dispatch only uploads an artifact.
+# Job `test` runs the `context-assist` tests first; `build` runs only after it passes.
+# Tag `ca-*` publishes a GitHub Release; on a red `test` the tag is deleted and no
+# Release is created. Dispatch only uploads an artifact.
 name: context-assist-static
 
 on:
@@ -11,7 +13,38 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: macos-15
+    env:
+      # Pinned toolchain: the archive is bit-reproducible only with the same Xcode.
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      # Configuring the tests needs crispasr-cli, which needs c2pa-audio.
+      - name: Submodules
+        run: git submodule update --init --depth 1 ggml third_party/c2pa-audio
+      - name: Tools
+        run: |
+          brew install ninja
+          cmake --version
+      - name: Build tests
+        run: |
+          cmake -S . -B build-test -G Ninja -DCRISPASR_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-test --target context-assist-tests
+      - name: Test
+        run: ctest --test-dir build-test -L unit -L context-assist --output-on-failure --no-tests=error
+
+  delete-tag:
+    needs: test
+    if: failure() && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$GITHUB_REF_NAME"
+
   build:
+    needs: test
     runs-on: macos-15
     env:
       # Pinned toolchain: the archive is bit-reproducible only with the same Xcode.
