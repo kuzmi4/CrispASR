@@ -100,6 +100,13 @@ int gigaam_is_spm(struct gigaam_context* ctx);
 // Approximate encoder frame count for n_samples (for memory policy).
 int gigaam_est_enc_frames(struct gigaam_context* ctx, int n_samples);
 
+// Term hints for the greedy RNN-T decode (Aho-Corasick trie over SentencePiece
+// forms, as parakeet_set_hotwords). Returns the number of forms inserted (a form
+// not covered by the vocab whole is dropped); 0 after clearing (words == NULL or
+// n <= 0, any head); -2 for a non-empty list unless the head is rnnt and the
+// tokenizer spm (the trie is left unchanged); -1 when ctx is NULL.
+int gigaam_set_hotwords(struct gigaam_context* ctx, const char** words, int n, float boost);
+
 // Max symbols the RNN-T greedy decoder may emit per encoder frame.
 // Matches RNNTGreedyDecoding(max_symbols_per_step=10). <= 0 restores the
 // default. No effect on CTC heads.
