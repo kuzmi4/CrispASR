@@ -447,6 +447,11 @@ install(TARGETS crispasr-lib LIBRARY PUBLIC_HEADER)
 target_compile_definitions(crispasr-lib PRIVATE
     CRISPASR_VERSION="${PROJECT_VERSION}"
 )
+# Context-Assist: test-only hooks (e.g. crispasr_session_hotwords_builds) exist
+# only in a test build, never in the release archive (build-static.sh: tests OFF).
+if (CRISPASR_BUILD_TESTS)
+    target_compile_definitions(crispasr-lib PRIVATE CRISPASR_BUILD_TESTS)
+endif()
 
 configure_package_config_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/crispasr-config.cmake.in
