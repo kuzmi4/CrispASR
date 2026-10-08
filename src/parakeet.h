@@ -153,7 +153,9 @@ bool parakeet_has_ctc(struct parakeet_context* ctx);
 // CTC-WS hotword phrase boost (PLAN #98). Builds an Aho-Corasick trie
 // from the hotword strings; during CTC/TDT decode, tokens that continue
 // an active hotword prefix get a log-prob boost. Call before transcribe.
-void parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords, float boost);
+// Returns the number of forms inserted (a form not covered by the vocab whole
+// is dropped), 0 after clearing (NULL/empty list), -1 when ctx is NULL.
+int parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords, float boost);
 
 // Split encode / decode for full-audio-encode + chunked-decode.
 // parakeet_encode: mel → encoder, returns malloc'd float[T_enc * d_model].
