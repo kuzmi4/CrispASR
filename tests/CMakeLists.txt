@@ -1677,10 +1677,10 @@ target_include_directories(test-context-bias PRIVATE
 target_link_libraries(test-context-bias PRIVATE
     Catch2::Catch2WithMain
 )
-catch_discover_tests(test-context-bias
-    TEST_SPEC "[context_bias]"
-    PROPERTIES LABELS "unit"
-)
+# catch_discover_tests flattens `LABELS "a;b"` to `LABELS a` (b becomes a property
+# name), so tests that need two labels register the whole executable with add_test.
+add_test(NAME test-context-bias COMMAND test-context-bias "[context_bias]")
+set_tests_properties(test-context-bias PROPERTIES LABELS "unit;context-assist")
 
 # ─── test - windows - mic — regression test for Windows dshow mic selection
 add_executable(test-windows-mic
@@ -6153,3 +6153,7 @@ add_executable(test-asr-prompt-contract test-asr-prompt-contract.cpp)
 target_include_directories(test-asr-prompt-contract PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-asr-prompt-contract PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test-asr-prompt-contract TEST_SPEC "[unit]" PROPERTIES LABELS "unit;asr-prompt")
+
+# Context-Assist fork: build only the tests labelled `context-assist` (CI job `test`).
+add_custom_target(context-assist-tests)
+add_dependencies(context-assist-tests test-context-bias)
