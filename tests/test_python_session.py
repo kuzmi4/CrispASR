@@ -111,6 +111,28 @@ class TestWhisperSession(unittest.TestCase):
         self.assertIsInstance(segs, list)
 
 
+class TestHotwordsSession(unittest.TestCase):
+    """Context-Assist (T3.1, F1): a hint string is set and cleared through the
+    binding. With CA_REQUIRE_MODELS=1 a missing library or model fails instead
+    of skipping."""
+
+    def test_parakeet_hotwords_set_and_clear(self):
+        missing = None if LIB_PATH else "libcrispasr not built"
+        if not missing and not os.path.exists(PARAKEET_MODEL):
+            missing = f"Parakeet model not found at {PARAKEET_MODEL}"
+        if missing:
+            if os.environ.get("CA_REQUIRE_MODELS") == "1":
+                self.fail(f"{missing} (CA_REQUIRE_MODELS=1)")
+            self.skipTest(missing)
+        from crispasr import Session
+        session = Session(PARAKEET_MODEL, lib_path=LIB_PATH, n_threads=2)
+        try:
+            session.set_hotwords("Kubernetes, ClickHouse, Kafka", 4.0)
+            session.set_hotwords("", 4.0)
+        finally:
+            session.close()
+
+
 @unittest.skipUnless(LIB_PATH, "libwhisper not built")
 @unittest.skipUnless(os.path.exists(PARAKEET_MODEL), f"Parakeet model not found at {PARAKEET_MODEL}")
 class TestParakeetSession(unittest.TestCase):

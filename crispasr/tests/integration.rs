@@ -284,6 +284,29 @@ fn session_parakeet_word_timestamps() {
     }
 }
 
+/// Context-Assist (T3.1, F1): a hint string is set and cleared through the
+/// binding (`rc != 0` is an error here). With CA_REQUIRE_MODELS=1 a missing
+/// model fails instead of skipping.
+#[test]
+#[ignore = "needs PARAKEET_MODEL (Context-Assist F1)"]
+fn session_parakeet_hotwords_set_and_clear() {
+    let model_path = match parakeet_model() {
+        Some(p) => p,
+        None => {
+            assert!(
+                std::env::var("CA_REQUIRE_MODELS").as_deref() != Ok("1"),
+                "parakeet model not found (CA_REQUIRE_MODELS=1)"
+            );
+            eprintln!("SKIP: parakeet model not found");
+            return;
+        }
+    };
+    let sess = crispasr::Session::open(&model_path).expect("session open parakeet");
+    sess.set_hotwords("Kubernetes, ClickHouse, Kafka", 4.0)
+        .expect("set_hotwords");
+    sess.set_hotwords("", 4.0).expect("clear hotwords");
+}
+
 #[test]
 fn session_omni_ctc_logits() {
     let model_path = match omni_ctc_model() {

@@ -524,7 +524,15 @@ CRISPASR_SESSION_API int crispasr_session_synthesize_streaming(crispasr_session*
 CRISPASR_SESSION_API void crispasr_pcm_free(float* pcm);
 CRISPASR_SESSION_API float* crispasr_session_speech_to_speech(crispasr_session* s, const float* in_samples,
                                                               int n_in_samples, char** out_text, int* out_n_samples);
+// Comma-separated hint forms; boost <= 0 means 1.5. Returns 0 on success (also
+// when the string is cleared), -1 on s == NULL, -2 when the model has no hint
+// support (GigaAM outside rnnt + SentencePiece; the string is then dropped).
+// Parakeet/GigaAM rebuild their trie only when the (string, boost) pair changes.
 CRISPASR_SESSION_API int crispasr_session_set_hotwords(crispasr_session* s, const char* hotwords, float boost);
+// Forms the last successful set_hotwords put into the Parakeet/GigaAM trie (a
+// form not covered whole by the model vocab is dropped); 0 after clearing and for
+// other backends, -1 on s == NULL.
+CRISPASR_SESSION_API int crispasr_session_hotwords_inserted(crispasr_session* s);
 
 // Source separation: split audio into N stems (drums, bass, other, vocals).
 // Input: stereo interleaved PCM at the model's native rate (44100 Hz for htdemucs).
@@ -798,6 +806,7 @@ CRISPASR_SESSION_API int crispasr_session_set_length_scale(crispasr_session* s, 
 CRISPASR_SESSION_API int crispasr_session_set_best_of(crispasr_session* s, int n);
 CRISPASR_SESSION_API int crispasr_session_set_max_new_tokens(crispasr_session* s, int n);
 CRISPASR_SESSION_API int crispasr_session_set_frequency_penalty(crispasr_session* s, float penalty);
+// 0 on success, -1 on s == NULL, -2 for n > 1 on GigaAM (greedy only).
 CRISPASR_SESSION_API int crispasr_session_set_beam_size(crispasr_session* s, int n);
 CRISPASR_SESSION_API int crispasr_session_set_return_logits(crispasr_session* s, int enable);
 CRISPASR_SESSION_API int crispasr_session_set_grammar_text(crispasr_session* s, const char* gbnf_text,

@@ -1917,6 +1917,13 @@ struct crispasr_session {
     // are injected into the ask prompt.
     std::string hotwords;
     float hotwords_boost = 1.5f;
+    // Context-Assist (S6, F1): the (string, boost) pair the Parakeet/GigaAM trie
+    // was last built for — a repeat call skips re-tokenizing; the empty string
+    // resets it. hotwords_inserted is what the backend setter returned.
+    std::string hotwords_built;
+    float hotwords_built_boost = 0.0f;
+    int hotwords_inserted = 0;
+    int hotwords_builds = 0; // trie builds, read by tests only
 
     // Issue #208: explicit chunked-encode override for the Parakeet backend.
     // crispasr_session_transcribe_chunked[_lang] sets these for the duration
@@ -10633,30 +10640,56 @@ CA_EXPORT int crispasr_session_set_hotwords(crispasr_session* s, const char* hot
     s->hotwords = hotwords ? hotwords : "";
     s->hotwords_boost = boost > 0.0f ? boost : 1.5f;
 
-    // For parakeet CTC/TDT, apply immediately to the trie.
-#ifdef CA_HAVE_PARAKEET
-    if (s->parakeet_ctx) {
+    // Parakeet and GigaAM bias decoding with their own trie. `set` is the backend
+    // setter: it returns the number of inserted forms, or -2 when the model has no
+    // hint support (GigaAM outside rnnt+spm) — then the string is not kept, so it
+    // never reaches the ask prompt either.
+    auto apply = [s](auto set) -> int {
         if (s->hotwords.empty()) {
-            parakeet_set_hotwords(s->parakeet_ctx, nullptr, 0, 0.0f);
-        } else {
-            // Parse comma-separated hotwords into an array of C strings.
-            std::vector<std::string> hw_strings;
-            std::istringstream iss(s->hotwords);
-            std::string token;
-            while (std::getline(iss, token, ',')) {
-                // Trim whitespace.
-                size_t start = token.find_first_not_of(" \t");
-                size_t end = token.find_last_not_of(" \t");
-                if (start != std::string::npos)
-                    hw_strings.push_back(token.substr(start, end - start + 1));
-            }
-            std::vector<const char*> ptrs;
-            ptrs.reserve(hw_strings.size());
-            for (auto& w : hw_strings)
-                ptrs.push_back(w.c_str());
-            parakeet_set_hotwords(s->parakeet_ctx, ptrs.data(), (int)ptrs.size(), s->hotwords_boost);
+            set(nullptr, 0, 0.0f);
+            s->hotwords_built.clear();
+            s->hotwords_inserted = 0;
+            return 0;
         }
-    }
+        if (s->hotwords == s->hotwords_built && s->hotwords_boost == s->hotwords_built_boost)
+            return 0;
+        // Parse comma-separated hotwords into an array of C strings.
+        std::vector<std::string> hw_strings;
+        std::istringstream iss(s->hotwords);
+        std::string token;
+        while (std::getline(iss, token, ',')) {
+            // Trim whitespace.
+            size_t start = token.find_first_not_of(" \t");
+            size_t end = token.find_last_not_of(" \t");
+            if (start != std::string::npos)
+                hw_strings.push_back(token.substr(start, end - start + 1));
+        }
+        std::vector<const char*> ptrs;
+        ptrs.reserve(hw_strings.size());
+        for (auto& w : hw_strings)
+            ptrs.push_back(w.c_str());
+        const int n = set(ptrs.data(), (int)ptrs.size(), s->hotwords_boost);
+        if (n < 0) {
+            set(nullptr, 0, 0.0f);
+            s->hotwords.clear();
+            s->hotwords_built.clear();
+            s->hotwords_inserted = 0;
+            return n;
+        }
+        s->hotwords_builds++;
+        s->hotwords_built = s->hotwords;
+        s->hotwords_built_boost = s->hotwords_boost;
+        s->hotwords_inserted = n;
+        return 0;
+    };
+
+#ifdef CA_HAVE_PARAKEET
+    if (s->parakeet_ctx)
+        return apply([s](const char** w, int n, float b) { return parakeet_set_hotwords(s->parakeet_ctx, w, n, b); });
+#endif
+#ifdef CA_HAVE_GIGAAM
+    if (s->gigaam_ctx)
+        return apply([s](const char** w, int n, float b) { return gigaam_set_hotwords(s->gigaam_ctx, w, n, b); });
 #endif
 
     // For LLM backends, hotwords are injected into the ask prompt at
@@ -10664,6 +10697,17 @@ CA_EXPORT int crispasr_session_set_hotwords(crispasr_session* s, const char* hot
     // dispatch path via s->hotwords. No immediate action needed.
     return 0;
 }
+
+CA_EXPORT int crispasr_session_hotwords_inserted(crispasr_session* s) {
+    return s ? s->hotwords_inserted : -1;
+}
+
+#ifdef CRISPASR_BUILD_TESTS
+// Test-build only (not in the release archive): trie builds of this session.
+CA_EXPORT int crispasr_session_hotwords_builds(crispasr_session* s) {
+    return s ? s->hotwords_builds : -1;
+}
+#endif
 
 // Returns a human-readable error description when the last synthesize call
 // returned nullptr. Empty string when the last call succeeded or no error
@@ -13060,9 +13104,14 @@ CA_EXPORT int crispasr_session_set_frequency_penalty(crispasr_session* s, float 
 // voxtral4b beam is CLI-adapter-only; session streaming path TBD.
 // Silent no-op for CTC/NAR backends.
 // Returns 0 on a non-null session; width <= 0 clamped to 1 (greedy).
+// GigaAM decodes greedy only: n > 1 returns -2 and keeps the previous width.
 CA_EXPORT int crispasr_session_set_beam_size(crispasr_session* s, int n) {
     if (!s)
         return -1;
+#ifdef CA_HAVE_GIGAAM
+    if (s->gigaam_ctx && n > 1)
+        return -2;
+#endif
     s->beam_size = n > 0 ? n : 1;
     s->beam_size_explicit = true;
     return 0;
