@@ -6161,6 +6161,13 @@ target_link_libraries(test-hotwords-live PRIVATE Catch2::Catch2WithMain crispasr
 add_test(NAME test-hotwords-live COMMAND test-hotwords-live "[hotwords-live]")
 set_tests_properties(test-hotwords-live PROPERTIES LABELS "live;context-assist" SKIP_RETURN_CODE 4)
 
+# ─── test - rnnt - greedy — Context-Assist: greedy RNNT loop seam of GigaAM (T3.1)
+add_executable(test-rnnt-greedy test_rnnt_greedy.cpp)
+target_include_directories(test-rnnt-greedy PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-rnnt-greedy PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test-rnnt-greedy COMMAND test-rnnt-greedy "[rnnt_greedy]")
+set_tests_properties(test-rnnt-greedy PROPERTIES LABELS "unit;context-assist")
+
 # Context-Assist fork: build only the tests labelled `context-assist` (CI job `test`).
 add_custom_target(context-assist-tests)
-add_dependencies(context-assist-tests test-context-bias test-hotwords-live)
+add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy)

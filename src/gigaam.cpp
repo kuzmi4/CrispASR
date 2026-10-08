@@ -78,6 +78,7 @@
 #include "core/gguf_loader.h"
 #include "core/gpu_backend_pref.h"
 #include "core/mel.h"
+#include "core/rnnt_greedy.h"
 
 #if defined(HAVE_ACCELERATE)
 #include <Accelerate/Accelerate.h>
@@ -916,41 +917,30 @@ static std::vector<gigaam_emitted> gigaam_rnnt_decode(gigaam_context* ctx, const
     const int blank_id = (int)ctx->model.hparams.blank_id;
     const int max_symbols = ctx->max_symbols > 0 ? ctx->max_symbols : 10;
 
-    std::vector<gigaam_emitted> emitted;
     gigaam_lstm_state st;
     st.init(W.H);
 
     std::vector<float> pred_out;
     gigaam_predictor_step(W, nullptr, st, pred_out); // predict(None, None)
 
-    std::vector<float> proj_e, logits;
-    for (int t = 0; t < T_enc; t++) {
-        gigaam_joint_proj_enc(W, enc + (size_t)t * d_model, proj_e);
-
-        for (int sym = 0; sym < max_symbols; sym++) {
-            gigaam_joint_step_cpu(W, proj_e.data(), pred_out.data(), logits);
-
-            int tok = 0;
-            float best = logits[0];
-            for (int v = 1; v < W.C; v++) {
-                if (logits[(size_t)v] > best) {
-                    best = logits[(size_t)v];
-                    tok = v;
-                }
+    // The encoder projection depends only on the frame: computed once per `t`.
+    std::vector<float> proj_e;
+    int proj_t = -1;
+    const auto out = core_rnnt::rnnt_greedy_loop(
+        T_enc, max_symbols, blank_id,
+        [&](int t, std::vector<float>& logits) {
+            if (t != proj_t) {
+                gigaam_joint_proj_enc(W, enc + (size_t)t * d_model, proj_e);
+                proj_t = t;
             }
-            if (tok == blank_id)
-                break;
+            gigaam_joint_step_cpu(W, proj_e.data(), pred_out.data(), logits);
+        },
+        [&](int tok) { gigaam_predictor_step(W, &tok, st, pred_out); });
 
-            // softmax probability of the emitted token (for the token/word
-            // confidence fields; not used by the decode itself)
-            float maxl = best, sum = 0.0f;
-            for (int v = 0; v < W.C; v++)
-                sum += expf(logits[(size_t)v] - maxl);
-
-            emitted.push_back({tok, t, t + 1, 1.0f / sum});
-            gigaam_predictor_step(W, &tok, st, pred_out);
-        }
-    }
+    std::vector<gigaam_emitted> emitted;
+    emitted.reserve(out.size());
+    for (const auto& e : out)
+        emitted.push_back({e.id, e.t, e.t + 1, e.p});
     return emitted;
 }
 
