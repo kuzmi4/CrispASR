@@ -1,7 +1,8 @@
-// Context-Assist (T3.1, F8): hotword setters on real models.
+// Context-Assist (T3.1, F8, F9): hotword setters on real models.
 //
 // Requires:
 //   CRISPASR_MODEL_PARAKEET — Parakeet TDT 0.6B v3 q8_0 GGUF of T0.3 (sha256 checked)
+//   CRISPASR_MODEL_GIGAAM   — GigaAM v3 e2e_rnnt q8_0 GGUF of T0.3 (sha256 checked)
 //   CA_HOTWORDS_FILE        — comma-separated forms (`crispasr-spike stand --dump-hints`
 //                             of Context-Assist: the 25 forms of enrollment.json)
 // SKIPs (exit code 4) when either is missing; with CA_REQUIRE_MODELS=1 a missing
@@ -10,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/asr_context_bias.h"
+#include "gigaam.h"
 #include "parakeet.h"
 
 #include <cstdio>
@@ -26,6 +28,7 @@
 namespace {
 
 const char* kParakeetV3Sha256 = "300de963db10e991a8c3c1674000245546f2e99d396f860aecbde2dd0534e43f";
+const char* kGigaamV3E2eRnntSha256 = "3aa25ce8a3e8ea9ebc66fc1f1a650a8d515f85c1846c76aaba1af84c1ded56b0";
 
 bool require_models() {
     const char* v = std::getenv("CA_REQUIRE_MODELS");
@@ -78,7 +81,7 @@ std::vector<std::string> read_forms(const std::string& path) {
 
 } // namespace
 
-TEST_CASE("parakeet_set_hotwords: enrollment forms on Parakeet v3", "[hotwords-live]") {
+TEST_CASE("parakeet_set_hotwords: enrollment forms on Parakeet v3", "[hotwords-live][parakeet]") {
     const std::string model = input_path("CRISPASR_MODEL_PARAKEET");
     const std::string hints = input_path("CA_HOTWORDS_FILE");
 #ifdef __APPLE__
@@ -100,4 +103,32 @@ TEST_CASE("parakeet_set_hotwords: enrollment forms on Parakeet v3", "[hotwords-l
     CHECK(parakeet_set_hotwords(ctx, nullptr, 0, 0.0f) == 0);
     CHECK(parakeet_set_hotwords(nullptr, ptrs.data(), (int)ptrs.size(), 4.0f) == -1);
     parakeet_free(ctx);
+}
+
+TEST_CASE("gigaam_set_hotwords: enrollment forms on GigaAM v3 e2e_rnnt", "[hotwords-live][gigaam]") {
+    const std::string model = input_path("CRISPASR_MODEL_GIGAAM");
+    const std::string hints = input_path("CA_HOTWORDS_FILE");
+#ifdef __APPLE__
+    REQUIRE(sha256_file(model) == kGigaamV3E2eRnntSha256);
+#endif
+    const auto forms = read_forms(hints);
+    REQUIRE(forms.size() == 25);
+    std::vector<const char*> ptrs;
+    for (const auto& f : forms)
+        ptrs.push_back(f.c_str());
+
+    auto params = gigaam_context_default_params();
+    params.use_gpu = false; // only the vocab is used
+    gigaam_context* ctx = gigaam_init_from_file(model.c_str(), params);
+    REQUIRE(ctx != nullptr);
+    REQUIRE(gigaam_is_rnnt(ctx) == 1);
+    REQUIRE(gigaam_is_spm(ctx) == 1);
+
+    // Reference count computed outside the fork (plan T3.1, «Данные»): 24 of 25,
+    // «ранбук» is dropped (its first piece is not covered).
+    CHECK(gigaam_set_hotwords(ctx, ptrs.data(), (int)ptrs.size(), 4.0f) == 24);
+    CHECK(gigaam_set_hotwords(ctx, nullptr, 0, 0.0f) == 0);
+    CHECK(gigaam_set_hotwords(ctx, ptrs.data(), 0, 4.0f) == 0);
+    CHECK(gigaam_set_hotwords(nullptr, ptrs.data(), (int)ptrs.size(), 4.0f) == -1);
+    gigaam_free(ctx);
 }

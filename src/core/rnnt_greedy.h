@@ -8,9 +8,16 @@
 //                       predictor state;
 //   on_emit(tok)      — advances the predictor after a non-blank emission.
 //
+// Term hints: with a non-empty `trie` each step adds `apply_bias(…, boost)` to the
+// logits before argmax and a non-blank emission advances the match; `blank` does
+// not move it. The match state lives for one call (a form does not continue
+// across calls). An empty trie leaves the logits untouched.
+//
 // Header-only, no ggml dependency.
 
 #pragma once
+
+#include "asr_context_bias.h"
 
 #include <cmath>
 #include <vector>
@@ -24,13 +31,18 @@ struct emission {
 };
 
 template <class Joint, class OnEmit>
-std::vector<emission> rnnt_greedy_loop(int T, int max_symbols, int blank_id, Joint&& joint, OnEmit&& on_emit) {
+std::vector<emission> rnnt_greedy_loop(int T, int max_symbols, int blank_id, Joint&& joint, OnEmit&& on_emit,
+                                       const core_context_bias::Trie& trie, float boost) {
     std::vector<emission> emitted;
     std::vector<float> logits;
+    const bool hints = !trie.empty();
+    core_context_bias::MatchState st;
     for (int t = 0; t < T; t++) {
         for (int sym = 0; sym < max_symbols; sym++) {
             joint(t, logits);
             const int C = (int)logits.size();
+            if (hints)
+                core_context_bias::apply_bias(trie, st, logits.data(), C, boost);
 
             int tok = 0;
             float best = logits[0];
@@ -48,6 +60,8 @@ std::vector<emission> rnnt_greedy_loop(int T, int max_symbols, int blank_id, Joi
                 sum += expf(logits[(size_t)v] - best);
 
             emitted.push_back({tok, t, 1.0f / sum});
+            if (hints)
+                core_context_bias::advance(trie, st, tok);
             on_emit(tok);
         }
     }

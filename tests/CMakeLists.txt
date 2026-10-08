@@ -6154,12 +6154,16 @@ target_include_directories(test-asr-prompt-contract PRIVATE ${PROJECT_SOURCE_DIR
 target_link_libraries(test-asr-prompt-contract PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test-asr-prompt-contract TEST_SPEC "[unit]" PROPERTIES LABELS "unit;asr-prompt")
 
-# ─── test - hotwords - live — Context-Assist F8: setters on real models (T3.1)
+# ─── test - hotwords - live — Context-Assist F8, F9: setters on real models (T3.1)
 add_executable(test-hotwords-live test_hotwords_live.cpp)
 target_include_directories(test-hotwords-live PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-hotwords-live PRIVATE Catch2::Catch2WithMain crispasr-lib)
-add_test(NAME test-hotwords-live COMMAND test-hotwords-live "[hotwords-live]")
-set_tests_properties(test-hotwords-live PROPERTIES LABELS "live;context-assist" SKIP_RETURN_CODE 4)
+# One ctest entry per model: Catch2 exits 4 only when every case SKIPs, so a
+# missing model must not hide behind a passing sibling case.
+foreach(backend parakeet gigaam)
+    add_test(NAME test-hotwords-live-${backend} COMMAND test-hotwords-live "[hotwords-live][${backend}]")
+    set_tests_properties(test-hotwords-live-${backend} PROPERTIES LABELS "live;context-assist" SKIP_RETURN_CODE 4)
+endforeach()
 
 # ─── test - rnnt - greedy — Context-Assist: greedy RNNT loop seam of GigaAM (T3.1)
 add_executable(test-rnnt-greedy test_rnnt_greedy.cpp)

@@ -78,6 +78,7 @@
 #include "core/gguf_loader.h"
 #include "core/gpu_backend_pref.h"
 #include "core/mel.h"
+#include "core/asr_context_bias.h"
 #include "core/rnnt_greedy.h"
 
 #if defined(HAVE_ACCELERATE)
@@ -254,6 +255,11 @@ struct gigaam_context {
 
     int n_threads = 4;
     int max_symbols = 10; // RNNTGreedyDecoding(max_symbols_per_step=10)
+
+    // Term hints for the greedy RNNT decode (rnnt + spm only). Set via
+    // gigaam_set_hotwords(); empty = the unbiased decode.
+    core_context_bias::Trie hotword_trie;
+    float hotword_boost = 0.0f;
 };
 
 // ===========================================================================
@@ -935,7 +941,7 @@ static std::vector<gigaam_emitted> gigaam_rnnt_decode(gigaam_context* ctx, const
             }
             gigaam_joint_step_cpu(W, proj_e.data(), pred_out.data(), logits);
         },
-        [&](int tok) { gigaam_predictor_step(W, &tok, st, pred_out); });
+        [&](int tok) { gigaam_predictor_step(W, &tok, st, pred_out); }, ctx->hotword_trie, ctx->hotword_boost);
 
     std::vector<gigaam_emitted> emitted;
     emitted.reserve(out.size());
@@ -1238,6 +1244,34 @@ extern "C" int gigaam_est_enc_frames(struct gigaam_context* ctx, int n_samples) 
     const auto& hp = ctx->model.hparams;
     const int T_mel = n_samples >= (int)hp.win_length ? (n_samples - (int)hp.win_length) / (int)hp.hop_length + 1 : 0;
     return gigaam_subsampled_len(hp, T_mel);
+}
+
+extern "C" int gigaam_set_hotwords(struct gigaam_context* ctx, const char** words, int n, float boost) {
+    if (!ctx)
+        return -1;
+    if (!words || n <= 0) {
+        ctx->hotword_trie = core_context_bias::Trie{};
+        return 0;
+    }
+    if (!ctx->model.hparams.is_rnnt || !ctx->model.hparams.is_spm)
+        return -2; // greedy RNNT over SentencePiece only; the trie stays as it was
+
+    // Same path as parakeet_set_hotwords: a form goes in whole or not at all.
+    int inserted = 0;
+    auto tokenize = [&](const std::string& word) {
+        auto ids = core_context_bias::tokenize_spm_form(ctx->vocab.id_to_token, (int32_t)ctx->model.hparams.blank_id,
+                                                        word);
+        inserted += !ids.empty();
+        return ids;
+    };
+    std::vector<std::string> list;
+    for (int i = 0; i < n; i++)
+        if (words[i])
+            list.push_back(words[i]);
+
+    ctx->hotword_boost = boost;
+    ctx->hotword_trie = core_context_bias::build_trie(list, tokenize, boost);
+    return inserted;
 }
 
 extern "C" void gigaam_set_max_symbols(struct gigaam_context* ctx, int max_symbols) {
