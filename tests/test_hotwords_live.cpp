@@ -17,6 +17,7 @@
 #include "gigaam.h"
 #include "parakeet.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -157,13 +158,22 @@ void check_hint_session(const std::string& model, int expected) {
     crispasr_session* s = crispasr_session_open(model.c_str(), 4);
     REQUIRE(s != nullptr);
 
+    // Time of a real dictionary set: cache miss, then the same pair (hit) — plan T3.1, 2.5.
+    using clock = std::chrono::steady_clock;
+    auto ms = [](clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    const auto t0 = clock::now();
     CHECK(crispasr_session_set_hotwords(s, hints.c_str(), 4.0f) == 0);
+    const auto t1 = clock::now();
     CHECK(crispasr_session_hotwords_inserted(s) == expected);
     const int builds = crispasr_session_hotwords_builds(s);
     CHECK(builds == 1);
 
     // Same pair: cached, no rebuild. Other boost: rebuild.
+    const auto t2 = clock::now();
     CHECK(crispasr_session_set_hotwords(s, hints.c_str(), 4.0f) == 0);
+    const auto t3 = clock::now();
+    std::printf("set_hotwords %s: miss %.3f ms, hit %.3f ms\n", crispasr_session_backend(s), ms(t1 - t0),
+                ms(t3 - t2));
     CHECK(crispasr_session_hotwords_builds(s) == builds);
     CHECK(crispasr_session_set_hotwords(s, hints.c_str(), 5.0f) == 0);
     CHECK(crispasr_session_hotwords_builds(s) == builds + 1);
