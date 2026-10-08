@@ -3286,52 +3286,21 @@ extern "C" void parakeet_set_att_context(struct parakeet_context* ctx, int left,
     ctx->model.hparams.att_context_right = right;
 }
 
-extern "C" void parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords,
-                                      float boost) {
+extern "C" int parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords,
+                                     float boost) {
     if (!ctx)
-        return;
+        return -1;
     if (!hotwords || n_hotwords <= 0) {
         // spike(T0.3): clearing used to be a no-op, leaving the old trie active.
         ctx->hotword_trie = decltype(ctx->hotword_trie){};
-        return;
+        return 0;
     }
-    // Build a tokenizer that maps strings to SentencePiece token IDs
-    // using the already-loaded vocab.
-    auto tokenize = [&](const std::string& word) -> std::vector<int32_t> {
-        // Simple: look up each SentencePiece token. For multi-token words,
-        // we do a greedy forward-maximum-match against the vocab.
-        // This is good enough for hotwords (typically 1-3 tokens each).
-        std::vector<int32_t> ids;
-        const auto& pieces = ctx->vocab.id_to_token;
-        std::string remaining = word;
-        while (!remaining.empty()) {
-            int best_len = 0;
-            int32_t best_id = -1;
-            for (int i = 0; i < (int)pieces.size(); i++) {
-                const auto& p = pieces[i];
-                if ((int)p.size() > best_len && remaining.compare(0, p.size(), p) == 0) {
-                    best_len = (int)p.size();
-                    best_id = i;
-                }
-            }
-            if (best_id < 0) {
-                // Skip unknown character
-                size_t skip = 1;
-                if ((unsigned char)remaining[0] >= 0x80) {
-                    // UTF-8 multi-byte
-                    if ((unsigned char)remaining[0] >= 0xF0)
-                        skip = 4;
-                    else if ((unsigned char)remaining[0] >= 0xE0)
-                        skip = 3;
-                    else
-                        skip = 2;
-                }
-                remaining.erase(0, std::min(skip, remaining.size()));
-            } else {
-                ids.push_back(best_id);
-                remaining.erase(0, best_len);
-            }
-        }
+    // A form goes in whole or not at all (tokenize_spm_form); count what went in.
+    int inserted = 0;
+    auto tokenize = [&](const std::string& word) {
+        auto ids = core_context_bias::tokenize_spm_form(ctx->vocab.id_to_token, (int32_t)ctx->model.hparams.blank_id,
+                                                        word);
+        inserted += !ids.empty();
         return ids;
     };
 
@@ -3342,6 +3311,7 @@ extern "C" void parakeet_set_hotwords(struct parakeet_context* ctx, const char**
 
     ctx->hotword_boost = boost;
     ctx->hotword_trie = core_context_bias::build_trie(hw_list, tokenize, boost);
+    return inserted;
 }
 
 extern "C" float* parakeet_compute_mel(struct parakeet_context* ctx, const float* samples, int n_samples,

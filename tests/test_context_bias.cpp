@@ -236,3 +236,77 @@ TEST_CASE("repeated advance and reset", "[context_bias]") {
     st.reset();
     REQUIRE(st.node == 0);
 }
+
+// ── tokenize_spm_form (F8) ───────────────────────────────────────────
+
+namespace {
+const std::string U = "\xE2\x96\x81"; // ▁
+
+// Synthetic SentencePiece vocab; the index is the token id.
+const std::vector<std::string> kVocab = {
+    "<unk>",  // 0
+    U,        // 1
+    U + "к",  // 2
+    "ли",     // 3
+    "к",      // 4
+    "ха",     // 5
+    "у",      // 6
+    "с",      // 7
+    U + "ка", // 8
+    "ф",      // 9
+    "а",      // 10
+    U + "Ka", // 11
+    "fka",    // 12
+    U + "ka", // 13
+    "f",      // 14
+    U + "x",  // 15 — blank_id in these tests
+    "x",      // 16
+    "<",      // 17
+    "unk>",   // 18
+};
+const int32_t kBlank = 15;
+
+std::vector<int32_t> tok(const std::string& form) {
+    return tokenize_spm_form(kVocab, kBlank, form);
+}
+} // namespace
+
+TEST_CASE("tokenize_spm_form: leading ▁, greedy longest piece, UTF-8", "[context_bias]") {
+    // ▁ка beats ▁к; Cyrillic pieces are multi-byte.
+    REQUIRE(tok("кафка") == std::vector<int32_t>{8, 9, 4, 10});
+}
+
+TEST_CASE("tokenize_spm_form: space, tab and repeated spaces become one ▁", "[context_bias]") {
+    // "клик хаус": no ▁х piece, so the inner separator is a lone ▁ (open decision 1
+    // of the T3.1 plan) — the form stays.
+    const std::vector<int32_t> want = {2, 3, 4, 1, 5, 6, 7};
+    REQUIRE(tok("клик хаус") == want);
+    REQUIRE(tok("клик\tхаус") == want);
+    REQUIRE(tok("клик  \t хаус") == want);
+}
+
+TEST_CASE("tokenize_spm_form: uncovered character drops the whole form", "[context_bias]") {
+    REQUIRE(tok("кафкаz").empty());
+    REQUIRE(tok("кz").empty());
+}
+
+TEST_CASE("tokenize_spm_form: <…> pieces and blank_id never match", "[context_bias]") {
+    // "x" after ▁ would match ▁x (blank_id) — must fall to the lone ▁ + "x",
+    // and a lone ▁ as the first piece drops the form.
+    REQUIRE(tok("x").empty());
+    // "<unk>" in the form is not the <unk> piece: it is covered by "<" + "unk>"
+    // only after a lone ▁ first piece — dropped as well.
+    REQUIRE(tok("<unk>").empty());
+    // Inside a form: ▁к + "<" + "unk>" (never id 0).
+    REQUIRE(tok("к<unk>") == std::vector<int32_t>{2, 17, 18});
+}
+
+TEST_CASE("tokenize_spm_form: lone ▁ as the first piece drops the form", "[context_bias]") {
+    // No ▁л piece: the form would start with a lone ▁.
+    REQUIRE(tok("ли").empty());
+}
+
+TEST_CASE("tokenize_spm_form: case is kept", "[context_bias]") {
+    REQUIRE(tok("Kafka") == std::vector<int32_t>{11, 12});
+    REQUIRE(tok("kafka") == std::vector<int32_t>{13, 12});
+}

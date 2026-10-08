@@ -163,6 +163,55 @@ inline Trie build_trie(const std::vector<std::string>& hotwords, const Tokenizer
     return trie;
 }
 
+// Form → SentencePiece token IDs: "▁" + the form with each run of spaces/tabs
+// turned into one "▁"; greedy longest match against the vocab. Pieces of the
+// form `<…>` (<unk>, byte fallback) and `blank_id` never match. Returns an empty
+// vector when the vocab does not cover the whole form, or when the first piece
+// is a lone "▁" (it would boost the word separator on every step): a form goes
+// into the trie whole or not at all. Case is kept as is.
+inline std::vector<int32_t> tokenize_spm_form(const std::vector<std::string>& id_to_token, int32_t blank_id,
+                                              const std::string& form) {
+    static const std::string kSep = "\xE2\x96\x81"; // U+2581 ▁
+    std::string s = kSep;
+    bool space = false;
+    for (char c : form) {
+        if (c == ' ' || c == '\t') {
+            space = true;
+            continue;
+        }
+        if (space && s.size() > kSep.size())
+            s += kSep;
+        space = false;
+        s += c;
+    }
+    if (s.size() == kSep.size())
+        return {};
+
+    std::vector<int32_t> ids;
+    for (size_t pos = 0; pos < s.size();) {
+        size_t best_len = 0;
+        int32_t best_id = -1;
+        for (int32_t i = 0; i < (int32_t)id_to_token.size(); i++) {
+            const auto& p = id_to_token[i];
+            if (i == blank_id || p.size() <= best_len)
+                continue;
+            if (p.size() >= 2 && p.front() == '<' && p.back() == '>')
+                continue;
+            if (s.compare(pos, p.size(), p) == 0) {
+                best_len = p.size();
+                best_id = i;
+            }
+        }
+        if (best_id < 0)
+            return {};
+        ids.push_back(best_id);
+        pos += best_len;
+    }
+    if (id_to_token[ids[0]] == kSep)
+        return {};
+    return ids;
+}
+
 // Parse a comma-separated hotword string into a vector.
 inline std::vector<std::string> parse_hotwords(const std::string& s) {
     std::vector<std::string> result;
