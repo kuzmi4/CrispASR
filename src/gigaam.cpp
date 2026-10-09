@@ -1288,6 +1288,10 @@ extern "C" void gigaam_set_simulated_fault(struct gigaam_context* ctx, int fault
         ctx->simulated_fault = fault;
 }
 
+extern "C" int gigaam_backend_is_gpu(struct gigaam_context* ctx) {
+    return ctx ? !core_cpu_backend::is_cpu(ctx->backend) : -1;
+}
+
 extern "C" void gigaam_set_max_symbols(struct gigaam_context* ctx, int max_symbols) {
     if (!ctx)
         return;

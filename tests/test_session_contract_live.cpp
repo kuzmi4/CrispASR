@@ -1,4 +1,5 @@
-// Context-Assist (T3.1, F5): CRISPASR_SIMULATE_* failure injection on real models.
+// Context-Assist (T3.1, F5, F2): CRISPASR_SIMULATE_* failure injection and the
+// actual session device on real models.
 //
 // Requires:
 //   CRISPASR_MODEL_PARAKEET — Parakeet TDT 0.6B v3 GGUF
@@ -11,7 +12,8 @@
 // use_gpu=1: GPU_OPEN_FAILURE — open returns NULL; GPU_COMPUTE_FAILURE — the
 // first transcribe* computes nothing (the session outcome and the error
 // category are F3), the next call is normal; GPU_INIT_FALLBACK — the session
-// opens and transcribes as a CPU session does (the device is F2); HANG_OPEN /
+// opens and transcribes as a CPU session does, crispasr_session_device = 0 (F2:
+// 1 — Metal, 0 — CPU, -1 — NULL); HANG_OPEN /
 // HANG_CALL — the process does not finish in 5 s (helper, posix_spawn, SIGKILL).
 
 #include <catch2/catch_test_macros.hpp>
@@ -145,9 +147,23 @@ void run_injection_cases(const char* model_var) {
         crispasr_session_close(s);
         CHECK(transcribe_once(model, 0, pcm) == cpu);
     }
-    SECTION("GPU_INIT_FALLBACK: the GPU open lands on CPU") {
+    SECTION("device without variables: use_gpu=1 is Metal, use_gpu=0 is CPU, NULL is -1") {
+        SimulateEnv env(nullptr);
+        for (int use_gpu : {1, 0}) {
+            crispasr_session* s = open_session(model, use_gpu);
+            REQUIRE(s != nullptr);
+            CHECK(crispasr_session_device(s) == use_gpu);
+            crispasr_session_close(s);
+        }
+        CHECK(crispasr_session_device(nullptr) == -1);
+    }
+    SECTION("GPU_INIT_FALLBACK: the GPU open lands on CPU, device 0") {
         SimulateEnv env("CRISPASR_SIMULATE_GPU_INIT_FALLBACK");
-        CHECK(transcribe_once(model, 1, pcm) == cpu);
+        crispasr_session* s = open_session(model, 1);
+        REQUIRE(s != nullptr);
+        CHECK(crispasr_session_device(s) == 0);
+        CHECK(transcribe(s, pcm) == cpu);
+        crispasr_session_close(s);
         CHECK(transcribe_once(model, 0, pcm) == cpu);
     }
 }

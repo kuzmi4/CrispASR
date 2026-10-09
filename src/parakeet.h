@@ -162,6 +162,11 @@ int parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, i
 // compute on a GPU backend fails; 2 — it never returns. No effect on CPU.
 void parakeet_set_simulated_fault(struct parakeet_context* ctx, int fault);
 
+// Context-Assist (F2): 1 when the context's backend is a GPU (Metal on macOS),
+// 0 when it is CPU — including when the GPU was requested but did not come up;
+// -1 when ctx is NULL.
+int parakeet_backend_is_gpu(struct parakeet_context* ctx);
+
 // Split encode / decode for full-audio-encode + chunked-decode.
 // parakeet_encode: mel → encoder, returns malloc'd float[T_enc * d_model].
 // parakeet_decode_frames: run TDT/CTC decode on pre-encoded frames.
