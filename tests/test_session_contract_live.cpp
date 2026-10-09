@@ -1,5 +1,5 @@
-// Context-Assist (T3.1, F5, F2): CRISPASR_SIMULATE_* failure injection and the
-// actual session device on real models.
+// Context-Assist (T3.1, F5, F2, F3): CRISPASR_SIMULATE_* failure injection, the
+// actual session device and the error categories on real models.
 //
 // Requires:
 //   CRISPASR_MODEL_PARAKEET — Parakeet TDT 0.6B v3 GGUF
@@ -15,6 +15,13 @@
 // opens and transcribes as a CPU session does, crispasr_session_device = 0 (F2:
 // 1 — Metal, 0 — CPU, -1 — NULL); HANG_OPEN /
 // HANG_CALL — the process does not finish in 5 s (helper, posix_spawn, SIGKILL).
+//
+// F3: a failed open*/transcribe* is NULL with crispasr_last_error_category —
+// GPU (Metal open/compute, F5), MODEL (model does not load), INPUT (bad
+// arguments); NONE after a success. COMPUTE_FAILURE fails every Parakeet route —
+// single-pass with its streamed fallback (#257), STREAMED, LONGFORM — without
+// partial text; the route is confirmed by the `crispasr[parakeet]: route=` line.
+// A failed GigaAM auto-chunk piece (> 30 s) fails the whole call.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,6 +30,9 @@
 
 #include <chrono>
 #include <cstdio>
+#include <fcntl.h>
+#include <fstream>
+#include <sstream>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -82,6 +92,43 @@ struct SimulateEnv {
     }
 };
 
+// Sets an environment variable for the scope and removes it afterwards.
+struct ScopedEnv {
+    const char* name;
+    ScopedEnv(const char* n, const char* v) : name(n) { setenv(n, v, 1); }
+    ~ScopedEnv() { unsetenv(name); }
+};
+
+// stderr of the process (fd 2) while in scope; text() after the capture ends.
+struct StderrCapture {
+    char path[64] = "/tmp/ca-session-stderr-XXXXXX";
+    int saved = -1;
+    StderrCapture() {
+        const int fd = mkstemp(path);
+        REQUIRE(fd >= 0);
+        fflush(stderr);
+        saved = dup(2);
+        dup2(fd, 2);
+        close(fd);
+    }
+    std::string text() {
+        if (saved >= 0) {
+            fflush(stderr);
+            dup2(saved, 2);
+            close(saved);
+            saved = -1;
+        }
+        std::ifstream f(path);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+    }
+    ~StderrCapture() {
+        text();
+        unlink(path);
+    }
+};
+
 crispasr_session* open_session(const std::string& model, int use_gpu) {
     crispasr_open_params_v1 p = {2, 4, use_gpu, 0, 1, -1, {0}};
     return crispasr_session_open_with_params(model.c_str(), nullptr, &p);
@@ -138,14 +185,42 @@ void run_injection_cases(const char* model_var) {
         CHECK(open_session(model, 1) == nullptr);
         CHECK(transcribe_once(model, 0, pcm) == cpu);
     }
-    SECTION("GPU_COMPUTE_FAILURE: the first GPU call computes nothing, the next is normal") {
+    SECTION("GPU_COMPUTE_FAILURE: the first GPU call is NULL/GPU, the next is normal/NONE") {
         SimulateEnv env("CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE");
         crispasr_session* s = open_session(model, 1);
         REQUIRE(s != nullptr);
-        CHECK(transcribe(s, pcm).empty());
+        CHECK(crispasr_session_transcribe(s, pcm.data, pcm.n) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_GPU);
         CHECK(transcribe(s, pcm) == metal);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_NONE);
         crispasr_session_close(s);
         CHECK(transcribe_once(model, 0, pcm) == cpu);
+    }
+    SECTION("F3 categories: open GPU/MODEL/INPUT, transcribe INPUT, NONE after a success") {
+        SimulateEnv env("CRISPASR_SIMULATE_GPU_OPEN_FAILURE");
+        CHECK(open_session(model, 1) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_GPU);
+        unsetenv("CRISPASR_SIMULATE_GPU_OPEN_FAILURE");
+
+        crispasr_open_params_v1 p = {2, 4, 1, 0, 1, -1, {0}};
+        CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", nullptr, &p) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
+        const char* backend = std::string(model_var).find("GIGAAM") != std::string::npos ? "gigaam" : "parakeet";
+        CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", backend, &p) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
+        CHECK(crispasr_session_open_with_params(nullptr, backend, &p) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_INPUT);
+
+        crispasr_session* s = open_session(model, 1);
+        REQUIRE(s != nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_NONE);
+        CHECK(crispasr_session_transcribe(s, pcm.data, 0) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_INPUT);
+        CHECK(crispasr_session_transcribe(nullptr, pcm.data, pcm.n) == nullptr);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_INPUT);
+        CHECK(transcribe(s, pcm) == metal);
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_NONE);
+        crispasr_session_close(s);
     }
     SECTION("device without variables: use_gpu=1 is Metal, use_gpu=0 is CPU, NULL is -1") {
         SimulateEnv env(nullptr);
@@ -166,6 +241,79 @@ void run_injection_cases(const char* model_var) {
         crispasr_session_close(s);
         CHECK(transcribe_once(model, 0, pcm) == cpu);
     }
+}
+
+// F3 on every Parakeet route (§ «Данные»: single-pass by default, STREAMED via
+// CRISPASR_PARAKEET_MEM_POLICY=streamed, LONGFORM via a 10 s single-pass cap on
+// the 11 s sample): COMPUTE_FAILURE → NULL and GPU, no partial text, the route
+// line on stderr; the same route without the variable transcribes.
+void run_parakeet_route_cases() {
+    const std::string model = model_path("CRISPASR_MODEL_PARAKEET");
+    Pcm pcm;
+    auto check_route = [&](const char* route) {
+        {
+            SimulateEnv env("CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE");
+            crispasr_session* s = open_session(model, 1);
+            REQUIRE(s != nullptr);
+            StderrCapture cap;
+            crispasr_session_result* r = crispasr_session_transcribe(s, pcm.data, pcm.n);
+            const std::string err = cap.text();
+            CHECK(r == nullptr);
+            if (r)
+                crispasr_session_result_free(r);
+            CHECK(crispasr_last_error_category() == CRISPASR_ERR_GPU);
+            CHECK(err.find(std::string("crispasr[parakeet]: route=") + route) != std::string::npos);
+            if (std::string(route) == "single-pass") // the #257 streamed fallback ran and failed too
+                CHECK(err.find("falling back to streamed encoding") != std::string::npos);
+            crispasr_session_close(s);
+        }
+        SimulateEnv env(nullptr);
+        crispasr_session* s = open_session(model, 1);
+        REQUIRE(s != nullptr);
+        StderrCapture cap;
+        const std::string text = transcribe(s, pcm);
+        const std::string err = cap.text();
+        CHECK_FALSE(text.empty());
+        CHECK(crispasr_last_error_category() == CRISPASR_ERR_NONE);
+        CHECK(err.find(std::string("crispasr[parakeet]: route=") + route) != std::string::npos);
+        crispasr_session_close(s);
+    };
+    REQUIRE(pcm.n > 10 * 16000); // LONGFORM below needs a recording over the 10 s cap
+
+    SECTION("single-pass (and its streamed fallback #257)") {
+        check_route("single-pass");
+    }
+    SECTION("STREAMED") {
+        ScopedEnv policy("CRISPASR_PARAKEET_MEM_POLICY", "streamed");
+        check_route("streamed");
+    }
+    SECTION("LONGFORM") {
+        ScopedEnv cap("CRISPASR_PARAKEET_STREAM_THRESHOLD", "10");
+        check_route("longform");
+    }
+}
+
+// F3: GigaAM auto-chunks a recording over 30 s (session_autochunk.h); a failed
+// piece fails the whole call (it used to be skipped). 3 × the 11 s sample = 33 s.
+void run_gigaam_autochunk_cases() {
+    const std::string model = model_path("CRISPASR_MODEL_GIGAAM");
+    Pcm pcm;
+    std::vector<float> longer;
+    for (int i = 0; i < 3; i++)
+        longer.insert(longer.end(), pcm.data, pcm.data + pcm.n);
+    REQUIRE(longer.size() > (size_t)30 * 16000);
+
+    SimulateEnv env("CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE");
+    crispasr_session* s = open_session(model, 1);
+    REQUIRE(s != nullptr);
+    CHECK(crispasr_session_transcribe(s, longer.data(), (int)longer.size()) == nullptr);
+    CHECK(crispasr_last_error_category() == CRISPASR_ERR_GPU);
+    crispasr_session_result* r = crispasr_session_transcribe(s, longer.data(), (int)longer.size());
+    REQUIRE(r != nullptr);
+    CHECK(crispasr_last_error_category() == CRISPASR_ERR_NONE);
+    CHECK(crispasr_session_result_n_segments(r) > 1); // the call did go through the auto-chunker
+    crispasr_session_result_free(r);
+    crispasr_session_close(s);
 }
 
 #ifndef CA_SESSION_CONTRACT_HELPER
@@ -262,6 +410,14 @@ TEST_CASE("CRISPASR_SIMULATE_* on Parakeet v3", "[session-contract][parakeet]") 
 
 TEST_CASE("CRISPASR_SIMULATE_* on GigaAM e2e_rnnt", "[session-contract][gigaam]") {
     run_injection_cases("CRISPASR_MODEL_GIGAAM");
+}
+
+TEST_CASE("F3 on every Parakeet v3 route", "[session-contract][parakeet]") {
+    run_parakeet_route_cases();
+}
+
+TEST_CASE("F3: a failed GigaAM auto-chunk piece fails the call", "[session-contract][gigaam]") {
+    run_gigaam_autochunk_cases();
 }
 
 TEST_CASE("CRISPASR_SIMULATE_HANG_* on Parakeet v3", "[session-contract][parakeet]") {

@@ -285,6 +285,9 @@ int parakeet_repair_segments(struct parakeet_context* ctx, const float* samples,
 std::vector<parakeet_seg> parakeet_decode_frames_to_segments(struct parakeet_context* ctx, const float* enc_frames,
                                                              int T_enc, int d_model, int64_t t_offset_cs);
 
+// `failed` (optional, Context-Assist F3): set when an encode on the chosen route
+// failed — single-pass and its streamed fallback, a STREAMED or LONGFORM window.
+// The returned segments are then empty: no partial text.
 std::vector<parakeet_seg> parakeet_transcribe_segments(struct parakeet_context* ctx, const float* samples,
                                                        int n_samples, int64_t t_offset_cs, bool is_ja,
-                                                       const parakeet_orchestrate_opts& opts);
+                                                       const parakeet_orchestrate_opts& opts, bool* failed = nullptr);
