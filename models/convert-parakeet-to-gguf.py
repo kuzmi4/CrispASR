@@ -252,7 +252,7 @@ def load_hf(path: str) -> dict:
             patterns = ["config.json", "phonon-2.bps.tar.zst"]
         p = Path(snapshot_download(path, allow_patterns=patterns))
     cfg = json.loads((p / "config.json").read_text())
-    if cfg.get("model_type") == "parakeet_tdt_five_value" or "fermion" in cfg:
+    if is_phonon2(cfg):
         return load_phonon2(p)
     if cfg.get("model_type") != "parakeet_tdt":
         sys.exit(f"{p}: model_type {cfg.get('model_type')!r}, expected parakeet_tdt")
@@ -316,6 +316,20 @@ def load_hf(path: str) -> dict:
     }
     import yaml
     return {"weights": sd, "config_str": yaml.safe_dump(nemo_cfg), "vocab": vocab}
+
+
+def is_phonon2(cfg: dict) -> bool:
+    return cfg.get("model_type") == "parakeet_tdt_five_value" or "fermion" in cfg
+
+
+def hf_config(path: str) -> dict:
+    """config.json of an HF snapshot dir or repo id (downloads only that file)."""
+    import json
+    p = Path(path)
+    if not p.is_dir():
+        from huggingface_hub import hf_hub_download
+        p = Path(hf_hub_download(path, "config.json")).parent
+    return json.loads((p / "config.json").read_text())
 
 
 def phonon2_reader():
@@ -488,12 +502,25 @@ _QUANT_TYPE_MAP: dict[str, gguf.GGMLQuantizationType] = {
     "q8_0": gguf.GGMLQuantizationType.Q8_0,
 }
 
+# general.file_type by --quant (F16 when not quantized).
+_FILE_TYPE_MAP: dict[str | None, gguf.LlamaFileType] = {
+    None: gguf.LlamaFileType.MOSTLY_F16,
+    "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_M,
+    "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
+}
+
 
 def convert(nemo_path: Path | None, out_path: Path, quant: str | None = None,
-            extract_dir: Path | None = None, hf: str | None = None) -> None:
+            extract_dir: Path | None = None, hf: str | None = None, meta: dict | None = None) -> None:
     quant_type = _QUANT_TYPE_MAP.get(quant.lower()) if quant else None
     if quant and quant_type is None:
         sys.exit(f"Unknown --quant type '{quant}'. Choices: {list(_QUANT_TYPE_MAP)}")
+    meta = {k: v for k, v in (meta or {}).items() if v is not None}
+    # Context-Assist (F7): the Phonon-2 branch writes its own name, language, license and
+    # source keys; refuse the flags there before any weights are read or a file written.
+    if meta and hf is not None and is_phonon2(hf_config(hf)):
+        sys.exit("--license/--license-file/--source-url/--source-sha256 are not supported "
+                 "for Phonon-2 (it writes its own license and source keys)")
 
     if hf is not None:
         print(f"Loading: {hf}  (HF-transformers ParakeetForTDT)")
@@ -549,6 +576,9 @@ def convert(nemo_path: Path | None, out_path: Path, quant: str | None = None,
         writer.add_string("general.source.url", "https://huggingface.co/" + nemo_data["source_model"])
         writer.add_string("general.source.sha256", nemo_data["source_sha256"])
         writer.add_string("general.license", nemo_data["license"])
+    writer.add_file_type(_FILE_TYPE_MAP[quant.lower() if quant else None])
+    for key, value in meta.items():
+        writer.add_string(key, value)
 
     # Hyper-parameters — read every value from model_config.yaml when
     # available, falling back to parakeet-tdt-0.6b-v3 defaults only as a
@@ -802,9 +832,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--quant", default=None, help="quantize linear weights (e.g. q4_k, q8_0); default: F16")
     p.add_argument("--extract-dir", default=None, type=Path,
                    help="extract .nemo to this dir and load via mmap (low memory for large models)")
+    p.add_argument("--license", help="general.license (e.g. cc-by-4.0)")
+    p.add_argument("--license-file", type=Path, help="general.license.text: the full license text")
+    p.add_argument("--source-url", help="general.source.url")
+    p.add_argument("--source-sha256", help="general.source.sha256 of the source file")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    convert(args.nemo, args.output, quant=args.quant, extract_dir=args.extract_dir, hf=args.hf)
+    convert(args.nemo, args.output, quant=args.quant, extract_dir=args.extract_dir, hf=args.hf,
+            meta={"general.license": args.license,
+                  "general.license.text": args.license_file.read_text() if args.license_file else None,
+                  "general.source.url": args.source_url,
+                  "general.source.sha256": args.source_sha256})

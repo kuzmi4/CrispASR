@@ -236,13 +236,20 @@ _QUANT_TYPE_MAP: dict[str, gguf.GGMLQuantizationType] = {
     "q8_0": gguf.GGMLQuantizationType.Q8_0,
 }
 
+# general.file_type by --quant (F16 when not quantized).
+_FILE_TYPE_MAP: dict[str | None, gguf.LlamaFileType] = {
+    None: gguf.LlamaFileType.MOSTLY_F16,
+    "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_M,
+    "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
+}
+
 
 # ---------------------------------------------------------------------------
 # Main conversion
 # ---------------------------------------------------------------------------
 
 
-def convert(src_dir: Path, out_path: Path, quant: str | None = None) -> None:
+def convert(src_dir: Path, out_path: Path, quant: str | None = None, meta: dict | None = None) -> None:
     quant_type = _QUANT_TYPE_MAP.get(quant.lower()) if quant else None
     if quant and quant_type is None:
         sys.exit(f"Unknown --quant type '{quant}'. Choices: {list(_QUANT_TYPE_MAP)}")
@@ -350,6 +357,10 @@ def convert(src_dir: Path, out_path: Path, quant: str | None = None) -> None:
     print(f"Writing: {out_path}")
     writer = gguf.GGUFWriter(str(out_path), arch="gigaam")
 
+    writer.add_file_type(_FILE_TYPE_MAP[quant.lower() if quant else None])
+    for key, value in (meta or {}).items():
+        if value is not None:
+            writer.add_string(key, value)
     writer.add_string("gigaam.model_name", model_name)
     writer.add_uint32("gigaam.sample_rate", sr)
     writer.add_uint32("gigaam.n_mels", n_mels)
@@ -444,9 +455,17 @@ def parse_args() -> argparse.Namespace:
                    help="HF revision when --model is a repo id: ctc | rnnt | e2e_ctc | e2e_rnnt")
     p.add_argument("--output", required=True, type=Path, help="output GGUF path")
     p.add_argument("--quant", default=None, help="q4_k | q8_0 (default: F16)")
+    p.add_argument("--license", help="general.license (e.g. mit)")
+    p.add_argument("--license-file", type=Path, help="general.license.text: the full license text")
+    p.add_argument("--source-url", help="general.source.url")
+    p.add_argument("--source-sha256", help="general.source.sha256 of the source file")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    convert(resolve_source(args.model, args.revision), args.output, quant=args.quant)
+    convert(resolve_source(args.model, args.revision), args.output, quant=args.quant,
+            meta={"general.license": args.license,
+                  "general.license.text": args.license_file.read_text() if args.license_file else None,
+                  "general.source.url": args.source_url,
+                  "general.source.sha256": args.source_sha256})
