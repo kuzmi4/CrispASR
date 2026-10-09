@@ -8,12 +8,25 @@ set -euo pipefail
 #
 # Usage: context-assist/build-static.sh <out-dir>
 # Result: <out-dir>/crispasr-<tag>-macos-arm64.tar.gz and .sha256
-# Requires: Xcode CLT, cmake >= 3.21, ninja; ggml submodule checked out.
+# Requires: Xcode CLT, cmake >= 3.21, ninja; ggml submodule checked out and clean.
 
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$SRC/build-context-assist"
 MACOS_MIN="14.0" # tauri.conf.json → bundle.macOS.minimumSystemVersion
+
+# F4: the ggml Metal patch is applied for the build only and always reverted, so the
+# ggml submodule stays at its pinned commit (ggml_rev) and BUILD-INFO names the patch.
+PATCH="$SRC/context-assist/patches/ggml-metal-cache-flush.patch"
+git -C "$SRC/ggml" diff --quiet HEAD || { echo "ggml submodule has local changes; refusing to build" >&2; exit 1; }
+if git -C "$SRC/ggml" apply --numstat "$PATCH" | cut -f3 | grep -v '^src/ggml-metal/'; then
+  echo "ggml patch touches files outside src/ggml-metal/; refusing to build" >&2
+  exit 1
+fi
+trap 'git -C "$SRC/ggml" checkout -- src/ggml-metal' EXIT
+trap 'exit 130' INT TERM
+git -C "$SRC/ggml" apply "$PATCH"
+PATCH_SHA="$(shasum -a 256 "$PATCH" | cut -d' ' -f1)"
 
 REV="$(git -C "$SRC" rev-parse --short=12 HEAD)"
 GGML_REV="$(git -C "$SRC/ggml" rev-parse --short=12 HEAD)"
@@ -60,6 +73,7 @@ LIB_SHA="$(shasum -a 256 "$STAGE/lib/libcrispasr.a" | cut -d' ' -f1)"
 cat > "$STAGE/BUILD-INFO" <<EOF
 crispasr_rev=$(git -C "$SRC" rev-parse HEAD)
 ggml_rev=$(git -C "$SRC/ggml" rev-parse HEAD)
+ggml_patches=$PATCH_SHA
 version=$(cat "$SRC/VERSION")
 arch=arm64
 macos_min=$MACOS_MIN
