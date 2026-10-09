@@ -1,0 +1,79 @@
+diff --git a/src/ggml-metal/ggml-metal-device.h b/src/ggml-metal/ggml-metal-device.h
+index 48fb6790..f9bbe15b 100644
+--- a/src/ggml-metal/ggml-metal-device.h
++++ b/src/ggml-metal/ggml-metal-device.h
+@@ -323,6 +323,10 @@ void ggml_metal_event_encode_wait  (ggml_metal_event_t ev, ggml_metal_cmd_buf_t
+ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices);
+ void ggml_metal_device_free(ggml_metal_device_t dev);
+ 
++// Context-Assist (F4): write the pipeline-cache archive of this device to disk if it
++// has new pipelines. 0 — written, nothing new or cache disabled; -1 — write failed.
++int ggml_metal_device_pipeline_cache_flush(ggml_metal_device_t dev);
++
+ ggml_metal_device_t ggml_metal_device_get(int device, int n_devices);
+ 
+ void * ggml_metal_device_get_obj  (ggml_metal_device_t dev); // id<MTLDevice>
+diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
+index dad68116..8ec1b4fb 100644
+--- a/src/ggml-metal/ggml-metal-device.m
++++ b/src/ggml-metal/ggml-metal-device.m
+@@ -1014,15 +1014,22 @@ static void crispasr_metal_pipeline_cache_open(ggml_metal_device_t dev) {
+     }
+ }
+ 
+-static void crispasr_metal_pipeline_cache_flush(ggml_metal_device_t dev) {
++int ggml_metal_device_pipeline_cache_flush(ggml_metal_device_t dev) {
+     if (!dev->binary_archive || !dev->binary_archive_url || !dev->binary_archive_dirty) {
+-        return;
++        return 0;
+     }
+     NSError * error = nil;
+     if (![dev->binary_archive serializeToURL:dev->binary_archive_url error:&error]) {
+         GGML_LOG_WARN("%s: failed to serialize pipeline cache: %s\n", __func__,
+                 error ? [[error description] UTF8String] : "unknown error");
++        return -1;
+     }
++    dev->binary_archive_dirty = false;
++    return 0;
++}
++
++static void crispasr_metal_pipeline_cache_flush(ggml_metal_device_t dev) {
++    (void) ggml_metal_device_pipeline_cache_flush(dev);
+ }
+ 
+ static id<MTLBinaryArchive> crispasr_metal_device_archive(ggml_metal_device_t dev) {
+diff --git a/src/ggml-metal/ggml-metal.cpp b/src/ggml-metal/ggml-metal.cpp
+index ac9213b4..ec772d0e 100644
+--- a/src/ggml-metal/ggml-metal.cpp
++++ b/src/ggml-metal/ggml-metal.cpp
+@@ -949,6 +949,20 @@ static void ggml_backend_metal_fusion_set_enabled(ggml_backend_fusion_t finfo, b
+     ggml_metal_fusion_info_set_enabled((struct ggml_metal_fusion_info *) finfo, enabled);
+ }
+ 
++// Context-Assist (F4): flush the pipeline cache of every Metal device without
++// freeing it. Call only while no computation runs. 0 — ok, -1 — a write failed.
++static int ggml_backend_metal_pipeline_cache_flush(void) {
++    ggml_backend_reg_t reg = ggml_backend_metal_reg();
++    int rc = 0;
++    for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); ++i) {
++        ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, i);
++        if (ggml_metal_device_pipeline_cache_flush((ggml_metal_device_t) dev->context) != 0) {
++            rc = -1;
++        }
++    }
++    return rc;
++}
++
+ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_metal_get_features;
+@@ -988,6 +1002,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
+     if (strcmp(name, "ggml_backend_fusion_set_enabled") == 0) {
+         return (void *)ggml_backend_metal_fusion_set_enabled;
+     }
++    if (strcmp(name, "ggml_backend_metal_pipeline_cache_flush") == 0) {
++        return (void *)ggml_backend_metal_pipeline_cache_flush;
++    }
+ 
+     return NULL;
+ 
