@@ -6172,6 +6172,25 @@ target_link_libraries(test-rnnt-greedy PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test-rnnt-greedy COMMAND test-rnnt-greedy "[rnnt_greedy]")
 set_tests_properties(test-rnnt-greedy PROPERTIES LABELS "unit;context-assist")
 
+# ─── test - session - contract - live — Context-Assist: CRISPASR_SIMULATE_* (T3.1, F5)
+add_executable(session-contract-helper session_contract_helper.cpp)
+target_include_directories(session-contract-helper PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(session-contract-helper PRIVATE crispasr-lib)
+add_executable(test-session-contract-live test_session_contract_live.cpp)
+target_include_directories(test-session-contract-live PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(test-session-contract-live PRIVATE Catch2::Catch2WithMain crispasr-lib)
+target_compile_definitions(test-session-contract-live PRIVATE
+    CA_SESSION_CONTRACT_HELPER="$<TARGET_FILE:session-contract-helper>")
+add_dependencies(test-session-contract-live session-contract-helper)
+foreach(backend parakeet gigaam)
+    add_test(NAME test-session-contract-live-${backend}
+             COMMAND test-session-contract-live "[session-contract][${backend}]"
+             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    set_tests_properties(test-session-contract-live-${backend} PROPERTIES
+        LABELS "live;context-assist" SKIP_RETURN_CODE 4)
+endforeach()
+
 # Context-Assist fork: build only the tests labelled `context-assist` (CI job `test`).
 add_custom_target(context-assist-tests)
-add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy)
+add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy
+    test-session-contract-live)

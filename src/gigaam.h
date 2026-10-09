@@ -107,6 +107,11 @@ int gigaam_est_enc_frames(struct gigaam_context* ctx, int n_samples);
 // tokenizer spm (the trie is left unchanged); -1 when ctx is NULL.
 int gigaam_set_hotwords(struct gigaam_context* ctx, const char** words, int n, float boost);
 
+// Context-Assist (F5): failure injection, as parakeet_set_simulated_fault.
+// 0 — off; 1 — every encoder compute on a GPU backend fails; 2 — it never
+// returns. No effect on CPU.
+void gigaam_set_simulated_fault(struct gigaam_context* ctx, int fault);
+
 // Max symbols the RNN-T greedy decoder may emit per encoder frame.
 // Matches RNNTGreedyDecoding(max_symbols_per_step=10). <= 0 restores the
 // default. No effect on CTC heads.

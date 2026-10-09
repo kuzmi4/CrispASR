@@ -87,6 +87,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -260,6 +261,8 @@ struct gigaam_context {
     // gigaam_set_hotwords(); empty = the unbiased decode.
     core_context_bias::Trie hotword_trie;
     float hotword_boost = 0.0f;
+
+    int simulated_fault = 0; // Context-Assist (F5): gigaam_set_simulated_fault
 };
 
 // ===========================================================================
@@ -729,6 +732,12 @@ static bool gigaam_run_encoder_impl(gigaam_context* ctx, const float* mel, int n
         pos[(size_t)i] = i;
     ggml_backend_tensor_set(pos_t, pos.data(), 0, pos.size() * sizeof(int32_t));
 
+    if (ctx->simulated_fault && !core_cpu_backend::is_cpu(ctx->backend)) {
+        while (ctx->simulated_fault == 2)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        fprintf(stderr, "gigaam: encoder graph compute failed (simulated)\n");
+        return false;
+    }
     if (ggml_backend_sched_graph_compute(ctx->sched, gf) != GGML_STATUS_SUCCESS) {
         fprintf(stderr, "gigaam: encoder graph compute failed\n");
         return false;
@@ -1272,6 +1281,11 @@ extern "C" int gigaam_set_hotwords(struct gigaam_context* ctx, const char** word
     ctx->hotword_boost = boost;
     ctx->hotword_trie = core_context_bias::build_trie(list, tokenize, boost);
     return inserted;
+}
+
+extern "C" void gigaam_set_simulated_fault(struct gigaam_context* ctx, int fault) {
+    if (ctx)
+        ctx->simulated_fault = fault;
 }
 
 extern "C" void gigaam_set_max_symbols(struct gigaam_context* ctx, int max_symbols) {

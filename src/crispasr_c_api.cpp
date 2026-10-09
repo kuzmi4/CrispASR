@@ -33,6 +33,7 @@
 #include <chrono>
 #include <fstream>
 #include <filesystem>
+#include <thread>
 #include <climits> // INT_MIN (parakeet att_context_* sentinels) — issue #257
 #include <cstddef> // offsetof (diarize ABI layout static_asserts) — issue #332
 #include <cstdint>
@@ -1925,6 +1926,10 @@ struct crispasr_session {
     int hotwords_inserted = 0;
     int hotwords_builds = 0; // trie builds, read by tests only
 
+    // Context-Assist (F5): fault armed at open by CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE
+    // (1) or CRISPASR_SIMULATE_HANG_CALL (2) for the first transcribe* call only.
+    int simulated_call_fault = 0;
+
     // Issue #208: explicit chunked-encode override for the Parakeet backend.
     // crispasr_session_transcribe_chunked[_lang] sets these for the duration
     // of a single call (restored by a scope guard) to force the bounded
@@ -2620,10 +2625,56 @@ static void filter_words_by_ngram_collapse(std::vector<crispasr_session_seg::wor
     words = std::move(filtered);
 }
 
+// Context-Assist (F5): failure injection for the Context-Assist voice-worker
+// tests. A CRISPASR_SIMULATE_* variable counts only when set to "1" and only for
+// a GPU open (use_gpu=1): the CPU retry in the same environment runs normally.
+// The closed list: GPU_INIT_FALLBACK (the session opens on CPU), GPU_OPEN_FAILURE
+// (open returns NULL), HANG_OPEN (open never returns), GPU_COMPUTE_FAILURE and
+// HANG_CALL (every GPU compute of the first transcribe* fails / never returns;
+// injected in parakeet.cpp and gigaam.cpp).
+static bool simulate_on_gpu_open(const char* name) {
+    const char* v = g_open_use_gpu_tls ? getenv(name) : nullptr;
+    return v && strcmp(v, "1") == 0;
+}
+
+[[noreturn]] static void simulate_hang() {
+    for (;;)
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+}
+
+static void set_simulated_backend_fault(crispasr_session* s, int fault) {
+#ifdef CA_HAVE_PARAKEET
+    if (s->parakeet_ctx)
+        parakeet_set_simulated_fault(s->parakeet_ctx, fault);
+#endif
+#ifdef CA_HAVE_GIGAAM
+    if (s->gigaam_ctx)
+        gigaam_set_simulated_fault(s->gigaam_ctx, fault);
+#endif
+    (void)s;
+    (void)fault;
+}
+
 CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_path, const char* backend_name,
                                                            int n_threads) {
     if (!model_path || !backend_name)
         return nullptr;
+
+    if (simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_OPEN_FAILURE"))
+        return nullptr;
+    if (simulate_on_gpu_open("CRISPASR_SIMULATE_HANG_OPEN"))
+        simulate_hang();
+    const int call_fault = simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE") ? 1
+                           : simulate_on_gpu_open("CRISPASR_SIMULATE_HANG_CALL")       ? 2
+                                                                                        : 0;
+    // GPU_INIT_FALLBACK: every backend below reads g_open_use_gpu_tls; restore it on
+    // every return path.
+    struct UseGpuGuard {
+        bool prev;
+        ~UseGpuGuard() { g_open_use_gpu_tls = prev; }
+    } use_gpu_guard{g_open_use_gpu_tls};
+    if (simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_INIT_FALLBACK"))
+        g_open_use_gpu_tls = false;
 
     if (g_open_use_gpu_tls)
         ensure_dynamic_backends_loaded();
@@ -2632,6 +2683,7 @@ CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_pat
     s->model_path = model_path;
     s->backend = backend_name;
     s->n_threads = n_threads > 0 ? n_threads : 4;
+    s->simulated_call_fault = call_fault;
 
     // Register the default segment callback so the Dart polling buffer
     // is populated out of the box. Users can override via
@@ -5488,6 +5540,20 @@ CA_EXPORT crispasr_session_result* crispasr_session_transcribe_lang(crispasr_ses
         return nullptr;
     if (!session_language_satisfiable(s, language))
         return nullptr;
+
+    // Context-Assist (F5): the simulated fault covers this whole call (every
+    // window, chunk and fallback inside it) and is disarmed for later calls.
+    struct SimulatedFaultGuard {
+        crispasr_session* s;
+        ~SimulatedFaultGuard() {
+            if (s)
+                set_simulated_backend_fault(s, 0);
+        }
+    } simulated_fault_guard{s->simulated_call_fault ? s : nullptr};
+    if (s->simulated_call_fault) {
+        set_simulated_backend_fault(s, s->simulated_call_fault);
+        s->simulated_call_fault = 0;
+    }
 
     // Best-of-N: run N independent transcriptions and keep the one with the
     // highest average per-token confidence. Whisper handles best_of internally

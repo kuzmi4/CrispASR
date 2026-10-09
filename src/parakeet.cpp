@@ -262,6 +262,8 @@ struct parakeet_context {
 
     std::vector<uint8_t> compute_meta; // metadata buffer for graph allocation
 
+    int simulated_fault = 0; // Context-Assist (F5): parakeet_set_simulated_fault
+
     // CPU-side weight caches for the predictor LSTM and joint head.
     // Lazy-initialised on first transcribe call.
     parakeet_predictor_weights pred_w;
@@ -1132,6 +1134,12 @@ static std::vector<float> parakeet_encode_mel(parakeet_context* ctx, const float
 
     // Compute
     int64_t t_comp0 = probe_time ? ggml_time_us() : 0;
+    if (ctx->simulated_fault && !core_cpu_backend::is_cpu(ctx->backend)) {
+        while (ctx->simulated_fault == 2)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        fprintf(stderr, "parakeet: encoder graph compute failed (simulated)\n");
+        return {};
+    }
     if (core_sched_prof::compute(ctx->sched, gf, "parakeet.encoder", "CRISPASR_FC_PROFILE") != GGML_STATUS_SUCCESS) {
         fprintf(stderr, "parakeet: encoder graph compute failed\n");
         return {};
@@ -3229,6 +3237,11 @@ extern "C" void parakeet_free(struct parakeet_context* ctx) {
     if (ctx->backend_cpu)
         ggml_backend_free(ctx->backend_cpu);
     delete ctx;
+}
+
+extern "C" void parakeet_set_simulated_fault(struct parakeet_context* ctx, int fault) {
+    if (ctx)
+        ctx->simulated_fault = fault;
 }
 
 // Internal C++ entry point for tests — declared in parakeet.h via a different

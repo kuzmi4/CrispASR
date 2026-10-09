@@ -157,6 +157,11 @@ bool parakeet_has_ctc(struct parakeet_context* ctx);
 // is dropped), 0 after clearing (NULL/empty list), -1 when ctx is NULL.
 int parakeet_set_hotwords(struct parakeet_context* ctx, const char** hotwords, int n_hotwords, float boost);
 
+// Context-Assist (F5): failure injection, armed by the session from
+// CRISPASR_SIMULATE_* for one transcribe* call. 0 — off; 1 — every encoder
+// compute on a GPU backend fails; 2 — it never returns. No effect on CPU.
+void parakeet_set_simulated_fault(struct parakeet_context* ctx, int fault);
+
 // Split encode / decode for full-audio-encode + chunked-decode.
 // parakeet_encode: mel → encoder, returns malloc'd float[T_enc * d_model].
 // parakeet_decode_frames: run TDT/CTC decode on pre-encoded frames.
