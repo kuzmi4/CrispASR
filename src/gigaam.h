@@ -112,6 +112,9 @@ int gigaam_set_hotwords(struct gigaam_context* ctx, const char** words, int n, f
 // returns. No effect on CPU.
 void gigaam_set_simulated_fault(struct gigaam_context* ctx, int fault);
 
+// Context-Assist (F2): as parakeet_backend_is_gpu — 1 GPU, 0 CPU, -1 ctx NULL.
+int gigaam_backend_is_gpu(struct gigaam_context* ctx);
+
 // Max symbols the RNN-T greedy decoder may emit per encoder frame.
 // Matches RNNTGreedyDecoding(max_symbols_per_step=10). <= 0 restores the
 // default. No effect on CTC heads.

@@ -533,6 +533,10 @@ CRISPASR_SESSION_API int crispasr_session_set_hotwords(crispasr_session* s, cons
 // form not covered whole by the model vocab is dropped); 0 after clearing and for
 // other backends, -1 on s == NULL.
 CRISPASR_SESSION_API int crispasr_session_hotwords_inserted(crispasr_session* s);
+// F2: 1 — Metal, 0 — CPU, -1 — s == NULL. Parakeet/GigaAM report the backend the
+// context actually created (CPU when Metal did not come up); other backends — the
+// requested device.
+CRISPASR_SESSION_API int crispasr_session_device(crispasr_session* s);
 
 // Source separation: split audio into N stems (drums, bass, other, vocals).
 // Input: stereo interleaved PCM at the model's native rate (44100 Hz for htdemucs).

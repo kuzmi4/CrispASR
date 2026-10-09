@@ -3244,6 +3244,10 @@ extern "C" void parakeet_set_simulated_fault(struct parakeet_context* ctx, int f
         ctx->simulated_fault = fault;
 }
 
+extern "C" int parakeet_backend_is_gpu(struct parakeet_context* ctx) {
+    return ctx ? !core_cpu_backend::is_cpu(ctx->backend) : -1;
+}
+
 // Internal C++ entry point for tests — declared in parakeet.h via a different
 // linkage section to avoid polluting the public C API.
 extern std::vector<float> parakeet_encode_mel(parakeet_context* ctx, const float* mel, int n_mels, int T_mel,

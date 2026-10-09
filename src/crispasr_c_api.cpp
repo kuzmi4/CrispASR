@@ -1929,6 +1929,10 @@ struct crispasr_session {
     // Context-Assist (F5): fault armed at open by CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE
     // (1) or CRISPASR_SIMULATE_HANG_CALL (2) for the first transcribe* call only.
     int simulated_call_fault = 0;
+    // Context-Assist (F2): use_gpu the session was opened with (after
+    // GPU_INIT_FALLBACK); crispasr_session_device reports it for backends that
+    // do not expose their actual device.
+    bool opened_gpu = false;
 
     // Issue #208: explicit chunked-encode override for the Parakeet backend.
     // crispasr_session_transcribe_chunked[_lang] sets these for the duration
@@ -2684,6 +2688,7 @@ CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_pat
     s->backend = backend_name;
     s->n_threads = n_threads > 0 ? n_threads : 4;
     s->simulated_call_fault = call_fault;
+    s->opened_gpu = g_open_use_gpu_tls;
 
     // Register the default segment callback so the Dart polling buffer
     // is populated out of the box. Users can override via
@@ -10766,6 +10771,22 @@ CA_EXPORT int crispasr_session_set_hotwords(crispasr_session* s, const char* hot
 
 CA_EXPORT int crispasr_session_hotwords_inserted(crispasr_session* s) {
     return s ? s->hotwords_inserted : -1;
+}
+
+CA_EXPORT int crispasr_session_device(crispasr_session* s) {
+    if (!s)
+        return -1;
+#ifdef CA_HAVE_PARAKEET
+    if (s->parakeet_ctx)
+        return parakeet_backend_is_gpu(s->parakeet_ctx);
+#endif
+#ifdef CA_HAVE_GIGAAM
+    if (s->gigaam_ctx)
+        return gigaam_backend_is_gpu(s->gigaam_ctx);
+#endif
+    // ponytail: other backends report the device they were opened for; the actual
+    // one is known only for Parakeet/GigaAM (the backends S1 opens).
+    return s->opened_gpu ? 1 : 0;
 }
 
 #ifdef CRISPASR_BUILD_TESTS
