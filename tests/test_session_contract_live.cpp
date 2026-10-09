@@ -17,8 +17,9 @@
 // HANG_CALL — the process does not finish in 5 s (helper, posix_spawn, SIGKILL).
 //
 // F3: a failed open*/transcribe* is NULL with crispasr_last_error_category —
-// GPU (Metal open/compute, F5), MODEL (model does not load), INPUT (bad
-// arguments); NONE after a success. COMPUTE_FAILURE fails every Parakeet route —
+// GPU (Metal open/compute, F5; a backend init that fails on a Metal open), MODEL
+// (missing file, unknown backend, init failure on CPU), INPUT (bad arguments);
+// NONE after a success. COMPUTE_FAILURE fails every Parakeet route —
 // single-pass with its streamed fallback (#257), STREAMED, LONGFORM — without
 // partial text; the route is confirmed by the `crispasr[parakeet]: route=` line.
 // A failed GigaAM auto-chunk piece (> 30 s) fails the whole call.
@@ -202,14 +203,27 @@ void run_injection_cases(const char* model_var) {
         CHECK(crispasr_last_error_category() == CRISPASR_ERR_GPU);
         unsetenv("CRISPASR_SIMULATE_GPU_OPEN_FAILURE");
 
-        crispasr_open_params_v1 p = {2, 4, 1, 0, 1, -1, {0}};
-        CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", nullptr, &p) == nullptr);
-        CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
         const char* backend = std::string(model_var).find("GIGAAM") != std::string::npos ? "gigaam" : "parakeet";
-        CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", backend, &p) == nullptr);
-        CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
-        CHECK(crispasr_session_open_with_params(nullptr, backend, &p) == nullptr);
-        CHECK(crispasr_last_error_category() == CRISPASR_ERR_INPUT);
+        // A file that exists but is not a model: its init fails past the file checks.
+        char junk[] = "/tmp/ca-session-junk-XXXXXX";
+        const int jfd = mkstemp(junk);
+        REQUIRE(jfd >= 0);
+        REQUIRE(write(jfd, "not a gguf model", 16) == 16);
+        close(jfd);
+        for (int use_gpu : {1, 0}) {
+            INFO("use_gpu=" << use_gpu);
+            crispasr_open_params_v1 p = {2, 4, use_gpu, 0, 1, -1, {0}};
+            CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", nullptr, &p) == nullptr);
+            CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
+            CHECK(crispasr_session_open_with_params("/nonexistent/model.gguf", backend, &p) == nullptr);
+            CHECK(crispasr_last_error_category() == CRISPASR_ERR_MODEL);
+            CHECK(crispasr_session_open_with_params(nullptr, backend, &p) == nullptr);
+            CHECK(crispasr_last_error_category() == CRISPASR_ERR_INPUT);
+            // Backend init failed on a Metal open → GPU (S1 retries on CPU); on CPU → MODEL.
+            CHECK(crispasr_session_open_with_params(junk, "parakeet", &p) == nullptr);
+            CHECK(crispasr_last_error_category() == (use_gpu ? CRISPASR_ERR_GPU : CRISPASR_ERR_MODEL));
+        }
+        unlink(junk);
 
         crispasr_session* s = open_session(model, 1);
         REQUIRE(s != nullptr);

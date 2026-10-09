@@ -2671,11 +2671,11 @@ CA_EXPORT int crispasr_last_error_category(void) {
 static crispasr_session* session_open_explicit_impl(const char* model_path, const char* backend_name,
                                                     int n_threads);
 
-// F3: an open that fails past the argument and GPU checks (unknown backend, file
-// that does not load) is MODEL.
-// ponytail: a real Metal allocation failure inside a backend's init is reported as
-// MODEL too — only the simulated GPU open failure maps to GPU; mapping real Metal
-// failures needs a status from each backend's init.
+// F3 categories of a failed open: INPUT — NULL path or backend; MODEL — the file
+// is missing/unreadable or the backend is not known (checked before init); GPU —
+// the simulated GPU open failure, and a backend init that failed on a Metal open
+// (use_gpu=1 after GPU_INIT_FALLBACK), so S1 retries on CPU; the same init failure
+// on a CPU open is MODEL.
 CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_path, const char* backend_name,
                                                            int n_threads) {
     g_last_error_category = CRISPASR_ERR_MODEL;
@@ -2712,6 +2712,16 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
 
     if (g_open_use_gpu_tls)
         ensure_dynamic_backends_loaded();
+
+    if (FILE* f = fopen(model_path, "rb")) {
+        fclose(f);
+    } else {
+        g_last_error_category = CRISPASR_ERR_MODEL;
+        return nullptr;
+    }
+    // F3: from here on a NULL is a backend init failure (or an unknown backend,
+    // re-tagged MODEL at the end).
+    g_last_error_category = g_open_use_gpu_tls ? CRISPASR_ERR_GPU : CRISPASR_ERR_MODEL;
 
     auto* s = new crispasr_session();
     s->model_path = model_path;
@@ -4356,6 +4366,7 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
 #endif
 
     // Unknown or unsupported-in-this-build backend.
+    g_last_error_category = CRISPASR_ERR_MODEL;
     delete s;
     return nullptr;
 }
