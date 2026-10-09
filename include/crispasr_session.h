@@ -537,6 +537,16 @@ CRISPASR_SESSION_API int crispasr_session_hotwords_inserted(crispasr_session* s)
 // context actually created (CPU when Metal did not come up); other backends — the
 // requested device.
 CRISPASR_SESSION_API int crispasr_session_device(crispasr_session* s);
+// F3: category of the last open*/transcribe* error on this thread; reset to
+// CRISPASR_ERR_NONE by every successful call. A NULL from open* (no session) lands
+// here too. A failed call returns NULL — never an empty or partial result.
+enum crispasr_error_category {
+    CRISPASR_ERR_NONE = 0,
+    CRISPASR_ERR_GPU = 1,
+    CRISPASR_ERR_INPUT = 2,
+    CRISPASR_ERR_MODEL = 3
+};
+CRISPASR_SESSION_API int crispasr_last_error_category(void);
 
 // Source separation: split audio into N stems (drums, bass, other, vocals).
 // Input: stereo interleaved PCM at the model's native rate (44100 Hz for htdemucs).

@@ -449,9 +449,11 @@ void append_window_seg(parakeet_result* r, const lf_window& w, std::vector<parak
 // graph on ctx->backend (CUDA/Vulkan default), so pipelining is disabled when
 // parakeet_decode_uses_backend() says so. CRISPASR_PARAKEET_PIPELINE=0/1
 // forces it off/on.
+// Context-Assist (F3): a window whose encode or decode fails sets `failed` and the
+// result is empty — no partial text from the windows that did succeed.
 std::vector<parakeet_seg> transcribe_longform(parakeet_context* ctx, const float* samples, int n_samples,
                                               int64_t t_offset_cs, int cap_samples,
-                                              const parakeet_orchestrate_opts& opts) {
+                                              const parakeet_orchestrate_opts& opts, bool& failed) {
     std::vector<parakeet_seg> out;
     const std::vector<lf_window> plan = plan_longform_windows(samples, n_samples, t_offset_cs, cap_samples);
     if (plan.empty())
@@ -470,7 +472,12 @@ std::vector<parakeet_seg> transcribe_longform(parakeet_context* ctx, const float
 
     if (!pipeline) {
         for (const auto& w : plan) {
-            append_window_seg(parakeet_transcribe_ex(ctx, samples + w.ext_s, w.ext_e - w.ext_s, w.ext_t0), w, out);
+            parakeet_result* wr = parakeet_transcribe_ex(ctx, samples + w.ext_s, w.ext_e - w.ext_s, w.ext_t0);
+            if (!wr) {
+                failed = true;
+                return {};
+            }
+            append_window_seg(wr, w, out);
             report(w);
         }
         return out;
@@ -509,14 +516,27 @@ std::vector<parakeet_seg> transcribe_longform(parakeet_context* ctx, const float
             q.pop_front();
             cv_full.notify_one();
         }
+        // Context-Assist (F3): a failed window fails the call; keep draining the
+        // queue so the producer can finish and be joined.
+        // ponytail: the producer still encodes the remaining windows after a
+        // failure; add a stop flag if a failing long recording must abort fast.
         if (it.buf) {
-            append_window_seg(parakeet_decode_frames(ctx, it.buf, it.T_enc, it.d_model, plan[i].ext_t0), plan[i], out);
+            parakeet_result* wr =
+                failed ? nullptr : parakeet_decode_frames(ctx, it.buf, it.T_enc, it.d_model, plan[i].ext_t0);
+            if (wr)
+                append_window_seg(wr, plan[i], out);
+            else
+                failed = true;
             free(it.buf);
-        } // else: encode failed for this window; keep going, order intact
+        } else {
+            failed = true;
+        }
         report(plan[i]);
     }
 
     producer.join();
+    if (failed)
+        out.clear();
     return out;
 }
 
@@ -697,10 +717,15 @@ struct enc_progress_bridge {
 
 std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, const float* samples, int n_samples,
                                                        int64_t t_offset_cs, bool is_ja,
-                                                       const parakeet_orchestrate_opts& opts) {
+                                                       const parakeet_orchestrate_opts& opts, bool* failed) {
     std::vector<parakeet_seg> out;
     if (!ctx || !samples || n_samples <= 0)
         return out;
+    auto fail = [&] {
+        if (failed)
+            *failed = true;
+        return std::vector<parakeet_seg>{};
+    };
 
     const int SR = 16000;
 
@@ -753,7 +778,12 @@ std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, co
     // are independent: the window is a throughput knob, gap_fill_segments is
     // what makes coverage robust.
     if (strat == parakeet_strategy::LONGFORM) {
-        out = transcribe_longform(ctx, samples, n_samples, t_offset_cs, rs.longform_window_s * SR, opts);
+        if (!opts.no_prints)
+            fprintf(stderr, "crispasr[parakeet]: route=longform window=%ds\n", rs.longform_window_s);
+        bool lf_failed = false;
+        out = transcribe_longform(ctx, samples, n_samples, t_offset_cs, rs.longform_window_s * SR, opts, lf_failed);
+        if (lf_failed) // before gap-fill: it must not rebuild text around the failed window
+            return fail();
         if (repair)
             gap_fill_segments(ctx, samples, n_samples, t_offset_cs, out, kParakeetBoundedWindowS, kParakeetGapFillMinCs,
                               opts.no_prints);
@@ -762,6 +792,9 @@ std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, co
 
     parakeet_result* r = nullptr;
     enc_progress_bridge bridge{&opts};
+    if (!opts.no_prints)
+        fprintf(stderr, "crispasr[parakeet]: route=%s\n",
+                strat == parakeet_strategy::SINGLE_PASS ? "single-pass" : "streamed");
     if (strat == parakeet_strategy::SINGLE_PASS) {
         // Issue #257: single-pass full attention is O(T^2); a VRAM-limited GPU
         // can fail the encode alloc → null → empty transcript. Fall back to the
@@ -785,8 +818,8 @@ std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, co
                                                   stream_overlap_s,
                                                   opts.on_progress ? &enc_progress_bridge::thunk : nullptr, &bridge);
     }
-    if (!r)
-        return out;
+    if (!r) // Context-Assist (F3): the encode failed (single-pass and its streamed fallback)
+        return fail();
     out.push_back(result_to_seg(r, t_offset_cs));
     parakeet_result_free(r);
     if (repair)

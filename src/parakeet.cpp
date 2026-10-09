@@ -4272,6 +4272,10 @@ extern "C" struct parakeet_result* parakeet_transcribe_streamed_progress(
         // Encode this mel chunk
         int T_enc = 0;
         auto enc = parakeet_encode_mel(ctx, mel_full.data() + (size_t)mel_offset * n_mels, n_mels, chunk_T, &T_enc);
+        // Context-Assist (F3): a window that fails to encode fails the whole call —
+        // decoding the windows around it would return partial text as a success.
+        if (enc.empty())
+            return nullptr;
         // Issue #385: a window that fails to encode (or contributes no frames
         // after the overlap skip) still has to REPORT, or a caller's progress
         // bar stalls short of the end. So the append is nested rather than

@@ -2659,13 +2659,43 @@ static void set_simulated_backend_fault(crispasr_session* s, int fault) {
     (void)fault;
 }
 
+// Context-Assist (F3): category of the last failed open*/transcribe* on this
+// thread (crispasr_error_category). Each entry point sets it on failure and resets
+// it to NONE on success.
+static thread_local int g_last_error_category = CRISPASR_ERR_NONE;
+
+CA_EXPORT int crispasr_last_error_category(void) {
+    return g_last_error_category;
+}
+
+static crispasr_session* session_open_explicit_impl(const char* model_path, const char* backend_name,
+                                                    int n_threads);
+
+// F3: an open that fails past the argument and GPU checks (unknown backend, file
+// that does not load) is MODEL.
+// ponytail: a real Metal allocation failure inside a backend's init is reported as
+// MODEL too — only the simulated GPU open failure maps to GPU; mapping real Metal
+// failures needs a status from each backend's init.
 CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_path, const char* backend_name,
                                                            int n_threads) {
-    if (!model_path || !backend_name)
-        return nullptr;
+    g_last_error_category = CRISPASR_ERR_MODEL;
+    crispasr_session* s = session_open_explicit_impl(model_path, backend_name, n_threads);
+    if (s)
+        g_last_error_category = CRISPASR_ERR_NONE;
+    return s;
+}
 
-    if (simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_OPEN_FAILURE"))
+static crispasr_session* session_open_explicit_impl(const char* model_path, const char* backend_name,
+                                                    int n_threads) {
+    if (!model_path || !backend_name) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
+    }
+
+    if (simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_OPEN_FAILURE")) {
+        g_last_error_category = CRISPASR_ERR_GPU;
+        return nullptr;
+    }
     if (simulate_on_gpu_open("CRISPASR_SIMULATE_HANG_OPEN"))
         simulate_hang();
     const int call_fault = simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_COMPUTE_FAILURE") ? 1
@@ -4331,8 +4361,11 @@ CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_pat
 }
 
 CA_EXPORT crispasr_session* crispasr_session_open(const char* model_path, int n_threads) {
-    if (!model_path)
+    if (!model_path) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
+    }
+    g_last_error_category = CRISPASR_ERR_MODEL; // backend not detected from the file
     char detected[64] = {0};
     if (crispasr_detect_backend_from_gguf(model_path, detected, (int)sizeof(detected)) <= 0) {
         // GGUF detection failed — check if this is a whisper GGML file
@@ -4388,8 +4421,11 @@ struct crispasr_open_params_v1 {
 
 CA_EXPORT crispasr_session* crispasr_session_open_with_params(const char* model_path, const char* backend_name,
                                                               const crispasr_open_params_v1* params) {
-    if (!model_path)
+    if (!model_path) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
+    }
+    g_last_error_category = CRISPASR_ERR_MODEL; // backend not detected from the file
 
     // Default values mirror the pre-0.6.1 behaviour so a NULL params
     // (or one whose version we don't recognise yet) lands you in the
@@ -5379,8 +5415,10 @@ static crispasr_session_result* transcribe_autochunk(crispasr_session* s, const 
     for (const auto& range : ranges) {
         const size_t b = range.first, e = range.second;
         crispasr_session_result* part = transcribe_single(s, pcm + b, (int)(e - b), language);
-        if (!part)
-            continue;
+        if (!part) { // Context-Assist (F3): a failed piece fails the call, no partial text
+            delete merged;
+            return nullptr;
+        }
         if (merged->backend.empty())
             merged->backend = part->backend;
         const int64_t off_cs = (int64_t)((double)b / SR * 100.0);
@@ -5539,12 +5577,28 @@ static bool session_language_satisfiable(const crispasr_session* s, const char* 
     return same;
 }
 
+static crispasr_session_result* session_transcribe_lang_impl(crispasr_session* s, const float* pcm, int n_samples,
+                                                             const char* language);
+
+// Context-Assist (F3): every transcribe entry point routes through here. A failed
+// call is NULL with a category — never an empty or partial result. A backend
+// failure is GPU when the session computes on Metal (crispasr_session_device), MODEL
+// on CPU (S1 treats every CPU failure alike).
 CA_EXPORT crispasr_session_result* crispasr_session_transcribe_lang(crispasr_session* s, const float* pcm,
                                                                     int n_samples, const char* language) {
-    if (!s || !pcm || n_samples <= 0)
+    if (!s || !pcm || n_samples <= 0 || !session_language_satisfiable(s, language)) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
-    if (!session_language_satisfiable(s, language))
-        return nullptr;
+    }
+    crispasr_session_result* r = session_transcribe_lang_impl(s, pcm, n_samples, language);
+    g_last_error_category = r                                 ? CRISPASR_ERR_NONE
+                            : crispasr_session_device(s) == 1 ? CRISPASR_ERR_GPU
+                                                              : CRISPASR_ERR_MODEL;
+    return r;
+}
+
+static crispasr_session_result* session_transcribe_lang_impl(crispasr_session* s, const float* pcm, int n_samples,
+                                                             const char* language) {
 
     // Context-Assist (F5): the simulated fault covers this whole call (every
     // window, chunk and fallback inside it) and is disarmed for later calls.
@@ -5834,8 +5888,10 @@ static void parakeet_result_to_session_segs(const parakeet_result* pr, int seg_s
 CA_EXPORT crispasr_session_result* crispasr_session_transcribe_chunked_lang(crispasr_session* s, const float* pcm,
                                                                             int n_samples, int chunk_seconds,
                                                                             int overlap_seconds, const char* language) {
-    if (!s || !pcm || n_samples <= 0)
+    if (!s || !pcm || n_samples <= 0) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
+    }
     // Set the per-call override and restore it on every exit path so a
     // forced-chunked call never leaks into later auto-path transcribes.
     const int saved_chunk = s->parakeet_force_chunk_seconds;
@@ -6127,7 +6183,13 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
             // thread, inside this call, so capturing `s` is safe.
             oo.on_progress = [s](int done, int total) { session_report_progress(s, done, total); };
             scoped_session_progress prog;
-            for (auto& ps : parakeet_transcribe_segments(s->parakeet_ctx, pcm, n_samples, 0, is_ja, oo)) {
+            bool failed = false;
+            auto segs = parakeet_transcribe_segments(s->parakeet_ctx, pcm, n_samples, 0, is_ja, oo, &failed);
+            if (failed) { // Context-Assist (F3): encode failure is an error, not an empty or partial result
+                delete r;
+                return nullptr;
+            }
+            for (auto& ps : segs) {
                 crispasr_session_seg seg;
                 seg.text = std::move(ps.text);
                 seg.t0 = ps.t0;
@@ -8102,8 +8164,10 @@ CA_EXPORT crispasr_session_result* crispasr_session_transcribe_vad_lang(crispasr
                                                                         const char* vad_model_path,
                                                                         const crispasr_vad_abi_opts* opts_or_null,
                                                                         const char* language) {
-    if (!s || !pcm || n_samples <= 0 || sample_rate <= 0)
+    if (!s || !pcm || n_samples <= 0 || sample_rate <= 0) {
+        g_last_error_category = CRISPASR_ERR_INPUT;
         return nullptr;
+    }
 
     // Fill a library opts struct from the ABI struct, or use defaults.
     crispasr_vad_options opts;
