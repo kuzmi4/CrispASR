@@ -6190,7 +6190,15 @@ foreach(backend parakeet gigaam)
         LABELS "live;context-assist" SKIP_RETURN_CODE 4)
 endforeach()
 
+# ─── test - vad - failure — Context-Assist: a failed VAD window is an error (T3.1, F6)
+add_executable(test-vad-failure test_vad_failure.cpp)
+target_include_directories(test-vad-failure PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(test-vad-failure PRIVATE Catch2::Catch2WithMain crispasr-lib)
+add_test(NAME test-vad-failure COMMAND test-vad-failure "[vad_failure]"
+         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(test-vad-failure PROPERTIES LABELS "unit;context-assist")
+
 # Context-Assist fork: build only the tests labelled `context-assist` (CI job `test`).
 add_custom_target(context-assist-tests)
 add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy
-    test-session-contract-live)
+    test-session-contract-live test-vad-failure)

@@ -5660,6 +5660,20 @@ struct whisper_vad_context* whisper_vad_init_with_params(struct whisper_model_lo
     return vctx;
 }
 
+#ifdef CRISPASR_BUILD_TESTS
+// Test-build only (not in the release archive), F6 test seam for the next detect
+// calls: fail the compute-graph allocation, and/or replace the probability read
+// for window `nonfinite_window` with `value` (NaN/Inf); -1 = off.
+static bool g_vad_test_fail_alloc = false;
+static int g_vad_test_nonfinite_window = -1;
+static float g_vad_test_nonfinite_value = 0.0f;
+extern "C" CRISPASR_API void crispasr_test_vad_inject(bool fail_alloc, int nonfinite_window, float value) {
+    g_vad_test_fail_alloc = fail_alloc;
+    g_vad_test_nonfinite_window = nonfinite_window;
+    g_vad_test_nonfinite_value = value;
+}
+#endif
+
 bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* samples, int n_samples) {
     int n_chunks = n_samples / vctx->n_window;
     if (n_samples % vctx->n_window != 0) {
@@ -5693,8 +5707,13 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
     // accumulation across repeated VAD runs (fixes #132 70x regression).
     ggml_backend_sched_reset(sched);
 
-    if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+    bool allocated = ggml_backend_sched_alloc_graph(sched, gf);
+#ifdef CRISPASR_BUILD_TESTS
+    allocated = allocated && !g_vad_test_fail_alloc;
+#endif
+    if (!allocated) {
         CRISPASR_LOG_ERROR("%s: failed to allocate the compute buffer\n", __func__);
+        vctx->probs.clear();
         return false;
     }
 
@@ -5724,6 +5743,19 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
 
     const int64_t t_start_vad_us = ggml_time_us();
 
+    // Context-Assist (F6): a failed or non-finite window fails the whole pass —
+    // no partial or stale probabilities become segments (false → segments NULL).
+    // CRISPASR_VAD_SIMULATE_COMPUTE_FAILURE_AT_WINDOW=<i> (0-based) fails window i
+    // through the real compute-status check below.
+    const char* sim_env = getenv("CRISPASR_VAD_SIMULATE_COMPUTE_FAILURE_AT_WINDOW");
+    const int sim_fail_window = sim_env && *sim_env ? atoi(sim_env) : -1;
+    auto fail_pass = [&](const char* why, int i) {
+        CRISPASR_LOG_ERROR("%s: %s at window %d\n", __func__, why, i);
+        vctx->probs.clear();
+        ggml_backend_sched_reset(sched);
+        return false;
+    };
+
     for (int i = 0; i < n_chunks; i++) {
         const int idx_start = i * vctx->n_window;
         const int idx_end = std::min(idx_start + vctx->n_window, n_samples);
@@ -5744,13 +5776,20 @@ bool whisper_vad_detect_speech(struct whisper_vad_context* vctx, const float* sa
         ggml_backend_tensor_set(frame, window.data(), 0, ggml_nelements(frame) * sizeof(float));
 
         // Direct graph compute — no scheduler, no threadpool churn.
-        if (core_cpu_backend::compute_planned(gf, &cplan, 1) != GGML_STATUS_SUCCESS) {
-            CRISPASR_LOG_ERROR("%s: failed to compute VAD graph\n", __func__);
-            break;
-        }
+        ggml_status status = core_cpu_backend::compute_planned(gf, &cplan, 1);
+        if (i == sim_fail_window)
+            status = GGML_STATUS_FAILED;
+        if (status != GGML_STATUS_SUCCESS)
+            return fail_pass("failed to compute VAD graph", i);
 
         // Get the probability for this chunk.
         ggml_backend_tensor_get(prob, &vctx->probs[i], 0, sizeof(float));
+#ifdef CRISPASR_BUILD_TESTS
+        if (i == g_vad_test_nonfinite_window)
+            vctx->probs[i] = g_vad_test_nonfinite_value;
+#endif
+        if (!std::isfinite(vctx->probs[i]))
+            return fail_pass("non-finite VAD probability", i);
         if (carry)
             std::copy(window.end() - carry, window.end(), window.begin());
 
