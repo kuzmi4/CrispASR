@@ -23,6 +23,13 @@
 // single-pass with its streamed fallback (#257), STREAMED, LONGFORM — without
 // partial text; the route is confirmed by the `crispasr[parakeet]: route=` line.
 // A failed GigaAM auto-chunk piece (> 30 s) fails the whole call.
+//
+// F4 (needs context-assist/patches/ggml-metal-cache-flush.patch in ggml): a helper
+// process with GGML_METAL_PIPELINE_CACHE = an empty directory transcribes on Metal,
+// calls crispasr_metal_pipeline_cache_flush → 0, and the archive is in the
+// directory while it still lives (killed afterwards, so ggml_metal_device_free does
+// not write it at exit). A CPU-only helper → 0, the directory stays empty and its
+// stderr has no Metal init lines. Without the patch the Metal case gets -1.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -31,6 +38,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
 #include <sstream>
@@ -394,6 +402,116 @@ Outcome run_helper(const std::string& model, int use_gpu, const char* var, bool 
     return Outcome::hung;
 }
 
+struct FlushRun {
+    int rc = -100;           // the helper's flush return code (100 — transcription failed)
+    int archives = 0;        // *.archive files in the cache directory while the helper lived
+    std::string err;         // the helper's stderr
+};
+
+// Runs the helper in `flush` mode with GGML_METAL_PIPELINE_CACHE = a new empty
+// directory; waits for its flush code, counts the archives, then kills it.
+FlushRun run_flush_helper(const std::string& model, int use_gpu) {
+    char dir[] = "/tmp/ca-metal-cache-XXXXXX";
+    REQUIRE(mkdtemp(dir) != nullptr);
+    char marker[] = "/tmp/ca-session-contract-XXXXXX";
+    int fd = mkstemp(marker);
+    REQUIRE(fd >= 0);
+    close(fd);
+    unlink(marker);
+    char errlog[] = "/tmp/ca-session-stderr-XXXXXX";
+    fd = mkstemp(errlog);
+    REQUIRE(fd >= 0);
+    close(fd);
+
+    std::vector<std::string> env_s;
+    for (char** e = environ; *e; e++) {
+        bool drop = std::strncmp(*e, "GGML_METAL_PIPELINE_CACHE", 25) == 0;
+        for (const char* v : kVars)
+            drop |= std::strncmp(*e, v, std::strlen(v)) == 0 && (*e)[std::strlen(v)] == '=';
+        if (!drop)
+            env_s.push_back(*e);
+    }
+    env_s.push_back(std::string("GGML_METAL_PIPELINE_CACHE=") + dir);
+    std::vector<char*> envp;
+    for (auto& e : env_s)
+        envp.push_back(e.data());
+    envp.push_back(nullptr);
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 2, errlog, O_WRONLY | O_TRUNC, 0644);
+    std::string gpu = std::to_string(use_gpu);
+    char flush_arg[] = "flush";
+    std::vector<char*> argv = {const_cast<char*>(CA_SESSION_CONTRACT_HELPER), const_cast<char*>(model.c_str()),
+                               gpu.data(), const_cast<char*>(kAudio), marker, flush_arg, nullptr};
+    pid_t pid = 0;
+    const int spawned = posix_spawn(&pid, CA_SESSION_CONTRACT_HELPER, &fa, nullptr, argv.data(), envp.data());
+    posix_spawn_file_actions_destroy(&fa);
+    REQUIRE(spawned == 0);
+
+    FlushRun run;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+    int status = 0;
+    bool exited = false;
+    for (;;) {
+        std::ifstream m(marker);
+        if (m >> run.rc)
+            break;
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            exited = true;
+            break;
+        }
+        if (std::chrono::steady_clock::now() > deadline)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    const bool alive = !exited && waitpid(pid, &status, WNOHANG) == 0;
+    if (DIR* d = opendir(dir)) {
+        while (dirent* e = readdir(d)) {
+            const std::string name = e->d_name;
+            if (name.size() > 8 && name.compare(name.size() - 8, 8, ".archive") == 0)
+                run.archives++;
+        }
+        closedir(d);
+    }
+    if (!exited) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+    }
+    std::ifstream e(errlog);
+    std::stringstream ss;
+    ss << e.rdbuf();
+    run.err = ss.str();
+    unlink(marker);
+    unlink(errlog);
+    std::string rm = std::string("rm -rf ") + dir;
+    std::system(rm.c_str());
+    CHECK(alive); // the archive was counted while the process lived
+    return run;
+}
+
+void run_flush_cases(const char* model_var) {
+    const std::string model = model_path(model_var);
+    auto metal_init = [](const std::string& err) {
+        return err.find("ggml_metal_init") != std::string::npos || err.find("ggml_metal_device") != std::string::npos;
+    };
+
+    SECTION("F4: after a Metal transcription the flush writes the archive in a live process") {
+        const FlushRun run = run_flush_helper(model, 1);
+        INFO(run.err);
+        CHECK(run.rc == 0); // -1 here: the ggml patch is not applied
+        CHECK(run.archives == 1);
+        CHECK(metal_init(run.err)); // the CPU case below relies on these lines
+    }
+    SECTION("F4: a CPU-only process gets 0 and Metal is not brought up") {
+        const FlushRun run = run_flush_helper(model, 0);
+        INFO(run.err);
+        CHECK(run.rc == 0);
+        CHECK(run.archives == 0);
+        CHECK_FALSE(metal_init(run.err));
+    }
+}
+
 void run_hang_cases(const char* model_var) {
     const std::string model = model_path(model_var);
     bool opened = false;
@@ -440,4 +558,12 @@ TEST_CASE("CRISPASR_SIMULATE_HANG_* on Parakeet v3", "[session-contract][parakee
 
 TEST_CASE("CRISPASR_SIMULATE_HANG_* on GigaAM e2e_rnnt", "[session-contract][gigaam]") {
     run_hang_cases("CRISPASR_MODEL_GIGAAM");
+}
+
+TEST_CASE("crispasr_metal_pipeline_cache_flush on Parakeet v3", "[session-contract][parakeet]") {
+    run_flush_cases("CRISPASR_MODEL_PARAKEET");
+}
+
+TEST_CASE("crispasr_metal_pipeline_cache_flush on GigaAM e2e_rnnt", "[session-contract][gigaam]") {
+    run_flush_cases("CRISPASR_MODEL_GIGAAM");
 }

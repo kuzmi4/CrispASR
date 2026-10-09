@@ -547,6 +547,10 @@ enum crispasr_error_category {
     CRISPASR_ERR_MODEL = 3
 };
 CRISPASR_SESSION_API int crispasr_last_error_category(void);
+// F4: 0 — archive written or cache disabled, -1 — write failed. Writes the Metal
+// pipeline-cache archive without exiting the process; call only while no
+// transcription runs. Without a Metal session in this process — 0, Metal untouched.
+CRISPASR_SESSION_API int crispasr_metal_pipeline_cache_flush(void);
 
 // Source separation: split audio into N stems (drums, bass, other, vocals).
 // Input: stereo interleaved PCM at the model's native rate (44100 Hz for htdemucs).

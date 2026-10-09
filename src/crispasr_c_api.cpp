@@ -2671,6 +2671,21 @@ CA_EXPORT int crispasr_last_error_category(void) {
 static crispasr_session* session_open_explicit_impl(const char* model_path, const char* backend_name,
                                                     int n_threads);
 
+// Context-Assist (F4): set once a session came up on Metal. Until then
+// crispasr_metal_pipeline_cache_flush does not touch the ggml registry —
+// ggml_backend_metal_reg() would create the Metal devices after a CPU fallback.
+static std::atomic<bool> g_metal_session_opened{false};
+
+CA_EXPORT int crispasr_metal_pipeline_cache_flush(void) {
+    if (!g_metal_session_opened.load())
+        return 0;
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("MTL");
+    auto flush = reg ? (int (*)(void))ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_pipeline_cache_flush")
+                     : nullptr;
+    // A Metal session without the ggml patch (context-assist/patches) has nothing to call.
+    return flush ? flush() : -1;
+}
+
 // F3 categories of a failed open: INPUT — NULL path or backend; MODEL — the file
 // is missing/unreadable or the backend is not known (checked before init); GPU —
 // the simulated GPU open failure, and a backend init that failed on a Metal open
@@ -2682,6 +2697,8 @@ CA_EXPORT crispasr_session* crispasr_session_open_explicit(const char* model_pat
     crispasr_session* s = session_open_explicit_impl(model_path, backend_name, n_threads);
     if (s)
         g_last_error_category = CRISPASR_ERR_NONE;
+    if (s && crispasr_session_device(s) == 1)
+        g_metal_session_opened.store(true);
     return s;
 }
 
