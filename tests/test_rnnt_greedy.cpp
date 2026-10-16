@@ -204,15 +204,21 @@ TEST_CASE("rnnt_greedy_loop: two equal tokens in a row are both emitted", "[rnnt
 
 // ---- Term hints (S6 § «Подсказки в greedy GigaAM») ----
 
-TEST_CASE("rnnt_greedy_loop hints: the trie moves argmax onto the form", "[rnnt_greedy]") {
-    // Without hints: 3, then 4. Form [1 2] at boost 4: 1 (0+4 > 1), then the
-    // continuation 2 (0 + 4 + end boost 4 > 1).
-    std::vector<std::vector<float>> frame = {row(3, 1.0f, 0.5f), row(4, 1.0f, 0.5f)};
-    frame[0][1] = 0.0f;
+TEST_CASE("rnnt_greedy_loop hints: the trie finishes a form the decoder started", "[rnnt_greedy]") {
+    // Without hints: 1, then 4. Form [1 2] at boost 4: the decoder emits 1 on
+    // its own, then the continuation 2 (0 + 4 + end boost 4 > 1) beats 4.
+    std::vector<std::vector<float>> frame = {row(1, 1.0f, 0.5f), row(4, 1.0f, 0.5f)};
     table_model plain{{frame}};
-    CHECK(ids(run(plain, kNoHints, 4.0f)) == std::vector<int>{3, 4});
+    CHECK(ids(run(plain, kNoHints, 4.0f)) == std::vector<int>{1, 4});
     table_model biased{{frame}};
     CHECK(ids(run(biased, trie_of({{1, 2}}, 4.0f), 4.0f)) == std::vector<int>{1, 2});
+}
+
+TEST_CASE("rnnt_greedy_loop hints: the trie does not start a form", "[rnnt_greedy]") {
+    // 3 wins unbiased; the form [1 2] starts with 1 at 0 — not boosted, 3 stays.
+    std::vector<std::vector<float>> frame = {row(3, 1.0f, 0.5f), row(4, 1.0f, 0.5f)};
+    table_model biased{{frame}};
+    CHECK(ids(run(biased, trie_of({{1, 2}}, 4.0f), 4.0f)) == std::vector<int>{3, 4});
 }
 
 TEST_CASE("rnnt_greedy_loop hints: blank does not move the match", "[rnnt_greedy]") {
@@ -222,22 +228,14 @@ TEST_CASE("rnnt_greedy_loop hints: blank does not move the match", "[rnnt_greedy
     CHECK(ids(run(m, trie_of({{1, 2}}, 4.0f), 4.0f)) == std::vector<int>{1, 2});
 }
 
-TEST_CASE("rnnt_greedy_loop hints: blank above every biased logit emits nothing", "[rnnt_greedy]") {
-    // Forms [1 2 3] and [2 3]. After 1 2 the bias on 3 sums the fail chain:
-    // node(1 2) → 3: 4 + end 8 (own 4 + suffix [2 3] 4); node(2) → 3: 4 + 4.
-    // Total 20 > 12 of the current node alone.
+TEST_CASE("rnnt_greedy_loop hints: blank that wins unbiased stays blank", "[rnnt_greedy]") {
+    // Forms [1 2 3] and [2 3]. After 1 2 the bias on 3 would sum to 20, but
+    // frame 1 is a pause: blank at 0.5 beats every unbiased logit, so the bias
+    // is not applied and nothing is emitted — a hint never turns a pause into
+    // a word.
     const Trie trie = trie_of({{1, 2, 3}, {2, 3}}, 4.0f);
-    auto frames = [](float blank) {
-        return std::vector<std::vector<std::vector<float>>>{
-            {row(1, 100.0f, 0.0f), row(2, 100.0f, 0.0f), row(0, 0.0f, 1000.0f)}, {row(0, 0.0f, blank)}};
-    };
-    table_model above{frames(20.5f)};
-    CHECK(ids(run(above, trie, 4.0f)) == std::vector<int>{1, 2});
-    table_model below{frames(19.5f)};
-    const auto out = run(below, trie, 4.0f);
-    REQUIRE(out.size() >= 3);
-    CHECK(out[2].id == 3);
-    CHECK(out[2].t == 1);
+    table_model m{{{row(1, 100.0f, 0.0f), row(2, 100.0f, 0.0f), row(0, 0.0f, 1000.0f)}, {row(0, 0.0f, 0.5f)}}};
+    CHECK(ids(run(m, trie, 4.0f)) == std::vector<int>{1, 2});
 }
 
 TEST_CASE("rnnt_greedy_loop hints: an empty trie is bit for bit the unbiased loop", "[rnnt_greedy]") {

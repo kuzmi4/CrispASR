@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "core/asr_context_bias.h"
 
+#include <algorithm>
 #include <numeric>
 #include <vector>
 #include <string>
@@ -27,7 +28,7 @@ TEST_CASE("empty trie", "[context_bias]") {
 
     MatchState st;
     std::vector<float> logits(256, 0.0f);
-    apply_bias(trie, st, logits.data(), 256, 2.0f);
+    apply_bias(trie, st, logits.data(), 256, 2.0f, -1);
     // All logits should remain zero — no bias applied
     float sum = std::accumulate(logits.begin(), logits.end(), 0.0f);
     REQUIRE(sum == 0.0f);
@@ -44,25 +45,24 @@ TEST_CASE("single hotword insert + match", "[context_bias]") {
     const int V = 256;
     const float boost = 2.0f;
 
-    // At root: only token 99 ('c') should be boosted
+    // At root nothing is boosted: a hint does not start a hotword
     std::vector<float> logits(V, 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
-    REQUIRE(logits[99] > 0.0f); // 'c' boosted
-    REQUIRE(logits[97] == 0.0f); // 'a' not boosted yet
-    REQUIRE(logits[0] == 0.0f);  // unrelated token
+    apply_bias(trie, st, logits.data(), V, boost, -1);
+    REQUIRE(logits[99] == 0.0f); // 'c' not boosted
+    REQUIRE(logits[97] == 0.0f);
 
     // Advance with 'c' (99)
     advance(trie, st, 99);
     std::fill(logits.begin(), logits.end(), 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
+    apply_bias(trie, st, logits.data(), V, boost, -1);
     REQUIRE(logits[97] > 0.0f); // 'a' boosted (continues "ca")
-    // 'c' is also boosted via failure link → root → 'c' (new "cat" start)
-    REQUIRE(logits[99] > 0.0f);
+    // a new "cat" start via the failure link to the root is not boosted
+    REQUIRE(logits[99] == 0.0f);
 
     // Advance with 'a' (97)
     advance(trie, st, 97);
     std::fill(logits.begin(), logits.end(), 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
+    apply_bias(trie, st, logits.data(), V, boost, -1);
     // 't' (116) should get boost + endpoint boost (5.0)
     REQUIRE(logits[116] >= boost + 5.0f);
 
@@ -81,20 +81,20 @@ TEST_CASE("multiple hotwords with overlap", "[context_bias]") {
     const int V = 10;
     const float boost = 1.0f;
 
-    // Root: token 1 ('a') should be boosted
+    // Root: nothing is boosted
     std::vector<float> logits(V, 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
-    REQUIRE(logits[1] > 0.0f);
+    apply_bias(trie, st, logits.data(), V, boost, -1);
+    REQUIRE(logits[1] == 0.0f);
 
     advance(trie, st, 1);
     std::fill(logits.begin(), logits.end(), 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
+    apply_bias(trie, st, logits.data(), V, boost, -1);
     // Token 2 ('b') should be boosted
     REQUIRE(logits[2] > 0.0f);
 
     advance(trie, st, 2);
     std::fill(logits.begin(), logits.end(), 0.0f);
-    apply_bias(trie, st, logits.data(), V, boost);
+    apply_bias(trie, st, logits.data(), V, boost, -1);
     // Token 3 ('c') should be boosted (continues "abc")
     REQUIRE(logits[3] > 0.0f);
 }
@@ -114,10 +114,10 @@ TEST_CASE("mismatch resets via failure links", "[context_bias]") {
     advance(trie, st, 9);
     REQUIRE(st.node == 0); // back at root
 
-    // Token 1 should still be boostable from root
+    // Back at the root nothing is boosted until the decoder starts the form
     std::vector<float> logits(10, 0.0f);
-    apply_bias(trie, st, logits.data(), 10, 1.0f);
-    REQUIRE(logits[1] > 0.0f);
+    apply_bias(trie, st, logits.data(), 10, 1.0f, -1);
+    REQUIRE(logits[1] == 0.0f);
 }
 
 TEST_CASE("failure link suffix match", "[context_bias]") {
@@ -187,7 +187,7 @@ TEST_CASE("build_trie with boost suffix", "[context_bias]") {
 
     // At "ca" node, 't' should get boost + 10.0 endpoint
     std::vector<float> logits(256, 0.0f);
-    apply_bias(trie, st, logits.data(), 256, 1.5f);
+    apply_bias(trie, st, logits.data(), 256, 1.5f, -1);
     REQUIRE(logits['t'] >= 11.5f); // 1.5 prefix + 10.0 endpoint
 }
 
@@ -200,9 +200,9 @@ TEST_CASE("single-token hotword", "[context_bias]") {
 
     MatchState st;
     std::vector<float> logits(100, 0.0f);
-    apply_bias(trie, st, logits.data(), 100, 1.0f);
-    // Token 42 should be boosted with prefix_boost + endpoint_boost
-    REQUIRE(logits[42] >= 6.0f); // 1.0 + 5.0
+    apply_bias(trie, st, logits.data(), 100, 1.0f, -1);
+    // A one-token hotword starts at the root, so it is never boosted
+    REQUIRE(logits[42] == 0.0f);
 }
 
 TEST_CASE("token ID out of vocab range ignored", "[context_bias]") {
@@ -212,7 +212,7 @@ TEST_CASE("token ID out of vocab range ignored", "[context_bias]") {
 
     MatchState st;
     std::vector<float> logits(100, 0.0f);
-    apply_bias(trie, st, logits.data(), 100, 1.0f);
+    apply_bias(trie, st, logits.data(), 100, 1.0f, -1);
     // Should not crash, and no logit should be modified
     float sum = std::accumulate(logits.begin(), logits.end(), 0.0f);
     REQUIRE(sum == 0.0f);
@@ -309,4 +309,32 @@ TEST_CASE("tokenize_spm_form: lone ▁ as the first piece drops the form", "[con
 TEST_CASE("tokenize_spm_form: case is kept", "[context_bias]") {
     REQUIRE(tok("Kafka") == std::vector<int32_t>{11, 12});
     REQUIRE(tok("kafka") == std::vector<int32_t>{13, 12});
+}
+
+TEST_CASE("blank gate: no bias when blank wins unbiased", "[context_bias]") {
+    Trie trie;
+    trie.insert({1, 2}, 5.0f);
+    trie.build_failure_links();
+    MatchState st;
+    advance(trie, st, 1); // the decoder started the form on its own
+    const int V = 10, blank = 9;
+
+    // Pause: blank is the unbiased argmax — logits stay untouched.
+    std::vector<float> pause(V, 0.0f);
+    pause[blank] = 0.5f;
+    apply_bias(trie, st, pause.data(), V, 4.0f, blank);
+    REQUIRE(pause[2] == 0.0f);
+
+    // Speech: another token wins — the continuation is boosted.
+    std::vector<float> speech(V, 0.0f);
+    speech[blank] = 0.5f;
+    speech[3] = 1.0f;
+    apply_bias(trie, st, speech.data(), V, 4.0f, blank);
+    REQUIRE(speech[2] > speech[3]);
+
+    // -1 disables the gate.
+    std::vector<float> off(V, 0.0f);
+    off[blank] = 0.5f;
+    apply_bias(trie, st, off.data(), V, 4.0f, -1);
+    REQUIRE(off[2] > off[blank]);
 }

@@ -9,9 +9,10 @@
 //   on_emit(tok)      — advances the predictor after a non-blank emission.
 //
 // Term hints: with a non-empty `trie` each step adds `apply_bias(…, boost)` to the
-// logits before argmax and a non-blank emission advances the match; `blank` does
-// not move it. The match state lives for one call (a form does not continue
-// across calls). An empty trie leaves the logits untouched.
+// logits before argmax — only continuations of a form the loop already started,
+// and not when blank wins (see `apply_bias`). A non-blank emission advances the
+// match; `blank` does not move it. The match state lives for one call (a form
+// does not continue across calls). An empty trie leaves the logits untouched.
 //
 // Header-only, no ggml dependency.
 
@@ -42,7 +43,7 @@ std::vector<emission> rnnt_greedy_loop(int T, int max_symbols, int blank_id, Joi
             joint(t, logits);
             const int C = (int)logits.size();
             if (hints)
-                core_context_bias::apply_bias(trie, st, logits.data(), C, boost);
+                core_context_bias::apply_bias(trie, st, logits.data(), C, boost, blank_id);
 
             int tok = 0;
             float best = logits[0];

@@ -1783,7 +1783,7 @@ static std::vector<parakeet_emitted_token> parakeet_tdt_decode(parakeet_context*
             // CTC-WS phrase boost on vocab logits (not duration logits)
             if (has_hotwords)
                 core_context_bias::apply_bias(ctx->hotword_trie, hw_state, logits.data(), n_vocab_blk,
-                                              ctx->hotword_boost);
+                                              ctx->hotword_boost, blank_id);
 
             if (crispasr_env::get("CRISPASR_PARAKEET_DEBUG") && total_steps < 5) {
                 // Show first few logits
@@ -2213,7 +2213,7 @@ static std::vector<parakeet_emitted_token> parakeet_tdt_beam_decode(parakeet_con
             // Hotword phrase boost on vocab logits
             if (has_hotwords)
                 core_context_bias::apply_bias(ctx->hotword_trie, h.hw_state, logits.data(), n_vocab_blk,
-                                              ctx->hotword_boost);
+                                              ctx->hotword_boost, blank_id);
 
             // Duration: always argmax
             int dur_id = 0;
@@ -2432,7 +2432,7 @@ static std::vector<parakeet_emitted_token> parakeet_rnnt_beam_decode(parakeet_co
                 joint_step(J, proj_e.data(), h.pred_out.data(), logits);
             if (has_hotwords)
                 core_context_bias::apply_bias(ctx->hotword_trie, h.hw_state, logits.data(), n_vocab_blk,
-                                              ctx->hotword_boost);
+                                              ctx->hotword_boost, blank_id);
 
             float max_logit = logits[0];
             for (int v = 1; v < n_vocab_blk; v++)
@@ -2951,7 +2951,7 @@ static std::vector<parakeet_emitted_token> parakeet_rnnt_decode(parakeet_context
                 joint_step(J, proj_e.data(), pred_out.data(), logits);
             if (has_hotwords)
                 core_context_bias::apply_bias(ctx->hotword_trie, hw_state, logits.data(), n_vocab_blk,
-                                              ctx->hotword_boost);
+                                              ctx->hotword_boost, blank_id);
 
             int tok = 0;
             float tok_lp = logits[0];
@@ -3035,7 +3035,7 @@ static std::vector<parakeet_emitted_token> parakeet_ctc_decode(parakeet_context*
         core_context_bias::MatchState hw_state;
         for (int t = 0; t < T_enc; t++) {
             float* row = all_logits.data() + (size_t)t * ctc_vocab;
-            core_context_bias::apply_bias(ctx->hotword_trie, hw_state, row, ctc_vocab, ctx->hotword_boost);
+            core_context_bias::apply_bias(ctx->hotword_trie, hw_state, row, ctc_vocab, ctx->hotword_boost, ctc_blank);
             // Advance hotword state with argmax token for next frame's bias
             int tok = (int)(std::max_element(row, row + ctc_vocab) - row);
             if (tok != ctc_blank)

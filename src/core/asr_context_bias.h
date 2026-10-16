@@ -103,19 +103,30 @@ inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
     st.node = (it != trie.nodes[cur].children.end()) ? it->second : 0;
 }
 
-// Apply bias to logits for the current frame. For each token_id that is
-// a valid next step in the trie (from the current state or any suffix
-// via failure links), add `boost` to logits[token_id].
+// Apply bias to logits for the current frame. For each token_id that
+// continues the current match (from the current node or any suffix via
+// failure links), add `boost` to logits[token_id].
 //
-// This is the "shallow fusion" step: tokens that continue a hotword
-// prefix get a log-prob boost, making them more likely to win argmax.
-inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, int n_vocab, float default_boost) {
-    if (trie.empty())
+// This is the "shallow fusion" step, with two limits (Context-Assist #103):
+//   - No start boost. Children of the root are never boosted: a hint helps
+//     the decoder finish a hotword it started on its own, it does not start
+//     one. Boosting first tokens on every frame (often single letters, ▁S,
+//     ▁П, or common starts like ▁Про) pulled fillers, pauses and ordinary
+//     words into hotword starts, and the predictor finished them with
+//     training-data prompts ("Субтитры делал …", "Продолжение следует…").
+//   - Blank gate. When `blank_id` is in range and blank already wins the
+//     unbiased argmax, the step is left untouched: the bias picks between
+//     words, it never turns a pause into a word. -1 disables the gate.
+// A hotword of a single token therefore gets no boost at all.
+inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, int n_vocab, float default_boost,
+                       int blank_id) {
+    if (trie.empty() || st.node == 0)
+        return;
+    if (blank_id >= 0 && blank_id < n_vocab && std::max_element(logits, logits + n_vocab) - logits == blank_id)
         return;
 
-    // Walk from current node + all failure-chain nodes, collect valid next tokens
-    int cur = st.node;
-    while (true) {
+    // Walk from the current node down the failure chain; the root is not boosted.
+    for (int cur = st.node; cur != 0; cur = trie.nodes[cur].fail) {
         for (const auto& [tid, child_idx] : trie.nodes[cur].children) {
             if (tid >= 0 && tid < n_vocab) {
                 // Boost = default_boost (for prefix continuation) + any
@@ -126,9 +137,6 @@ inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, in
                 logits[tid] += b;
             }
         }
-        if (cur == 0)
-            break;
-        cur = trie.nodes[cur].fail;
     }
 }
 
