@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 # Import the binding module
-sys.path.insert(0, str(Path(__file__).parent.parent / "python" / "crispasr"))
-import _binding
+sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+from crispasr import _binding
 
 
 class TestFunctionSignatures:
@@ -55,7 +55,7 @@ class TestFunctionSignatures:
             name = _binding.detect_backend_from_gguf(str(fixture))
         except OSError:
             pytest.skip("native crispasr library not built/loadable")
-        assert name == "vibevoice", f"expected 'vibevoice', got {name!r}"
+        assert name == "vibevoice-tts", f"expected 'vibevoice-tts', got {name!r}"
 
     def test_vad_span_dataclass(self):
         span = _binding.VadSpan(start=1.0, end=2.5)

@@ -1,8 +1,9 @@
 # Contributing — adding a new backend
 
-Adding a new ASR model to CrispASR is a focused exercise in five
-files. The worked examples to copy from are the existing
-`crispasr_backend_*.cpp` adapters.
+Use the existing runtimes and `crispasr_backend_*.cpp` adapters as templates.
+A backend is complete when runtime, factory/build, shared C ABI, wrapper result
+metadata and applicable tests are wired. CLI success alone does not establish
+binding parity; follow §6 as well as the adapter steps.
 
 > **‼️ `clang-format` MUST be v18 — never use v22 (Homebrew's default
 > `clang-format` keg, or Xcode's bundled clang-format, both currently
@@ -340,7 +341,13 @@ if (TARGET yourmodel_lib)
 endif()
 ```
 
-### Bindings — docstrings only for a new *backend* (dispatch is automatic once the C ABI is wired)
+### Bindings — backend dispatch and explicit result/API wiring
+
+Existing session operations can dispatch a new backend once its C ABI is wired.
+That does not expose new methods, getters or result fields automatically. Audit
+the returned structure as well as whether a model opens, and follow the metadata
+and explicit-method checklists below.
+
 - `python/crispasr/_binding.py` — add the name to the TTS-backend lists in
   the `synthesize` comment + docstring.
 - `bindings/go/crispasr_session.go` — add to the header/type comments.
@@ -360,8 +367,59 @@ endif()
   `tools/check-backend-wiring.py` runs the `--check` form; a failure prints
   `RESULT: FAIL (Go cgo LDFLAGS drift)` and names this script.
 - `flutter/crispasr/lib/src/crispasr.dart` — add to the synthesize
-  docstring. Dart uses `DynamicLibrary.lookupFunction` with symbol-presence
-  checks, so new C-ABI functions are discovered automatically.
+  docstring. Dart uses explicit `DynamicLibrary.lookupFunction` calls with
+  symbol-presence checks; a new function still needs a lookup and public method.
+  Presence checks support older libraries; they do not discover new APIs.
+
+### Result metadata parity — CLI → shared C ABI → wrappers
+
+A shared backend name does not guarantee shared packaging. In particular,
+`Session` reaches `src/crispasr_c_api.cpp`, while CLI adapters may use different
+chunk/slice/repair paths. For every field produced by the runtime:
+
+- Preserve segment text, times, speaker labels, words, tokens and native
+  probabilities through each applicable path. Use the shared native parser for
+  tagged/structured outputs; do not return inline speaker/time tags as plain
+  transcript or decode the model twice to recover metadata.
+- Keep token ownership by native grouping/index through window selection,
+  overlap splicing, output segmentation, deduplication and gap repair. Timestamp equality is not
+  ownership: distinct words can share one TDT frame. Moving a selected word
+  must move its token block, and rejecting it must reject that block too.
+  `src/core/parakeet_word_ranges.h` shares Parakeet's actual grouping rules;
+  do not apply those model-specific rules to unrelated tokenizers.
+- Preserve original token bytes, probability and native timestamps. UTF-8 may
+  cross token boundaries; Python `SessionToken.raw_text` is lossless even when
+  its display `text` needs replacement characters. Do not fabricate tokens
+  from words. Empty/BOS tokens need a defined ownership rule; native sources
+  without tokens keep an empty list.
+- Preserve native missing-time sentinels through offsets and VAD remapping;
+  Python exposes missing word/token times as `None` and `has_timestamps`.
+  Segment timing does not imply measured word timing. Identify estimated
+  timings (for example Cohere's existing estimates) separately from alignment.
+- Add opaque-result getters to `include/crispasr_session.h` and native code
+  when needed, then explicit typed wrapper fields/readout and compatibility
+  checks. Keep existing positional constructors stable and mutable defaults
+  independent. New metadata is not covered by automatic backend dispatch.
+- Check every Python result entry point: `transcribe`, `transcribe_chunked`,
+  `transcribe_vad`, and `transcribe_with_logits`, plus native legacy/shared and
+  language-specific routes. Test retained bytes/probabilities, equal-time
+  boundaries, offsets, missing times and seam duplicates. A short default
+  transcription does not exercise long-Japanese slice/gap-fill packaging.
+- Exercise the actual exported getters and Python signatures against the newly
+  built `crispasr-lib`, not only a CLI executable or a stand-in library.
+  `tests/test_session_metadata.py` and `tests/test_parakeet_window_metadata.py`
+  provide tiny decoded-fixture coverage and accept `CRISPASR_LIB` for the full
+  library's getters; CI runs both that way. CTest also registers the fixtures.
+  Keep real audio/CLI/C-ABI model validation separate from packaging proof.
+- When exposing a process-wide resource cache, provide explicit release at the
+  shared C ABI and wrapper levels, document ownership and locking, and verify
+  repeat release and continued session use. Measure device memory separately
+  before claiming a VRAM reduction from `free_aligner_cache()`.
+
+See [Python session metadata](python-session-metadata.md) for current supported
+fields and compatibility, and PLAN.md for unvalidated model/platform routes.
+The other language wrappers also need explicit metadata/API handling for the
+fields they expose; do not claim full wrapper parity from Python tests alone.
 
 ### Bindings — adding a new *session setter* (`crispasr_session_set_*`) or *method*
 This applies to any explicit session entry point — the `crispasr_session_set_*`
@@ -369,13 +427,21 @@ setters **and** the data-returning session methods such as
 `crispasr_session_synthesize`, `crispasr_session_synthesize_raw`, and
 `crispasr_session_speech_to_speech`. None of these are auto-discovered (only a new
 *backend* is — see the section above); every wrapper exposes them explicitly and
-they are kept at **full parity**. When you add one, add it to **all seven** wrappers
+the target is **full parity**, verified explicitly rather than assumed. When you add one, add it to **all seven** wrappers
 (plus the WASM/JS binding and the server, listed below — mirror the nearest existing
 setter/method in each: argtypes/restype, error-on-rc≠0,
 and for PCM-returning methods copy `synthesize`: return the malloc'd `float*` as an
 owned buffer then free via `crispasr_pcm_free`; free any `out_text` via
 `crispasr_session_translate_text_free`):
-- `python/crispasr/_binding.py` — ctypes method on `Session`.
+- `python/crispasr/_binding.py` / `_session_extra.py` / `_utilities.py` — typed
+  ctypes method or utility, plus a package-root export in `__init__.py` when
+  public. Run `python tools/check-python-api-coverage.py` and
+  `python tests/test_python_wrapper_operations.py -v`. The former inventories
+  all public session-header functions (with explicit equivalent/retired
+  exceptions); it is a drift guard, not inference or behavioral proof. The
+  compiled-probe suite checks ownership, shape, empty-result and callback
+  contracts. CI also uses the complete native library. See
+  [Python API coverage](python-api-coverage.md) for operations and limitations.
 - `bindings/go/crispasr_session.go` — the cgo-preamble `int crispasr_session_set_X(...)`
   declaration **and** the `Set X` method.
 - **Rust (repo root, not `bindings/`)**: `crispasr-sys/src/lib.rs` extern decl
@@ -399,7 +465,8 @@ per-wrapper setter table.
 
 Some ABI entry points take struct pointers whose layout is defined only in
 `src/crispasr_c_api.cpp` (`crispasr_diarize_seg_abi`, `crispasr_diarize_opts_abi`)
-or in `include/crispasr_session.h` (`crispasr_vad_abi_opts`). Bindings that
+or forward-declared in `include/crispasr_session.h` (`crispasr_vad_abi_opts`,
+whose fields also live in the runtime implementation). Bindings that
 cannot include a C header lay these structs out **by hand**, byte for byte:
 the Go cgo preamble, `crispasr-sys/src/lib.rs` (`#[repr(C)]` mirrors), and the
 flutter binding's offset-written buffers in `crispasr.dart`.
@@ -522,6 +589,306 @@ python tools/check-backend-wiring.py --crispasr ./build/bin/crispasr --require-l
 > the shared `.git/index` — this clobbered the entire §135 CSM landing
 > (commit `100b9ee5`). `git config pull.rebase true` is set in this repo.
 
+### Model-free wrapper ABI acceptance
+
+When changing result readers, callbacks, or new session operations, run the
+actual language adapter against a tiny native probe, in addition to the native
+model tests. `python3 tools/run-wrapper-contract.py LANGUAGE` currently supports
+`csharp`, `java`, `ruby`, `dart`, `wasm`, and `go-rust`. This strict runner fails on missing SDKs or
+skipped checks. CTest's optional versions may skip on ordinary developer clones.
+The `Binding ABI contracts` workflow installs the SDKs and runs these checks
+without building the full model library.
+
+Java requires a JDK and `CRISPASR_JNA_JAR` pointing to JNA 5.13.0; Ruby requires
+its C headers; C# requires .NET 8; Dart requires the Dart SDK and a C compiler;
+WASM requires Emscripten and Node; Go/Rust requires both language SDKs. The tiny
+probes include the public C header. Ruby's unexercised legacy registration
+symbols are aborting stubs; calling one fails the test. Such stubs provide no
+acceptance evidence for those APIs. Shared token bytes, alternative text,
+timestamp availability, allocated-buffer cleanup, replay-noise bounds and
+callback errors need behavioral assertions. Counting native declarations or
+constructing an output struct does not establish wrapper coverage.
+
+Return conventions belong to each function. For example,
+`crispasr_titanet_embed` succeeds with **192 floats written** and fails with zero;
+`crispasr_speaker_embedder_embed_abi` succeeds with **1**. Treating either as a
+zero-success API breaks valid calls. Check the native implementation and test
+successful data, errors and malformed counts separately.
+
+The [callable ledger](wrapper-callable-coverage.md) records reviewed public
+methods, not declarations. Preserve each native return convention: a negative
+speaker-DB similarity is no match even at a negative threshold; enrollment
+uses the current consent-aware API, never the retired refusing stubs. An
+allocated punctuation/translation result must stay a pointer until copied and
+freed. Per-call VAD options need all six fields and language forwarding tested
+against the literal runtime layout.
+
+V2 session-load options occupy 48 bytes (six scalar ints plus six reserved
+ints); compile the literal runtime layout in the probe instead of guessing its
+size. Preserve native unknown word confidence (-1), and reject negative result
+counts or overflowing logit dimensions before allocating/copying. Rust's VAD
+and polled results share its owned ordinary result reader. WASM copies result
+metadata and logit grids into owned C++ data before JS encoding, with RAII native
+cleanup and logit-flag reset; probe malformed counts and JS encoding exceptions.
+
+WASM registry/cache probes must distinguish unknown bundles from known empty
+bundles, preserve companion artifacts and license metadata, retry only each
+function's documented buffer-small code, and bound retries. Native download
+transport in a fixture does not prove browser networking or persistence.
+
+Go legacy parameter copies must retain independent prompt/VAD strings. Allocate
+C strings for the duration of inference and defer their release, including
+native-error returns; never free borrowed native defaults. Compile higher-level
+packages when changing a low-level options representation or public interface.
+
+Polling counts are element counts, not byte lengths. For native NUL-separated
+tokens read exactly that many terminated strings; never estimate a byte length.
+The Go regression places the buffer immediately before a protected memory page.
+WASM must copy every borrowed token before constructing any JS values: a JS
+constructor can re-enter and mutate the drain buffer. The operation probe
+poisons that native buffer from a typed-array constructor to test the boundary.
+For manually mirrored option structs, derive pointer fields from the target
+ABI rather than hard-coding 64-bit offsets. Validate returned counts against
+allocated capacity, and reject short stereo channels before the native call.
+
+Ruby microphone queues require a native producer thread in their operation
+probe. Verify callback-close avoids self-join, retire the ticket before a join
+releases the GVL, synchronize queue state under the mutex, and free both queued
+and dequeued PCM on pump interruption or Ruby allocation/copy errors.
+
+Ruby callbacks must use stable native buffers when calling code that can run
+`GC.compact`. A rooted Ruby String does not guarantee a stable data pointer.
+The chat adapter uses Ruby-owned data payloads for messages/strings/stop arrays,
+a session-keyed rooted Proc map, and Ruby thread/fiber storage for deferred
+exceptions. Do not hide a movable Proc VALUE in C userdata or keep an unmarked
+VALUE in C thread-local storage. Every Ruby allocation/dispatch from a native
+callback needs protection; rethrow only after freeing native results.
+
+Generic speaker embedding returns one-success, clustering returns a cluster
+count, and pyannote cache apply uses zero-success. Ruby and WASM now have
+compiled operation probes for these families, including malformed counts and
+positive error codes. Ruby typed owners must reject recursive initialization
+from argument coercion before overwriting native ownership.
+
+Ruby Session/Stream/Chat guard declarations and registration wrappers are
+synchronized with `python3 tools/sync_ruby_context_guards.py`; the strict Ruby
+probe checks `--check`. Preserve each method's arity and aliases. A context
+borrow must cover argument coercion and other Ruby threads, not only native
+callbacks on the calling thread. Always close child streams before the parent.
+Public Ruby integer handles are opaque tickets; look up native pointers before
+FFI and never resurrect a closed ticket when an allocator reuses an address.
+The forced-address-reuse and parent-close fixtures check these properties.
+
+WASM's default Emscripten exception mode does not unwind C++ destructors when
+JavaScript throws. A C++ `catch (...)` is insufficient for constructor/callback
+failures. Dispatch delivery is explicitly retired in a JS `finally` on the
+creating servicer; only plain native work/result data crosses threads. Async
+TTS catches constructor errors inside JS before returning an emval. Probe real
+pthread work errors, encoder/callback errors, rejected queues, overlapping calls,
+callback chaining, progress responsiveness and native/emval allocation baselines.
+Set `CRISPASR_CHROME` to exercise the same assertions under browser COOP/COEP;
+the binding CI locates its required Chrome executable before running the suite.
+Retained WASM streams use nonreused opaque tickets and a native-only owner table.
+Close children before replacing/freeing their parent, including every async open
+route. The native ABI supports one active stream/inference per parent: reject a
+second stream and batch inference until close. Backend stream cleanup can join
+decoder threads, so threaded modules use compute-dispatched stream methods and
+async parent close/replacement. Probe the real worker thread, retired tickets,
+text-buffer growth and JS input-copy re-entry, not just symbol declarations.
+Retained ASR hooks copy native event data into a bounded queue; generation-ticket
+userdata must never point at JS/emval storage. Drain on the servicer, retire each
+popped native event in a JS finally, and deliver committed events before async
+completion. Servicer reads of generations must be atomic, and queue draining
+must use a nonblocking try-lock: a native producer may need browser services
+while it owns the queue mutex. Probe this with a producer/servicer handshake.
+Clear generations and pending events before parent teardown. Native
+setters are plain field assignments, so registration/clear is restricted to idle
+compute without retained children. Queue overflow must report lost events rather
+than silently pretending delivery was complete. Probe partial/empty UTF-8 token
+bytes, replacement, callback/encoder throws and actual foreign-thread emission.
+Normalize wasm32 pointer arguments to unsigned offsets before JS heap access;
+large model heaps can place event text above the signed int32 range.
+
+Ruby GC resource tests must not assume that a discarded temporary on an active
+VM/C stack is immediately unreachable. Exercise owner finalization after the
+allocating thread has finished, then assert the native allocation baseline.
+
+These checks establish ABI transport and ownership. Real model transcripts,
+structured music results and TTS→ASR roundtrips remain separate acceptance gates.
+Keep both public header inventories and the separate chat API in the audit.
+
+Legacy Whisper parameter structs must pass through native `*_by_ref` exports
+(or Python's separately compiled helpers), never a pointer masquerading as a
+struct by value. Use `crispasr_transcribe_parallel_by_ref` for parallel inference
+with progress tracking. Retain the language/prompt/VAD-model string storage
+until inference returns, and free opaque parameter objects on every path.
+`tests/build_legacy_wrapper_probe.py` compiles the literal runtime setters and
+parallel/token adapters against the real Whisper structs; Python, C#, Dart and
+Java exercise these adapters with a model-free decoder. Rust's legacy opaque
+pointer declarations preserve their Rust names but link to the actual native
+`*_by_ref` symbols; the Go/Rust fixture keeps the wrong by-value initializer as
+an aborting trap and exercises the deprecated Rust path too.
+Count the parallel pointer export independently: a successful result from
+`whisper_full_parallel` alone does not prove CrispASR progress tracking. Go's
+parallel progress closures must retire on both success and native failure.
+Rust's PCM language detector must bound its native output scan and reject
+negative/nonfinite probabilities, empty codes and malformed UTF-8; zero
+probability is a valid result. Model progress frequency and detection accuracy
+require separate model acceptance.
+
+`python3 tests/test_whisper_parallel_runtime.py -v` compiles the actual parallel
+runtime loop against tiny states and real threads under UBSan. Keep split/merge
+sample arithmetic wide, shift available token/DTW timestamps alongside segments,
+preserve unavailable sentinels and alternative ownership, and propagate worker
+errors only after joining started threads. Check null state allocation, worker
+exceptions, VAD silence, fractional offsets and long-clip geometry. This fixture
+proves glue behavior; hosted actual-model tests must separately check VAD
+original-time mapping, bounded duration and callback/device behavior. Do not
+infer original-time VAD token parity from a successful chunk merge.
+
+The high-level Go `ProcessParallel` helper uses optional `ParallelProcessor`;
+keep existing Context implementations compatible. Exercise the public high-level
+method, native pointer-route count, progress/encoder/segment callbacks and cursor
+reset, not just low-level declarations or package compilation. Callback-specific
+options must stay local to the decode call. Same-model lifecycle serialization
+is still required; the optional parallel API does not make concurrent close safe.
+
+For sequential/direct-state decode, cap PCM before mel extraction as well as
+bounding seek end at available mel frames. A duration check in the decode loop
+alone leaves later speech visible to the encoder. Preserve the zero-PCM route
+used with precomputed mel. The literal entry/seek tests exercise both contracts;
+real-model timestamp failures must be diagnosed from retained rows, not hidden
+by loosening the model smoke threshold.
+
+For bounded parallel decoding, clip one global offset/duration interval before
+splitting, clear the now-consumed per-worker duration, and cover exact contiguous
+sample coverage including remainder, fractional offsets, overflow-sized limits
+and tiny-interval fallback. VAD selection currently uses processed-audio units.
+`tools/ci-heavy/whisper_wrapper_validate.py` is a hosted-only actual-library/model
+pointer/Python smoke worker (`heavy-cpu.yml`, `pip=numpy`). Review its artifacts;
+preparing or dispatching it does not establish model acceptance. Exact geometry
+belongs to the tiny regressions; its real-model timestamp sanity has a one-second
+margin and establishes no transcript/numerical/GPU parity.
+
+`python3 tests/test_whisper_vad_timeline.py -v` also compiles the literal VAD
+stitcher/interpolator, token getters and scalar adapters. Available token/DTW
+times must use original-audio time consistently with segments. Map returned
+copies, preserve unavailable negatives, and test repeated reads to reject double
+mapping. Reset stale VAD bookkeeping when a state is reused without VAD or a
+prepass fails; retain its cached VAD context. The fixture executes the real
+state-decoder entry but replaces scheduler/inference work and detector output;
+it establishes timeline glue, not real detector/model alignment quality.
+
+DTW must be configured before context creation. Native defaults enable flash
+attention, and the loader disables DTW if both remain enabled. The shared
+`crispasr_ctx_params_set_dtw` helper therefore disables flash attention when
+DTW is enabled; disabling DTW leaves that choice unchanged. Probe with the
+actual native default, not a zeroed fake flash flag. The literal native helper
+policy is checked by `test_python_legacy_pointer.py`; Go/Rust probes also check
+preset mappings, top-layer validation, context cleanup and indexed DTW output.
+The high-level Go DTW constructor now has an operation test in addition to
+package compilation. Go's hosted wrapper contract enables the race detector;
+callback registry locks must be released before invoking user callbacks. Registry
+locking alone does not serialize same-context inference and close. The built-in
+high-level Go Model now uses a shared nonblocking borrow across decode, close,
+readers, native setters and Context construction. Error-returning methods reject
+with `ErrModelBusy`; native queries lacking an error return panic on busy/closed
+access. Option setters/copy have a separate mutex. Probe callback close/re-entry,
+a blocked concurrent decode, all result readers and a real pthread callback.
+The raw low-level Go Context still requires caller serialization; do not describe
+this as universal wrapper lifecycle safety.
+
+Generic speaker wrappers must exercise real public methods, not just declared
+symbols. Reuse `tests/fixtures/wrapper-speaker-primitives.c` with POD layouts
+extracted from the runtime. Native embedding success is exactly1; pyannote apply
+success is0; clustering returns a count and labels, including0/all-unassigned.
+Check int32 conversions and matrix bounds before allocation/native access;
+never multiply unvalidated caller dimensions. Probe malformed success codes,
+counts/labels, NUL strings, repeated close/drop and native failures. Go/Rust and
+Ruby/WASM share this oracle. Go generic handles still need caller serialization;
+the high-level Whisper borrow guard does not protect unrelated model handles.
+
+The actual high-level Go tiny.en/JFK run is independently audited in
+[the model receipt](go-model-lifecycle-audit-2026-10-19.json). Preserve that
+accepted bounded fixture; expand VAD/DTW/beam/device scope rather than repeating
+it as a substitute for a missing acceptance gate. Build native Go validation
+with `CRISPASR_OPUS_FETCH=ON`, matching the ordinary generated link; never remove
+link directives or supply stub dependencies to claim actual-model acceptance.
+
+Legacy token adapters must copy both chosen-token and candidate text before
+native buffers can be reused or the model closed. Preserve raw UTF-8 fragments
+and native timing/probability sentinels. Validate segment/token indices and
+counts before indexed native access, bound alternative text retries, and verify
+the declared length plus terminator before copying. Poison the output buffer in
+probes so unwritten terminators cannot pass accidentally. Go's owned snapshots
+also have a high-level optional capability: keep existing public interfaces and
+result struct literals compatible when adding detailed results. Rust's per-call
+alternative capture reuses `TranscribeOptions` instead of adding required fields.
+
+The Rust `WhisperDecodeControls` companion carries the remaining scalar options
+without breaking old options literals. Prepare/validate language and prompt
+C strings before native parameter allocation, and keep their owner alive until
+inference and parameter destruction finish. Test unset versus explicit false
+and zero against distinct native defaults, on both sequential and parallel
+routes. The Go/Rust fixture compiles all `crispasr_params_set_*` definitions from
+the actual C++ runtime; do not replace those with handwritten setter bodies.
+Its source-family inventory is only a completeness tripwire, alongside compiled
+field/lifetime/cleanup operation probes. Raw full-params fields and callback
+controls outside that helper family still require their own audit.
+
+
+Java native defaults must be copied into Java-owned parameter storage, then
+freed with the matching native destructor; never `Native.free()` a C++-allocated
+parameter object. Forward every context option, deep-copy custom heads for the
+loaded model, and retain callback functions through inference and GC. A short
+operation lease must reject close/re-entry across callback threads without
+holding the Java monitor throughout native execution. Test foreign-thread
+callbacks, repeated close, failed initialization and literal native struct sizes.
+Legacy Java full-params layout remains a deliberate 64-bit-only exclusion until
+its size_t fields have a target-tested native layout.
+
+`crispasr_parakeet_transcribe` takes an **int64 centisecond offset** as its fourth
+argument. It has no language-string argument. Use unified session language hints
+for that purpose. The shared `wrapper-parakeet-legacy.c` oracle checks this
+signature through real language wrappers; a declaration census cannot catch
+this class of mistranslation.
+
+For WASM chat, configure a single-thread module with `CRISPASR_WASM_CHAT=ON`;
+the default bundle excludes chat. Check `chatAvailable()` before using
+`ChatSession`. `generate(messages, options, callbackOrNull)` returns
+`{status, text, message, failed, error}`: check both native `status` and callback
+`failed`. Stream callbacks receive owned `Uint8Array` pieces; concatenate before
+UTF-8 decoding. `setAbortCallback` returns true to continue, false to cancel.
+Callback exceptions are captured on the JS side and returned after native
+frames finish. Full native/browser/model and opt-in bundle-size gates are
+required separately from the tiny Embind probe. Threaded browser chat remains
+pending a servicer/compute dispatch implementation.
+
+### Alignment memory and callback timelines
+
+The shared Canary/FastConformer aligner bounds long-input encoder inference with
+30-second cores and two-second context, stitches logits on the encoder frame
+grid, and aligns the complete transcript once. CLI align-only forwards
+`--chunk-seconds` (zero explicitly disables windows); C ABI and bindings inherit
+the default. VAD is unused in align-only. This bounds encoder activations, not
+host logits or traceback memory. Qwen3-FA and wav2vec2 have separate paths; do not
+infer their long-input behavior from this implementation.
+
+Run `python3 tests/test_ctc_windows.py -v` for tiny actual shared-dispatch/frame
+ownership checks. Hosted `alignment_model_profile.py --long-windows` additionally
+compares full versus windowed native alignment, repeated 44.52-second speech,
+10/30-second seams, exact repeatability and CLI/Python/C ABI offset parity. This
+is not manually labeled boundary accuracy or a CUDA peak-memory result. Keep
+issue550 open until long-input hardware validation is recorded.
+
+Whisper emission changes must also run
+`python3 tests/test_whisper_emission_bounds.py -v`. Its literal production block
+checks segment/token/DTW bounds before callbacks, wrapped output, negative
+sentinels and later-window DTW new-segment counts. Model-free callback tests do
+not replace hosted actual-model validation. The scoped CPU pointer/Python
+[model audit](whisper-wrapper-model-audit-2026-10-19.json) passes12 native/six
+Python cases; extend its stated limits rather than treating it as full parity.
+
 ## 7. Task-shaped backends (`--separate`, `--pitch`, `--chords`)
 
 Everything above assumes the backend produces TEXT and therefore fits
@@ -605,7 +972,7 @@ env-var-gated — they SKIP cleanly when the env vars are unset.
 **Quick start:**
 ```bash
 # Point at your local model cache (auto-download also probes this):
-export CRISPASR_MODELS_DIR=/mnt/storage/gguf-models
+export CRISPASR_MODELS_DIR=${CRISPASR_STORAGE}/gguf-models
 
 # Source all env vars at once:
 source tests/env-live-tests.sh
@@ -951,3 +1318,10 @@ all three: it loads the upstream model, monkey-patches
 `perframe_<stage>_f<NNN>.bin` files (matching the C++ runtime's
 `VIBEVOICE_TTS_DUMP_PERFRAME=1` output) and a `noise.bin` for the
 C++ side to replay.
+
+For voice converters, capture the projected speaker embedding as well as the
+encoder hidden state. Pin the base TTS speaker identity, reference segmentation
+and resampling recipe, sampling temperature/noise, raw waveform and any final
+normalization separately. Require intelligibility and independent cloned versus
+baseline speaker similarity alongside stage norms/errors. The current concrete
+method and remaining scope are in [OpenVoice2 baking](openvoice2-baking.md).

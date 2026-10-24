@@ -268,7 +268,7 @@ quick-start commands and engine selection guidance.
 
 | Backend | Models | Architecture | Languages | License |
 |---------|--------|-------------|-----------|---------|
-| **bt2-tts** | [`breeze-tts-2`](https://huggingface.co/cstr/breeze-tts-2-GGUF) | T5Gemma2 text encoder + Qwen3 backbone + 12L depth decoder over 16 codebooks @ 12.5 Hz; voice cloning. Codec companion is the shipped qwen3-tts tokenizer. **NON-COMMERCIAL weights** — needs `--accept-license other`. Derived from Breeze TTS 2 by BreezeBlue and licensed for research and non-commercial use only. | en, zh | other (BreezeBlue Research & Non-Commercial) |
+| **bt2-tts** | [`breeze-tts-2`](https://huggingface.co/cstr/breeze-tts-2-GGUF) | T5Gemma2 text encoder + Qwen3 backbone + 12L depth decoder over 16 codebooks @ 12.5 Hz; voice cloning, plus voice design / direction via `--tts-instruct` (strengthen with `--tts-cfg-scale 4`). Codec companion is the shipped qwen3-tts tokenizer. **NON-COMMERCIAL weights** — needs `--accept-license other`. Derived from Breeze TTS 2 by BreezeBlue and licensed for research and non-commercial use only. | en, zh | other (BreezeBlue Research & Non-Commercial) |
 | **miotts** | [`MioTTS-0.6B`](https://huggingface.co/cstr/miotts-0.6b-GGUF) | Qwen3 LLM + MioCodec-v2 FSQ codec (25 Hz, 44.1 kHz output) | ja, en | Apache-2.0 |
 | **vibevoice-tts** | [`VibeVoice-Realtime-0.5B`](https://huggingface.co/cstr/vibevoice-realtime-0.5b-GGUF), [`VibeVoice-1.5B`](https://huggingface.co/cstr/vibevoice-1.5b-GGUF) | DPM-Solver++ + σ-VAE decoder; voice presets or cloning | en, zh | MIT |
 | **kugelaudio** | [`kugelaudio-0-open`](https://huggingface.co/cstr/kugelaudio-0-open-GGUF) | Qwen2.5-7B LM + 4L DiT diffusion + acoustic VAE decoder; voice cloning | multilingual | Apache-2.0 |
@@ -276,7 +276,7 @@ quick-start commands and engine selection guidance.
 | **qwen3-tts-customvoice** | [`1.7B-CustomVoice`](https://huggingface.co/cstr/qwen3-tts-1.7b-customvoice-GGUF) | Same talker + 9 premium built-in speakers (`--voice <name>`); optional style via `--instruct` (e.g. "spoke very slowly") ([more](docs/architecture.md#qwen3-tts)) | multilingual | Apache-2.0 |
 | **moss-tts** | [`OpenMOSS-Team/MOSS-TTS-v1.5`](https://huggingface.co/cstr/moss-tts-v1.5-GGUF) | Qwen3-8B backbone emitting 32 RVQ audio codebooks under a delay pattern, decoded by a 1.6B pure-transformer codec companion; voice cloning via `--voice ref.wav`; `--backend moss-tts -m <backbone> --codec-model <codec>` | multilingual | Apache-2.0 |
 | **moss-tts-local** | [`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`](https://huggingface.co/cstr/moss-tts-local-v1.5-GGUF) | Qwen3-4B backbone; a 1-layer local/depth transformer autoregressively emits 12 RVQ codebooks per frame (RQ-Transformer, no delay), decoded to 48 kHz by MOSS-Audio-Tokenizer-v2 (downmixed to mono); `--backend moss-tts-local -m <backbone> --codec-model <codec>` | multilingual | Apache-2.0 |
-| **omnivoice** | [`k2-fsa/OmniVoice`](https://huggingface.co/cstr/omnivoice-GGUF) | Qwen3-0.6B + masked iterative 8-codebook TTS (SoundStorm-style); voice cloning; 600+ languages ([more](docs/architecture.md#omnivoice)) | 600+ langs | Apache-2.0 |
+| **omnivoice** | [`k2-fsa/OmniVoice`](https://huggingface.co/cstr/omnivoice-GGUF) | Qwen3-0.6B + masked iterative 8-codebook TTS (SoundStorm-style); voice cloning; 600+ languages ([more](docs/architecture.md#omnivoice)) | 600+ langs | CC-BY-NC weights + custom tokenizer terms; explicit bundle acceptance, review pending |
 | **melotts** | [`myshell-ai/MeloTTS`](https://github.com/myshell-ai/MeloTTS) EN_V2 | VITS2 (6L transformer + SDP/DP + transformer coupling flow + HiFi-GAN); 44.1 kHz, 102 MB + 52 MB BERT Q4_K companion (154 MB total); neural G2P; 4 EN speakers ([more](docs/architecture.md#melotts)) | en | MIT |
 | **piper** | [`rhasspy/piper`](https://github.com/rhasspy/piper) community voices | VITS (6L transformer + SDP + 4-block coupling flow + HiFi-GAN); 22 kHz mono, 30 MB F16 per voice; built-in G2P for EN/DE/FR/ES/RU (`--g2p-dict`) | 30+ langs (built-in + espeak dlopen) | MIT |
 | **kokoro** | [`hexgrad/Kokoro-82M`](https://huggingface.co/hexgrad/Kokoro-82M) + German backbones | StyleTTS2 / iSTFTNet (82M); per-voice GGUF ([more](docs/architecture.md#kokoro)) | en, es, fr, hi, it, ja, pt, zh, de | Apache-2.0 |
@@ -1086,7 +1086,7 @@ crispasr -ng -m model.gguf -f audio.wav
 GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 crispasr -m model.gguf -f audio.wav
 ```
 
-Build flags: `-DGGML_CUDA=ON`, `-DGGML_METAL=ON`, `-DGGML_VULKAN=ON`.
+Build flags: `-DGGML_CUDA=ON`, `-DGGML_METAL=ON`, `-DGGML_VULKAN=ON`, `-DGGML_CANN=ON`.
 
 Notes:
 - `--gpu-backend vulkan` selects the Vulkan backend, but it does not choose which physical GPU to use. Use `-dev N` to select the Vulkan device index.

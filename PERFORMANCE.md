@@ -1,8 +1,92 @@
+## Actual Japanese CTC CPU profile — 2026-10-19
+
+Frozen source08aea3537, run39116431721, F16 Japanese CTC1.1B and one6.36-second
+licensed FLEURS clip, four CPU threads, CUDA/Metal/Vulkan/BLAS disabled.
+
+| Scope | Median | Comparison |
+| --- | ---: | --- |
+| Warm encoder/frontend/readback |4591.176ms| OFF/ON/OFF exact logits |
+| Native DP gate off |1.511408ms|10 measured calls|
+| Native DP gate on |1.4569045ms|10 measured calls;1.0374× off/on ratio|
+
+The0.055ms DP saving is negligible beside the encoder on this fixture. Literal
+same-logit replay reduces tracked DP heap1,290,804→24,568 bytes and allocations
+137→56, with exact frozen-reference/native/public/CLI word times. Counters are
+not whole-process or GPU memory. Independently verified arrays/calls/sources and
+limits are in [the audit](docs/alignment-japanese-audit-2026-10-19.json).
+No labeled-boundary accuracy, long-form, original encoder parity, GPU or matched
+Subtimer performance claim follows. The workspace gates remain default-off.
+
+A separate hosted run39212307554 gives short-input DP medians1.430403ms off
+and1.5135695ms on (gate on is slower in that run). Do not infer a robust DP
+speedup or compare encoder medians across these separate runs as a runtime
+improvement. Its44.52-second window/full/public seam controls pass; maximum
+boundary difference versus full context is400ms, without boundary ground truth.
+See [the independently audited receipt](docs/alignment-windows-cpu-audit-2026-10-19.json).
+Actual long-input CUDA memory/reuse is still pending.
+
+## Hosted character CTC workspace — 2026-10-18
+
+Heavy CPU39112822169 passes seven synthetic shapes on EPYC7763/GCC13.3.
+Gate-off/on median ratios: 1.124–1.215×. Largest T4096/V16384/W256:
+339.608→288.506ms and tracked kernel heap275,986,668→7,556,460 bytes (36.52×).
+Frozen reference/on ratios are1.089–1.388×; both timing baselines are retained.
+Worker exact-output assertions pass; receipt is aggregate, without saved
+per-call raw outputs/timings. This is character postprocessing, with four
+unique token IDs in the synthetic transcript, not encoder/end-to-end, Japanese
+subword, RSS/VRAM or production acceptance. Default-off gate is unchanged.
+See [audit/limitations](docs/alignment-cleanroom-2026-10-18.md#hosted-character-ctc-synthetic-benchmark-accepted)
+and [raw receipt](docs/alignment-ctc-hosted-2026-10-18.json).
+
+## Subword CTC workspace experiment — 2026-10-18
+
+`CRISPASR_SUBWORD_CTC_ALIGN_OPT=1` enables a separate default-off Parakeet/Canary
+postprocessor experiment. Four tiny local synthetic shapes show 1.07–1.75×
+median kernel speed and 1.97–106.84× lower tracked C++ heap with exact frozen
+return/text/timestamp output; timing noise is substantial. One-frame
+normalization replaces `T * V` stored emissions, and flat traceback removes
+per-frame allocations. Encoder, input logits and GPU memory are unaffected.
+Five new tests pass under GCC and Clang; full-library/hosted/model acceptance
+is pending. See [method and limitations](docs/alignment-cleanroom-2026-10-18.md#independent-subword-workspace-experiment)
+and [raw local receipt](docs/alignment-subword-local-2026-10-18.json).
+
 # CrispASR — Performance benchmarks
+
+Character CTC workspace experiment (2026-10-18): opt-in
+`CRISPASR_CTC_ALIGN_OPT=1` preserves the existing default. On four local
+model-free fixtures (`T=256`, 20 words, vocabulary 16–4096), exact-output kernel
+medians improve 1.20–1.51x and tracked peak heap drops 1.33–14.52x. Shared-host
+timings are noisy; hosted larger-case validation is pending. These are not
+end-to-end model speeds or Japanese Parakeet/Canary subword results. See
+[the comparison, clean-room provenance and measurements](docs/alignment-cleanroom-2026-10-18.md)
+and [the local receipt](docs/alignment-ctc-local-2026-10-18.json).
+
+
+Ascend checkpoint (2026-10-13): physical ARM64/310P3, SDK 9.1.0,
+ACL graphs off, has operator-level float correctness evidence. Broad ADD and
+MUL_MAT abort on unsupported BF16 inputs. No model-throughput or speech-quality
+claim is established; operator elapsed times are not model benchmarks. See
+[the complete hardware receipt](docs/cann-310p3-hardware-2026-10-13.json).
+
 
 Test audio: jfk.wav (11.0s), Q4_K quantization, greedy decode (`-bs 1`).
 
 ---
+
+## Dia precision and speech gate — 2026-10-13
+
+Profiling and optimization follow actual speech acceptance. The fixed original
+heads-only F32 model is 3,260,520,512 bytes (+37,896,192 versus published F16);
+all-original-F32 is 6,444,668,992 bytes (+3,222,044,672). Both physically audited
+exports pass 40/40 canonical replay stages but fail free CLI/C-ABI ASR with
+empty transcripts/WER 1. Full F32 reaches 865 exact shared-input steps before
+branching, versus 77 for heads-only F32. Aligned full-F32 logit minimum cosine
+is 0.9999999992869937 and maximum relative norm error 2.40027e-5; this does not
+establish recognizable output. The canonical prompt has quiet leading complete
+seconds 0–11, so a long matched input prefix alone is not speech acceptance.
+These sizes are diagnostic exports, not new
+recommended downloads; no speedup or production model-pin change is claimed.
+[Complete original coefficients, stage/norm rows and speech receipts](docs/dia-neural-precision-hosted-2026-10-13.json).
 
 ## MiMo CUDA graph phases — 2026-10-08
 
@@ -743,7 +827,7 @@ the §232 campaign. Verified against current code, not carried from this doc.
 | **P2** | Scalar CPU hotpaths | RNN-T LSTM pred+joint; granite cpu_linear+depthwise; paraformer CIF; rvq encode; istft IRFFT; titanet mel front-end; diarize `apply_xcorr` | Per-token/frame scalar loops |
 | ~~P2~~ **CLOSED** | parakeet | Batched TDT decode validated on Kaggle CPU (#81, 2026-07-18): **0.73–0.80× = SLOWER**, byte-identical → keep default OFF, do NOT flip | Predicted win, measured a loss |
 | **OPEN** | parakeet CPU vs onnx-asr | crispasr parakeet-tdt CPU 4.0×/3.0× vs onnx-asr int8 8.6×/5.8× ⇒ **~2.1× slower on CPU** (the real #81 residual). Needs a CPU BLAS/kernel lever — batched decode is ruled out | GPU is fine (P100 36.9×/50.9×) |
-| **P2** | align_wav2vec2_ctc | **Reloads the 300MB–1GB model every call** (`crispasr_aligner.cpp:315`) — missing the §176e ctx-cache | Concrete single-file win |
+| **DONE** | align_wav2vec2_ctc | Current shared §176e context cache reuses the model by path; the old per-call reload warning is superseded. CPU CTC workspace experiment: see the 2026-10-18 receipt above. | No reload fix remains to implement |
 | **P2** | paraformer / voxcpm2 | CPU-only, no GPU backend (paraformer leaks 256MB buffer) | GPU offload available |
 | **P3** | Threading | Hardcoded default 4 threads in ~90 sites; only whisper-core caps to `min(4, hw)` | Idle cores on big hosts |
 | **P3** | Misc | pyannote per-slice not once-over-audio (#107); RNNoise recreates state+resamplers/call; glm mel padded to 3000 always | Localized |
@@ -1541,7 +1625,7 @@ every chunk/overlap combination tested — the global z-norm makes chunk
 boundaries transparent to the TDT decoder.
 
 > **Caveat (added 2026-05-24).** The "identical to single-pass" column
-> below is only true on the cached MP3-derived audio (`/mnt/storage/
+> below is only true on the cached MP3-derived audio (`${CRISPASR_STORAGE}/
 > samples/o_9dWkRPYC0.mp3` → `yt_60s.wav`). On a fresh `yt-dlp` extract
 > of the same YouTube video, single-pass collapses to ~20 s of output
 > while streamed still covers the whole clip — see the "single-pass
@@ -1638,13 +1722,13 @@ Results collected with `tests/benchmark_asr.py`:
 python tests/benchmark_asr.py --audio myfile.wav --backend parakeet
 
 # Full matrix across backends and settings:
-python tests/benchmark_asr.py --corpus /mnt/storage/test-audio/corpus.json --all-settings
+python tests/benchmark_asr.py --corpus ${CRISPASR_STORAGE}/test-audio/corpus.json --all-settings
 
 # Build the test audio corpus (en/de/ja/zh × 4 durations from FLEURS):
 python tests/benchmark_corpus.py
 ```
 
-Results are stored in `/mnt/storage/benchmark-results/runs.jsonl` (JSONL,
+Results are stored in `${CRISPASR_STORAGE}/benchmark-results/runs.jsonl` (JSONL,
 one line per run). The framework computes: word count, char count,
 first/last timestamp, time coverage %, gap count/size, wall time, and
 realtime factor. See `tests/benchmark_metrics.py` for the metric
@@ -3185,3 +3269,436 @@ Measure on the deployment machine. Receipt: `docs/mel-projection-2026-10-08.json
 
 The independent projection change retains KokerZhou's original authorship
 from PR #492; its separate MiMo/CANN changes are not included here.
+
+
+Completed fixed-cache control (GH 38357576078, source 2205d920d): all three
+F16/F32/F16-repeat arms pass 40/40 canonical stages, but all six CLI/C ABI
+speech controls remain empty/WER 1. OFF/repeat inputs, logits and PCM match
+exactly. Actual cross-cache vectors double from 11,501,568 to 23,003,136 bytes;
+F32 extends shared input history from 865 to 979 steps and reduces maximum
+aligned logit norm error from 2.40e-5 to 5.01e-6. At step 978/head 2, tiny neural
+changes include token 904 across the nucleus boundary; original/native filters
+agree on identical logits and reproduce the recorded draws. This is a rejected
+speech control, with no sampling-policy or quality-gate waiver.
+The 114 additional matching input steps are in the canonical original's quiet
+leading region and do not establish an audible matching prefix. No speed gain
+is claimed from this experiment. CUDA compilation/dependency closure passes;
+actual CUDA cache and rotary speech controls are complete and reject. See
+[the cache receipt](docs/dia-cross-cache-hosted-2026-10-13.json),
+[the exact boundary replay](docs/dia-cross-cache-boundary-2026-10-13.json) and
+[the delivered CUDA package audit](docs/dia-cuda-package-2026-10-13.json).
+
+
+Rotary precision diagnostic (2026-10-13): actual original Float32 timescales
+with ggml's existing frequency-factor input reduce position-978 coefficient
+maximum error from 1.2040138e-4 to 5.9604645e-8. This is a tiny weight-free
+primitive comparison, not inference speed or model-quality acceptance. The
+full source-timescale controls now reject on both hosted CPU and actual T4.
+[Complete coefficient/source/negative receipt](docs/dia-rotary-coefficients-2026-10-13.json).
+
+
+Actual T4 CUDA cache controls (2026-10-13) are complete: all 120 canonical
+replay stages pass with real scheduler splits and sampled process GPU memory
+8,528–8,734 MiB. All six native CLI/C-ABI speech checks still reject with empty
+transcripts/WER 1. F16 cache shares 353 original input steps; F32 shares 979
+and reaches the same step-978/head-2 divergence as CPU. OFF/repeat full arrays
+match exactly. These are correctness diagnostics, not accepted native speech
+or performance measurements. [Complete physical CUDA proof](docs/dia-cuda-cache-physical-2026-10-13.json).
+
+
+The completed original-timescale CPU control passes 120 replay rows but does
+not change generated token histories or PCM; all six speech checks remain
+empty/WER 1. The +608-byte auxiliary model is a rejected control. The corrected
+late-capture experiment independently passes default/978/default complete-array
+identity and all three rejection controls. These establish diagnostic fidelity,
+not accepted native speech or speed.
+[Rotary control](docs/dia-original-rope-hosted-2026-10-13.json), [complete late capture](docs/dia-late-stage-hosted-2026-10-13.json).
+
+
+The scoped Ascend310P BF16 capability repair is integrated at the exact
+physically tested ggml revision. It resolves both broad ADD/MUL_MAT aborts;
+924/924 executed physical operator cases pass, with unsupported cases retained.
+Both SDK compile architectures and all 13 composed general CI jobs pass.
+The shared fork retains contributor history. Full NPU model quality and speed
+remain separate validation. [Integration receipt](docs/cann-310p-bf16-integration-2026-10-13.json).
+
+
+Actual T4 original-timescale OFF/ON/OFF control (2026-10-13) is complete
+and rejects speech. All 120 stage rows pass and all six CLI/C-ABI speech checks
+remain empty/WER 1. Canonical original audio passes the same GPU ASR at WER 0
+with 25 actual CUDA splits, separating the recognition control from native TTS.
+OFF/repeat full arrays match exactly. ON changes input histories, logits and
+both PCM arrays, but shortens the original shared input prefix from 979 to 865
+steps: first differing draw moves from 978/head 2 to 864/head 6. The model SHA
+matches the CPU auxiliary model; complete physical audits and downloaded source
+files match their immutable controls. Nine TTS executions show actual CUDA
+splits and sampled allocation 8,528–8,734 MiB. This rejects the numerical
+candidate; it establishes no native speech, Q4 or speed acceptance.
+[Complete physical rotary proof](docs/dia-original-rope-cuda-physical-2026-10-13.json).
+
+
+The exact-source CUDA v3 bundle is fully audited (27 members and seven source
+files); its actual T4 speech rejection is retained separately. A weight-free
+RMSNorm audit on all retained decoder boundaries isolates F32 versus double-sum
+rounding in nine of 36 comparisons, with no runtime/default change or speed
+claim. [CUDA package](docs/dia-cuda-package-v3-2026-10-13.json), [RMSNorm primitive](docs/dia-rmsnorm-primitive-2026-10-13.json).
+
+
+The exact-shape output-head probe reproduces every retained native step-978
+logit byte-for-byte. Combining the heads changes nothing; flattening batch
+shape changes rounding but does not restore the differing draw. All 16
+original-filter controls choose token 877 with original hidden states and 904
+with native hidden states. The cause at this boundary precedes the output
+head. This is isolated numerical evidence, not accepted speech or speed; the
+local original projection is not byte-identical to the hosted original one.
+[Projection audit](docs/dia-head-projection-isolation-2026-10-13.json).
+
+
+The learned final norm is byte-identical on retained original/native layer-17
+inputs and reproduces both saved hidden states exactly. Decoder embedding
+captures also match exactly at four checkpoints, including step 978. Repeats
+and changed-feedback/scaled-output negatives pass. The remaining hidden
+variation is inside the decoder blocks or their attention inputs; these
+isolated controls do not accept native speech, Q4 or speed.
+[Norm/input audit](docs/dia-norm-embedding-isolation-2026-10-13.json).
+
+
+Block-0 pre-attention norm is byte-identical on all four verified embedding
+inputs. Q/K/V projections introduce small rounding differences (minimum cosine
+0.9999999999999603, maximum row-norm error 9.19345e-8). Flattened branch batches
+worsen relative L2 in all 12 controlled cases, so no runtime candidate is
+introduced. Repeats and a magnitude negative pass. This is primitive isolation,
+with native speech still unaccepted.
+[Block-0 audit](docs/dia-block0-projection-isolation-2026-10-13.json).
+
+
+The actual Q/K rotary replay confirms local error on audited first-block
+projections. At step 978, composed relative L2 falls from 5.37020e-5 to
+1.57296e-7 for Q and 3.55324e-5 to 2.28756e-7 for K using original timescales.
+All 48 comparisons, repeats and eight negative controls are retained. This is
+CPU primitive evidence; full-model source-timescale speech remains rejected,
+with no runtime/default promotion or performance claim.
+[Rotary audit](docs/dia-block0-rotary-isolation-2026-10-13.json).
+
+
+A bounded actual-source block-zero self-attention replay on canonical steps
+0–3 verifies byte-identical same-input K/V cache histories. Attention minimum
+head cosine is 0.9999999999999742 and maximum norm error 1.46145e-7. Missing
+cache reorder, tiled GQA heads, wrong sqrt-head scaling and doubled output all
+strongly reject. New step-1/3 norm rounding differences and the stopped initial
+expectation are retained. This does not establish late-history, higher-layer,
+GPU or full speech acceptance; production defaults remain unchanged.
+[Attention/cache audit](docs/dia-block0-attention-isolation-2026-10-13.json).
+
+The pinned-config 3072-slot original cache also reproduces all short-prefix
+Q/K/V/attention outputs and cache history bytes exactly, with exact repeats.
+This checks production cache stride, without claiming late-history acceptance.
+
+Late-history self-attention capture tooling is implemented on diagnostic source
+42b111c5e. Tiny actual-original two-layer and compiled replay guards pass; GH
+38438623888 queues full-model capture-transparency controls and step-978 snapshots
+for all 18 layers. Production main receives tracking only. This is pending
+numerical evidence, not a runtime fix, speech acceptance or performance result.
+[Capture protocol](docs/dia-attention-history-capture-2026-10-13.md).
+
+The weight-free same-input attention consumer reproduces audited prefix 0–3
+original snapshots with production cache stride and native snapshots at one/four
+CPU threads, byte-for-byte. Its 24 comparison rows and 12 strong negatives are
+retained. Hosted snapshots require verified file hashes and capture transparency;
+late-history results, cross-host identity and native speech remain unaccepted.
+[Same-input replay audit](docs/dia-attention-input-replay-2026-10-13.json).
+
+The matching CUDA 12.4 SM60/75 capture package is queued on GH at source
+2328f15ce; all six native runtime/ABI/binding files match CPU capture source
+42b111c5e byte-for-byte. Eight source guard tests pass. The CPU capture worker
+is now running. Both hosted results and actual GPU/model acceptance remain
+pending; production main receives tracking only.
+[CUDA package protocol](docs/dia-attention-cuda-package-2026-10-13.md).
+
+### Dia late-attention worker preparation, 2026-10-13
+
+CPU capture 38438623888 completed; delivered tensors are awaiting independent
+audit. CUDA observation worker bf895ecd6 passes 16 small input/source guards
+with unchanged runtime bytes, but has not executed on a GPU. CUDA package
+38446095504 is still compiling. No performance or native speech/Q4 acceptance
+follows from these preparation/capture results.
+
+### Dia full late-history CPU attention exclusion, 2026-10-13
+
+At step 978, native same-input attention reproduces every captured native layer
+byte-for-byte at one and four threads. Against the actual original attention
+call on identical inputs, maximum relative L2 is 4.850572647357973e-7, minimum
+row cosine 0.99999999999744 and maximum row norm error 6.882499823390731e-7.
+Compact/3072-slot original cache outputs are identical. These are correctness
+diagnostics, not performance results or native free-speech acceptance. Actual
+GPU version 4 has been submitted against verified/public/pinned inputs; hardware
+results remain pending. See `docs/dia-attention-history-results-2026-10-13.md`.
+
+### Dia CUDA delivery setup rejection and repair, 2026-10-13
+
+Version 4 ran original ASR on CPU after the worker hid libcuda.so.1; the
+strict GPU witness failed before Dia capture. No GPU speed or neural parity
+conclusion applies. Repair 6e1a8bb10 preserves host library paths and checks
+driver/plugin loading before weights. A real ELF regression passes; actual
+version 5 is submitted. Runtime/package bytes are unchanged and physical
+confirmation remains pending.
+
+### Dia actual T4 same-input attention exclusion, 2026-10-13
+
+The failed version-5 receipt retained completed CUDA work: three 40/40 native
+replays with 11,037 CUDA splits and 8,736 MiB peak allocation each, exact
+complete OFF/ON/OFF arrays, and original GPU ASR WER 0. Independent auditing
+of 72 snapshots and actual-original CPU attention on the SAME GPU inputs
+gives minimum row cosine 0.9999999999974468, maximum row norm error
+7.674099771204368e-7 and maximum relative L2 4.813245892395258e-7.
+Serialization is repaired; original terminal ERROR is preserved. These are
+correctness/allocation witnesses, not performance or native speech acceptance.
+Public complete proof: `docs/dia-attention-cuda-postmortem-2026-10-13.md`.
+
+### Dia owned-input cross-cache exclusion, 2026-10-13
+
+Block-zero cross-K/V on matching inputs differs from the actual original CPU
+producer by maximum relative L2 3.392e-7 on CPU and 7.201e-7 on actual T4.
+All repeats and eight scale/head-order negatives verify. Upstream encoder
+input drift also contributes to recorded cache differences. No timing, full
+cross-attention, free-speech or Q4 acceptance follows. See
+`docs/dia-cross-cache-input-replay-2026-10-13.md`.
+
+### Dia decoder boundary observation prepared, 2026-10-13
+
+Opt-in observation preserves native decoder arithmetic; full OFF/ON/OFF
+transparency and original-reference boundary metrics are pending in GH
+38472367538. This establishes no timing, memory improvement or native speech
+acceptance. See `docs/dia-decoder-boundary-capture-2026-10-13.md`.
+
+### Dia decoder boundary controls verified, 2026-10-14
+
+All 120 ordinary stages, original hook tests and complete OFF/ON/OFF
+trajectories pass in GH 38472367538 and verify independently. Maximum
+block-zero boundary relative L2 is 5.204e-6; same-input operator separation
+is still required. No timing or native speech/Q4 acceptance follows. Complete
+public evidence: `docs/dia-decoder-boundary-results-2026-10-14.md`.
+
+### Dia actual fused/split MLP correctness exclusion, 2026-10-14
+
+Same-input original fused MLP versus literal native split graph differs by
+maximum relative L2 2.399e-7; native replay reproduces every hosted native
+MLP stage exactly. Cross-host original differences and upstream input drift
+are measured separately. Twenty rows and ten negatives verify. This is a
+bounded correctness test, not full-model performance or speech acceptance.
+See `docs/dia-mlp-owned-input-results-2026-10-14.md`.
+
+## UPDATE 2026-10-14 — Owned self-output and cross-attention verified
+
+Actual original projections and SDPA/mask/cache expressions versus literal
+native CPU graph yield 24 rows and 12 rejecting scale/missing-mask controls.
+Minimum same-input cosine 0.9999999999998742, maximum row norm error
+3.122e-7, maximum relative L2 2.580e-7. All four native outputs exactly
+reproduce hosted native snapshots; repeat/thread controls are exact. Actual
+mask is conditional-derived for BOTH CFG branches and permits the 39-token
+prefix of the 1,024-token source context. Synthetic finite masked tails
+verify invariance only, not original unretained padded caches. Complete
+40-payload proof is public and anonymously verified. No runtime math change,
+full speech, GPU, Q4, speed or release acceptance. Evidence:
+`docs/dia-cross-owned-input-results-2026-10-14.md` and `.json`.
+
+## Ascend 910B3 physical follow-up — 2026-10-14
+
+New current-main/ggml21acf3162 physical 910B3, ARM64, SDK9.1, ACL-graph-on
+archive is retained; all 25 member hashes and seven unchanged-wrapper
+assessments verify. Broad ADD154, RMS_NORM51, SOFT_MAX107 and MUL_MAT927
+pass. RoPE fails 450/452 and repeats the same two F32 NEOX failures.
+This is not broad 910B acceptance and does not change the earlier scoped
+310P result. Native Git/compiler provenance verifies; the binary hash is
+producer-reported because no executable is included. No full-model,
+quantized speech or performance proof. Cache-width allocation is a candidate
+explanation awaiting regression/device proof. Evidence and next step:
+`docs/cann-hardware-validation-2026-10-12.md` and
+`docs/cann-910b3-hardware-2026-10-14.json`.
+
+## CANN rotary requested-capacity defect reproduced — 2026-10-14
+
+A bounded pre-fix regression compiles the actual tested allocation block
+and cache metadata. Constant-512-position widths64/64/256/128 leave
+131,072-byte sin/cos requests when 524,288 and 262,144 bytes are required.
+Width growth with fewer positions also fails. Four tests: two expected
+failures, two positive controls, complete logs retained. This is allocation
+coverage only, not RoPE math/device validation or a repair. Immutable test
+source7b77e0b remains diagnostic; production pin/runtime unchanged.
+Public 14-payload proof is anonymously verified. Evidence:
+`docs/cann-rope-capacity-2026-10-14.md` and `.json`.
+
+## Dia full free-running transparency verified — 2026-10-14
+
+Run38527734866 completes; independent whole-delivery/source/history/PCM/WER
+audit passes. Ten unforced arms match full PCM within CLI/C ABI and all
+1,115-step logged model histories match across surfaces. Common/extended
+step978 marks are transparent for the fixed CPU F32 diagnostic recipe.
+Baseline speech remains rejected on both surfaces: empty ASR, WER1.0.
+Public raw262-payload and complete audit archives are anonymously verified.
+No speech/Q4/GPU/performance/default or release acceptance follows.
+Evidence: docs/dia-free-capture-results-2026-10-14.md and .json.
+
+## CANN rotary allocation candidate prepared — 2026-10-14
+
+Shared ggml0a8620765 records sin/cos allocated bytes independently of
+last-call dimensions. Four unchanged capacity regressions now pass; old
+two failing controls remain public. Thirteen BF16 routing cases per chip
+pass. SDK sourceca4c12c4 pins the candidate; run38536737288 is submitted
+on 910B/graph-on and 310P/graph-off. SDK result and physical 910B3 rerun
+remain pending. Production ggml21acf3162 is unchanged; no numerical
+NPU/model/quantized quality/speed or release acceptance. Immutable
+fresh-directory commands and public candidate proof:
+`docs/cann-rope-capacity-candidate-2026-10-14.md` and .json.
+
+### 2026-10-14 — CANN candidate physical correctness; Dia query isolation
+
+Physical910B3/SDK9.1 capacity candidate passes1691/1691 broad cases plus
+452/452 RoPE repeat, with unsupported cases retained. This is operator
+correctness; model speech, captured-graph execution and speed remain unproved.
+SDK/composed CI are pending; production pin is unchanged.
+Dia owned-input query projections show max relative L2 1.481e-7;
+self/cross source-RoPE-off rotary shows5.371e-5/5.167e-6. No timing verdict
+or promotion follows; native speech still fails. Full receipts:
+docs/cann-910b3-rope-physical-2026-10-14.md and
+docs/dia-query-owned-input-results-2026-10-14.md.
+
+### 2026-10-14 — Rotary candidate official SDK compilation verified
+
+Both SDK9.2 architecture builds pass with actual six-target link/completion
+proof and capacity/routing controls. Physical operator acceptance is separate;
+model speech, actual ACL capture/replay and performance are still unvalidated.
+See docs/cann-rope-sdk-2026-10-14.md and docs/cann-todo.md.
+
+### 2026-10-14 — Rotary-capacity repair integrated after all gates
+
+Exact physically tested ggml0a8620765 is production after13/13general CI,
+both SDK architecture builds and physical1691/1691 broad plus452/452 repeat.
+This repairs undersized rotary buffers; it is not a measured speed change.
+Full NPU model, quantized speech and actual ACL replay remain unvalidated.
+See docs/cann-rope-integration-2026-10-14.md and docs/cann-todo.md.
+
+### 2026-10-14 — Correct Moonshine Tiny regression dtype description
+
+The pinned regression file at cstr/moonshine-tiny-GGUF revision28281de8
+physically contains160F32 tensors; its old F16 note was incorrect. The
+manifest description is corrected without changing model, reference,
+transcript or numerical thresholds. Header proof is in
+docs/moonshine-tiny-regression-dtype-2026-10-14.json. This corrects scope;
+it supplies no new speed/quantization result. A CPU fixture producer with
+fresh F32 conversion is submitted; hosted numerical checks remain pending.
+
+### 2026-10-14 — Moonshine F32 CPU correctness baseline
+
+Complete original/published160tensor coefficient identity, exact original
+recipe transcript and blueprint-dumper capture pass. Actual unchanged native
+backend matches original encoder with minrowcos0.99999999973,
+maxrownormerror5.324e-6 and relativeL2 2.107e-6; both transcripts are exactly
+original and repeatable. These are correctness results, not speed or F16/Q4
+measurements. Full CLI/C ABI wiring and NPU performance remain pending.
+Evidence: docs/moonshine-original-fixture-audit-2026-10-14.md and
+docs/moonshine-native-backend-fixture-2026-10-14.md.
+
+## Moonshine full CPU fixture accepted — 2026-10-14
+
+Hosted run38555394740 at a149749 passes original conversion/dumper/generation,
+full encoder diff, CLI and repeated automatic/explicit C ABI Python Sessions.
+Independent returned-artifact audit verifies26 payloads, all160 F32 tensors,
+complete encoder arrays, magnitude controls and transcripts. Encoder minimum
+cosine0.9999999997168613, relative L2 error2.025471488361104e-6; four Session
+transcripts are byte exact to the original. The tested producer and its four
+non-vacuous guards are integrated unchanged. No NPU, quant or speed claim.
+Evidence: docs/moonshine-hosted-cpu-fixture-2026-10-14.md and .json.
+Next: strict CANN model-stage selection, reject missing devices/CPU fallback,
+retain actual scheduler/NPU execution traces; prove failure controls before
+publishing physical hardware commands. Dia full speech remains rejected.
+
+## Strict Moonshine validation integrated — 2026-10-14
+
+Tested source9e2dd0116dd9f9d8b008b22b4d14e9a91757f61d is rebased/fast-forwarded
+at1f71367bbfd1c8768e8e0eae6035362dfda2daf8. Hosted model run38575701613 passes
+13 strict CLI/C ABI/diff/device/bad-reference controls; returned49 payloads,
+all160 coefficients, full arrays and8 original-exact Session transcripts are
+independently audited. All13 general CI jobs38575706459, ten lint jobs38575711575
+and secret scan pass;2,024 unit tests execute, including four new selectors.
+Public raw archive and complete audit/CI logs are anonymously hash verified.
+The post-hosted reporting fixb1cd47f preserves true cosine on magnitude failure
+and uses canonical encoder rows. Actual bounded good+five bad reference controls
+and full diff syntax check pass again; unchanged inference runtime. No NPU,
+ACL, quantized-model or performance acceptance. Current composition CI and new
+SDK compilation remain release gates. Physical NPU full-model work is next.
+Evidence: docs/moonshine-strict-device-validation-2026-10-14.md and .json.
+
+## Portable CANN model validator CPU interface — 2026-10-14
+
+Exact full CPU command and unavailable-CANN controls38602252235 pass;8 new
+false-success/archive/argument guards execute. Actual CLI/shared API/diff/ggml
+ELF snapshots and all171 returned payloads are independently rehashed; four
+Session transcripts and two CLI outputs per CPU control match original words.
+Diagnostic encoder capture now forwards the explicitly requested GPU flag.
+Rebase/ff8f6aaca integrates the unchanged tested runner. Both official SDK builds
+38598516003 link all6 requested targets; compiler-metadata follow-up
+38605386237 passes, with all actual chip/ACL definitions independently audited. No physical NPU, quant, ACL replay or speed
+acceptance. Evidence: docs/cann-model-validator-preparation-2026-10-14.md/.json.
+
+
+## Dia F32 sampling boundary diagnosed — 2026-10-14
+
+Late block-zero self K/V replay passes10 metric rows and14 controls; native
+last cache slots match hosted values exactly. The complete unforced F32
+trajectory matches original inputs through979 steps, then the step978/head2
+nucleus support swaps tokens46/904, causing original877/native904. Actual
+original filtering with both retained noise streams reproduces that difference.
+All963 aligned prefix code frames agree; both PCM prefixes are nearly silent
+and agree at cosine0.999963626/norm ratio0.996749141. The original only reaches
+speech later; the native ASR failure is not cleared. Complete independently
+audited public proofs and scopes are in docs/dia-self-kv-owned-input-results-
+2026-10-14.md and docs/dia-f32-first-divergence-2026-10-14.md. No runtime, filter,
+seed, default or quality-gate change; no performance or release acceptance.
+
+
+## Dia complete layer17 diagnosis — 2026-10-14
+
+Whole original/native layer17 replay passes39 metric rows and32 scale controls;
+eight inherited-input/cache interventions and two real wrong-cache controls
+are independently audited. Native output and one/four-thread results reproduce
+hosted bytes exactly. Matching-input output relative L2 is6.590e-7; inherited
+hidden-input drift has the largest measured individual effect in this block.
+Complete coefficients, sources, arrays, methods and binary proof are public:
+docs/dia-layer17-owned-input-results-2026-10-14.md and .json. Native speech
+remains rejected; no Q4/GPU/performance/default or release acceptance.
+
+
+## Integrated Dia top-k correctness repair (2026-10-15)
+
+The shared sampler now selects exactly k temperature-scaled logit indices
+instead of a rounded-probability threshold. The actual old header loses a
+unique top-k1 maximum in34/64 trials; the corrected sampler loses0/64 and matches four
+pinned original Python corner fixtures. All18,288 captured probability/sample
+rows remain byte-exact to baseline. All13 candidate CI jobs,10 lint checks and the secret scan pass; Linux unit
+testing passes2,026 tests. Header/test bytes are unchanged after rebase. No speech repair,
+Q4/GPU/performance or release acceptance is inferred. Details and public proof:
+[Dia top-k selection](docs/dia-topk-selection-2026-10-14.md).
+
+## Dia layer16 and earlier hidden-state drift (2026-10-15)
+
+Bounded original/native layer16 replay reproduces the hosted native output
+byte-exact, with same-input final relative L2 3.636e-7. Independent audit covers
+39 rows,32 scale negatives,8 current context interventions and2 real cache
+negatives. The report retains an unresolved original cross-process exactness
+failure and the initial-array retention limitation. Both complete component
+and all18-layer scan archives are public and anonymously SHA-verified.
+Cumulative drift peaks earlier at layer3 (3.806e-6); no layer16 repair,
+full-speech/Q4/GPU/performance or release acceptance is inferred. Details:
+[Dia layer16 and scan](docs/dia-layer16-owned-input-results-2026-10-15.md).
+
+## Dia early layer and actual self-cache history (2026-10-15)
+
+Layer0 reproduces native hosted output and repeated one/four-thread runs
+byte-exact. The incoming hidden state is identical; split original-module
+interventions localize the larger context effect to actual self-cache keys
+(3.366e-6 relative L2) rather than values(1.397e-7). Independent audits cover
+39 main rows,32 scale negatives,8 owned contexts,64 split-stage rows and2 real
+wrong-cache controls. Complete283-payload evidence is public and anonymously
+SHA-verified. No new runtime repair, speech/Q4/GPU/performance/default acceptance.
+See [layer0 proof](docs/dia-layer0-owned-input-results-2026-10-15.md).

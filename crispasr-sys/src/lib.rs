@@ -1,5 +1,5 @@
 //! Raw FFI bindings to CrispASR.
-//! Mirrors the public C API in include/whisper.h.
+//! Mirrors the public C API in include/crispasr.h and include/crispasr_session.h.
 
 use std::ffi::{c_char, c_float, c_int, c_void};
 
@@ -23,6 +23,23 @@ pub struct WhisperContextParams(c_void);
 pub const CRISPASR_SAMPLING_GREEDY: c_int = 0;
 pub const CRISPASR_SAMPLING_BEAM_SEARCH: c_int = 1;
 
+/// Built-in Whisper DTW alignment-head presets (public C enum values).
+pub const CRISPASR_AHEADS_NONE: c_int = 0;
+pub const CRISPASR_AHEADS_N_TOP_MOST: c_int = 1;
+pub const CRISPASR_AHEADS_CUSTOM: c_int = 2;
+pub const CRISPASR_AHEADS_TINY_EN: c_int = 3;
+pub const CRISPASR_AHEADS_TINY: c_int = 4;
+pub const CRISPASR_AHEADS_BASE_EN: c_int = 5;
+pub const CRISPASR_AHEADS_BASE: c_int = 6;
+pub const CRISPASR_AHEADS_SMALL_EN: c_int = 7;
+pub const CRISPASR_AHEADS_SMALL: c_int = 8;
+pub const CRISPASR_AHEADS_MEDIUM_EN: c_int = 9;
+pub const CRISPASR_AHEADS_MEDIUM: c_int = 10;
+pub const CRISPASR_AHEADS_LARGE_V1: c_int = 11;
+pub const CRISPASR_AHEADS_LARGE_V2: c_int = 12;
+pub const CRISPASR_AHEADS_LARGE_V3: c_int = 13;
+pub const CRISPASR_AHEADS_LARGE_V3_TURBO: c_int = 14;
+
 /// Progress callback for long-form (chunked) transcription (issue #208).
 /// `Option<...>` so a null pointer clears the callback (C `NULL`).
 pub type CrispasrProgressCallback =
@@ -30,6 +47,8 @@ pub type CrispasrProgressCallback =
 
 extern "C" {
     // --- Lifecycle ---
+    // Preserve the Rust spelling; pointer arguments require the native by-ref ABI.
+    #[link_name = "whisper_init_from_file_with_params_by_ref"]
     pub fn whisper_init_from_file_with_params(
         path: *const c_char,
         params: *const WhisperContextParams,
@@ -39,8 +58,15 @@ extern "C" {
     pub fn whisper_free(ctx: *mut WhisperContext);
     pub fn whisper_free_params(params: *mut WhisperFullParams);
     pub fn whisper_free_context_params(params: *mut WhisperContextParams);
+    pub fn crispasr_ctx_params_set_dtw(
+        params: *mut WhisperContextParams,
+        enable: bool,
+        aheads_preset: c_int,
+        n_top: c_int,
+    );
 
     // --- Inference ---
+    #[link_name = "whisper_full_by_ref"]
     pub fn whisper_full(
         ctx: *mut WhisperContext,
         params: *const WhisperFullParams,
@@ -50,8 +76,30 @@ extern "C" {
 
     pub fn whisper_full_default_params_by_ref(strategy: c_int) -> *mut WhisperFullParams;
 
+    /// Pointer-parameter parallel decode with native progress tracking.
+    pub fn crispasr_transcribe_parallel_by_ref(
+        ctx: *mut WhisperContext,
+        params: *const WhisperFullParams,
+        samples: *const c_float,
+        n_samples: c_int,
+        n_processors: c_int,
+    ) -> c_int;
+
     // --- Results ---
     pub fn whisper_full_n_segments(ctx: *mut WhisperContext) -> c_int;
+    pub fn whisper_full_n_tokens(ctx: *mut WhisperContext, i_segment: c_int) -> c_int;
+    pub fn whisper_full_get_token_text(
+        ctx: *mut WhisperContext,
+        i_segment: c_int,
+        i_token: c_int,
+    ) -> *const c_char;
+    pub fn whisper_full_get_token_id(
+        ctx: *mut WhisperContext,
+        i_segment: c_int,
+        i_token: c_int,
+    ) -> i32;
+
+    pub fn crispasr_token_dtw_t(ctx: *mut WhisperContext, i_segment: c_int, i_token: c_int) -> i64;
 
     pub fn whisper_full_get_segment_text(
         ctx: *mut WhisperContext,
@@ -410,8 +458,16 @@ extern "C" {
         word: c_int,
         i: c_int,
     ) -> *const c_char;
-    pub fn crispasr_align_result_character_t0(r: *mut CrispasrAlignResult, word: c_int, i: c_int) -> i64;
-    pub fn crispasr_align_result_character_t1(r: *mut CrispasrAlignResult, word: c_int, i: c_int) -> i64;
+    pub fn crispasr_align_result_character_t0(
+        r: *mut CrispasrAlignResult,
+        word: c_int,
+        i: c_int,
+    ) -> i64;
+    pub fn crispasr_align_result_character_t1(
+        r: *mut CrispasrAlignResult,
+        word: c_int,
+        i: c_int,
+    ) -> i64;
     pub fn crispasr_align_result_free(r: *mut CrispasrAlignResult);
 
     /// Shared HF download + cache (0.4.8+). Writes the resolved path
@@ -447,7 +503,11 @@ extern "C" {
     /// Shared known-model registry lookup by filename (exact then fuzzy).
     pub fn crispasr_registry_list_backends_abi(out_csv: *mut c_char, out_cap: c_int) -> c_int;
     // #433: backend -> verb ("capability") lookup.
-    pub fn crispasr_backend_caps_abi(backend: *const c_char, out_csv: *mut c_char, out_cap: c_int) -> c_int;
+    pub fn crispasr_backend_caps_abi(
+        backend: *const c_char,
+        out_csv: *mut c_char,
+        out_cap: c_int,
+    ) -> c_int;
     pub fn crispasr_backend_caps_list_abi(out_buf: *mut c_char, out_cap: c_int) -> c_int;
     // #432: reference voice from in-memory samples.
     pub fn crispasr_session_set_voice_samples(
@@ -602,10 +662,7 @@ extern "C" {
         s: *mut CrispasrSession,
         phonemes: *const c_char,
     ) -> c_int;
-    pub fn crispasr_session_set_tts_pad_silence_ms(
-        s: *mut CrispasrSession,
-        ms: c_int,
-    );
+    pub fn crispasr_session_set_tts_pad_silence_ms(s: *mut CrispasrSession, ms: c_int);
     // qwen3-tts variant detection (returns 0/1; 0 also covers "not qwen3-tts").
     pub fn crispasr_session_is_custom_voice(s: *mut CrispasrSession) -> c_int;
     pub fn crispasr_session_is_voice_design(s: *mut CrispasrSession) -> c_int;
@@ -891,7 +948,29 @@ extern "C" {
     ) -> i32;
     pub fn crispasr_titanet_cosine_sim(a: *const c_float, b: *const c_float, dim: i32) -> c_float;
 
+    // Standalone truecase and punctuation/capitalization/segmentation.
+    pub fn crispasr_truecase_init(model: *const c_char) -> *mut c_void;
+    pub fn crispasr_truecase_process(ctx: *mut c_void, text: *const c_char) -> *const c_char;
+    pub fn crispasr_truecase_free_text(text: *const c_char);
+    pub fn crispasr_truecase_free(ctx: *mut c_void);
+    pub fn crispasr_pcs_init(model: *const c_char) -> *mut c_void;
+    pub fn crispasr_pcs_process(ctx: *mut c_void, text: *const c_char) -> *const c_char;
+    pub fn crispasr_pcs_free_text(text: *const c_char);
+    pub fn crispasr_pcs_free(ctx: *mut c_void);
+
     // Speaker profile database
+    pub fn crispasr_speaker_db_open(
+        dir_path: *const c_char,
+        expected_names_csv: *const c_char,
+        consent_attested: i32,
+    ) -> *mut c_void;
+    pub fn crispasr_speaker_db_enroll2(
+        dir_path: *const c_char,
+        name: *const c_char,
+        embedding: *const c_float,
+        dim: i32,
+        consent_attested: i32,
+    ) -> i32;
     pub fn crispasr_speaker_db_load(dir_path: *const c_char) -> *mut c_void;
     pub fn crispasr_speaker_db_free(db: *mut c_void);
     pub fn crispasr_speaker_db_count(db: *const c_void) -> i32;
@@ -1092,7 +1171,7 @@ extern "C" {
         ctx: *mut c_void,
         pcm: *const c_float,
         n_samples: c_int,
-        language: *const c_char,
+        t_offset_cs: i64,
     ) -> *mut c_void;
     pub fn crispasr_parakeet_result_text(r: *mut c_void) -> *const c_char;
     pub fn crispasr_parakeet_result_n_words(r: *mut c_void) -> c_int;
@@ -1355,6 +1434,232 @@ extern "C" {
     /// Canonical EU AI Act Art. 50(1) "you are talking to an AI" wording.
     /// Static string — never null, never freed.
     pub fn crispasr_chat_ai_disclosure_text() -> *const c_char;
+}
+
+extern "C" {
+    // Added wrappers — Go/Rust parity (2026-10-18)
+    pub fn crispasr_session_result_segment_speaker(
+        r: *mut CrispasrSessionResult,
+        i_seg: c_int,
+    ) -> *const c_char;
+    pub fn crispasr_session_result_n_tokens(r: *mut CrispasrSessionResult, i_seg: c_int) -> c_int;
+    pub fn crispasr_session_result_token_text(
+        r: *mut CrispasrSessionResult,
+        i_seg: c_int,
+        i_token: c_int,
+    ) -> *const c_char;
+    pub fn crispasr_session_result_token_t0(
+        r: *mut CrispasrSessionResult,
+        i_seg: c_int,
+        i_token: c_int,
+    ) -> i64;
+    pub fn crispasr_session_result_token_t1(
+        r: *mut CrispasrSessionResult,
+        i_seg: c_int,
+        i_token: c_int,
+    ) -> i64;
+    pub fn crispasr_session_result_token_p(
+        r: *mut CrispasrSessionResult,
+        i_seg: c_int,
+        i_token: c_int,
+    ) -> f32;
+    pub fn crispasr_session_piano(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+    ) -> c_int;
+    pub fn crispasr_session_piano_n_notes(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_piano_notes(
+        s: *mut CrispasrSession,
+        out_n_notes: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_piano_note_programs(
+        s: *mut CrispasrSession,
+        out_n_notes: *mut c_int,
+    ) -> *const c_int;
+    pub fn crispasr_session_piano_sample_rate(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_chords(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+        sample_rate: c_int,
+    ) -> c_int;
+    pub fn crispasr_session_chords_n_spans(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_chords_spans(
+        s: *mut CrispasrSession,
+        out_n_spans: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_chords_span_name(s: *mut CrispasrSession, idx: c_int) -> *const c_char;
+    pub fn crispasr_session_chords_vocab_size(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_beats(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+        sample_rate: c_int,
+    ) -> c_int;
+    pub fn crispasr_session_beats_n_events(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_beats_events(
+        s: *mut CrispasrSession,
+        out_n_events: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_beats_tempo_bpm(s: *mut CrispasrSession) -> f32;
+    pub fn crispasr_session_beats_sample_rate(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_tab(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+        sample_rate: c_int,
+    ) -> c_int;
+    pub fn crispasr_session_tab_n_frames(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_tab_emissions(
+        s: *mut CrispasrSession,
+        out_n_frames: *mut c_int,
+        out_n_strings: *mut c_int,
+        out_n_classes: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_tab_silent_class(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_tab_frame_period(s: *mut CrispasrSession) -> f32;
+    pub fn crispasr_session_tab_string_open_midi(s: *mut CrispasrSession, string: c_int) -> c_int;
+    pub fn crispasr_session_pitch(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+        hop_ms: c_float,
+    ) -> c_int;
+    pub fn crispasr_session_pitch_n_frames(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_pitch_frame(
+        s: *mut CrispasrSession,
+        idx: c_int,
+        out_time_ms: *mut c_float,
+        out_f0_hz: *mut c_float,
+        out_voiced_prob: *mut c_float,
+    ) -> c_int;
+    pub fn crispasr_session_pitch_frames(
+        s: *mut CrispasrSession,
+        out_n_frames: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_pitch_sample_rate(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_convert(
+        s: *mut CrispasrSession,
+        content: *const c_float,
+        n_frames: c_int,
+        f0_hz: *const c_float,
+        speaker_id: c_int,
+        noise_zp: *const c_float,
+        noise_sine: *const c_float,
+    ) -> c_int;
+    pub fn crispasr_session_convert_audio(
+        s: *mut CrispasrSession,
+        out_n_samples: *mut c_int,
+    ) -> *const c_float;
+    pub fn crispasr_session_convert_content_dim(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_convert_n_speakers(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_convert_sample_rate(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_convert_inter_channels(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_convert_upsample_product(s: *mut CrispasrSession) -> c_int;
+    pub fn crispasr_session_set_tts_cfg_scale(s: *mut CrispasrSession, scale: c_float) -> c_int;
+    pub fn crispasr_session_tada_set_makeref_models(
+        s: *mut CrispasrSession,
+        encoder_gguf: *const c_char,
+        aligner_gguf: *const c_char,
+    ) -> c_int;
+    pub fn crispasr_session_disclaimer_text() -> *const c_char;
+    pub fn crispasr_session_get_disclaimer_pcm(
+        s: *mut CrispasrSession,
+        out_n_samples: *mut c_int,
+    ) -> *mut c_float;
+    pub fn crispasr_session_last_synth_error(s: *mut CrispasrSession) -> *const c_char;
+    pub fn crispasr_session_synthesize_streaming(
+        s: *mut CrispasrSession,
+        text: *const c_char,
+        cb: Option<unsafe extern "C" fn(*const c_float, c_int, c_int, *mut c_void)>,
+        user_data: *mut c_void,
+    ) -> c_int;
+    pub fn crispasr_watermark_load_model(gguf_path: *const c_char) -> c_int;
+    pub fn crispasr_pcm_to_wav(
+        pcm: *const c_float,
+        n_samples: c_int,
+        sample_rate: c_int,
+        out_len: *mut usize,
+    ) -> *mut u8;
+    pub fn crispasr_c2pa_sign(
+        data: *const u8,
+        len: usize,
+        format: *const c_char,
+        cert_path: *const c_char,
+        key_path: *const c_char,
+        out_len: *mut usize,
+    ) -> *mut u8;
+    pub fn crispasr_c2pa_free(p: *mut u8);
+    pub fn crispasr_audio_load(
+        path: *const c_char,
+        out_pcm: *mut *mut c_float,
+        out_samples: *mut c_int,
+        out_sample_rate: *mut c_int,
+    ) -> c_int;
+    pub fn crispasr_audio_load_at_rate(
+        path: *const c_char,
+        target_rate: c_int,
+        out_pcm: *mut *mut c_float,
+        out_samples: *mut c_int,
+        out_sample_rate: *mut c_int,
+    ) -> c_int;
+    pub fn crispasr_audio_load_stereo(
+        path: *const c_char,
+        out_left: *mut *mut c_float,
+        out_right: *mut *mut c_float,
+        out_samples: *mut c_int,
+        out_sample_rate: *mut c_int,
+        out_channels: *mut c_int,
+    ) -> c_int;
+    pub fn crispasr_audio_resample(
+        pcm: *const c_float,
+        n_samples: c_int,
+        source_rate: c_int,
+        target_rate: c_int,
+        out_pcm: *mut *mut c_float,
+        out_samples: *mut c_int,
+    ) -> c_int;
+    pub fn crispasr_audio_free(pcm: *mut c_float);
+    pub fn crispasr_free_aligner_cache();
+    pub fn crispasr_session_set_pcm_sample_rate(s: *mut CrispasrSession, rate: c_int) -> c_int;
+    pub fn crispasr_session_set_parakeet_att_context(
+        s: *mut CrispasrSession,
+        left: c_int,
+        right: c_int,
+    ) -> c_int;
+    pub fn crispasr_session_set_grammar_strict(s: *mut CrispasrSession, strict: c_int) -> c_int;
+    pub fn crispasr_session_score_texts(
+        s: *mut CrispasrSession,
+        pcm: *const c_float,
+        n_samples: c_int,
+        language: *const c_char,
+        initial_prompt: *const c_char,
+        texts: *const *const c_char,
+        n_texts: c_int,
+        out_logprobs: *mut c_float,
+        out_n_tokens: *mut c_int,
+    ) -> c_int;
+    pub fn crispasr_session_set_segment_callback(
+        s: *mut CrispasrSession,
+        cb: Option<unsafe extern "C" fn(*const c_char, i64, i64, c_int, *mut c_void)>,
+        user_data: *mut c_void,
+    );
+    pub fn crispasr_session_set_token_callback(
+        s: *mut CrispasrSession,
+        cb: Option<unsafe extern "C" fn(*const c_char, c_int, *mut c_void)>,
+        user_data: *mut c_void,
+    );
+    pub fn crispasr_get_progress() -> c_int;
+    pub fn crispasr_reset_progress();
+    pub fn crispasr_get_streamed_segment_count() -> c_int;
+    pub fn crispasr_drain_streamed_segments() -> *mut CrispasrSessionResult;
+    pub fn crispasr_reset_streamed_segments();
+    pub fn crispasr_get_streamed_token_count() -> c_int;
+    pub fn crispasr_drain_streamed_tokens(out_count: *mut c_int) -> *const c_char;
+    pub fn crispasr_reset_streamed_tokens();
+    pub fn crispasr_set_gpu_backend(name: *const c_char);
+    pub fn crispasr_dart_helpers_version() -> *const c_char;
 }
 
 #[cfg(test)]

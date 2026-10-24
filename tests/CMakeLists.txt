@@ -47,6 +47,12 @@ target_include_directories(test-imatrix-callback PRIVATE ${PROJECT_SOURCE_DIR}/s
 target_link_libraries(test-imatrix-callback PRIVATE Catch2::Catch2WithMain ggml ggml-cpu)
 catch_discover_tests(test-imatrix-callback PROPERTIES LABELS "unit;imatrix")
 
+add_executable(test-index-echo-ffn-capture test-index-echo-ffn-capture.cpp)
+target_include_directories(test-index-echo-ffn-capture PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-index-echo-ffn-capture PRIVATE ggml ggml-cpu)
+add_test(NAME test-index-echo-ffn-capture COMMAND test-index-echo-ffn-capture)
+set_tests_properties(test-index-echo-ffn-capture PROPERTIES LABELS "unit;index-echo")
+
 add_executable(test-index-echo-connector test-index-echo-connector.cpp)
 target_include_directories(test-index-echo-connector PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-index-echo-connector PRIVATE Catch2::Catch2WithMain ggml ggml-cpu)
@@ -2145,6 +2151,13 @@ catch_discover_tests(test-speecht5-params
     TEST_SPEC "[unit]"
     PROPERTIES LABELS "unit;speecht5"
 )
+
+# Actual optional Dia CPU head graph; tiny analytic tensors, no model weights.
+add_executable(test-dia-serial-head test-dia-serial-head.cpp)
+target_include_directories(test-dia-serial-head PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-dia-serial-head PRIVATE ggml ggml-cpu)
+add_test(NAME test-dia-serial-head COMMAND test-dia-serial-head)
+set_tests_properties(test-dia-serial-head PROPERTIES LABELS "unit;dia")
 
 # ─── test-dia-params — Catch2 unit tests for dia_tts_context_params defaults
 # and null-guard coverage. No GGUF required. ───────────────────────────────────
@@ -4544,6 +4557,31 @@ catch_discover_tests(test-core-bpe
     PROPERTIES LABELS "unit;bpe"
 )
 
+# ─── test-breeze-cfg — core/breeze_cfg.h bt2-tts guidance plan + combine ─────
+# Pins the prompt branches and the logits combine to upstream breeze-tts.
+# No model load, pure CPU.
+add_executable(test-breeze-cfg test-breeze-cfg.cpp)
+target_include_directories(test-breeze-cfg PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-breeze-cfg PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-breeze-cfg
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit;breeze-cfg"
+)
+
+# ─── test-breeze-abi — src/breeze_tts_2.h exported C entry points ────────────
+# Compiles and links against the declarations other code depends on. NULL
+# context throughout, no model load.
+if (TARGET breeze_tts_2)
+    add_executable(test-breeze-abi test-breeze-abi.cpp)
+    target_link_libraries(test-breeze-abi PRIVATE breeze_tts_2 Catch2::Catch2WithMain)
+    catch_discover_tests(test-breeze-abi
+        TEST_SPEC "[unit]"
+        PROPERTIES LABELS "unit;breeze-abi"
+    )
+endif()
+
 # ─── test-core-wordpiece — core/wordpiece.h BERT WordPiece tokenizer ─────────
 # Verifies build_map, lookup, cased/uncased detection, BasicTokenizer,
 # WordPiece greedy subword splitting, [UNK] fallback. No model load, pure CPU.
@@ -5391,6 +5429,10 @@ set_tests_properties(test-package-lib-bundle PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 120)
 
+# Discover Python before constructing commands or guarding their registration.
+# A later find_package leaves clean builds without the guarded unit tests.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
 # ─── test-server-ws-stream — live: --ws-port real-time WebSocket ASR streaming.
 # Raw-socket client (stdlib only) verifies the RFC 6455 handshake + a streaming
 # transcription. Needs a whisper ggml model; SKIPs otherwise.
@@ -5584,14 +5626,103 @@ set_tests_properties(test-separate-live PROPERTIES
 
 # #533: compile native finalization/getters and decode via Python ctypes.
 if(UNIX AND Python3_EXECUTABLE)
+    add_test(NAME alignment-cuda-loader
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_alignment_cuda_loader.py -v)
+    set_tests_properties(alignment-cuda-loader PROPERTIES LABELS "unit;alignment" TIMEOUT 30)
+    add_test(NAME alignment-cache-release-samples
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_alignment_cache_release_samples.py -v)
+    set_tests_properties(alignment-cache-release-samples PROPERTIES LABELS "unit;alignment" TIMEOUT 30)
+    add_test(NAME kaggle-cli-launcher
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_kpush.py -v)
+    set_tests_properties(kaggle-cli-launcher PROPERTIES LABELS "unit;tooling" TIMEOUT 30)
+    add_test(NAME ja-metadata-validator
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ja_metadata_live_validator.py -v)
+    set_tests_properties(ja-metadata-validator PROPERTIES LABELS "unit;bindings" TIMEOUT 30)
+    # Model-free language ABI probes skip on developer machines without SDKs.
+    # binding-contracts.yml uses the strict runner and rejects every skip.
+    foreach(wrapper_language csharp java ruby dart wasm)
+        add_test(NAME test-${wrapper_language}-wrapper-contract
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_${wrapper_language}_wrapper_contract.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+        set_tests_properties(test-${wrapper_language}-wrapper-contract PROPERTIES
+            LABELS "unit;bindings" TIMEOUT 600)
+    endforeach()
+    add_test(NAME test-go-rust-wrapper-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_go_rust_wrapper_contract.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-go-rust-wrapper-contract PROPERTIES LABELS "unit;bindings" TIMEOUT 600)
+    add_test(NAME test-whisper-parallel-runtime
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_whisper_parallel_runtime.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-whisper-parallel-runtime PROPERTIES LABELS "unit;whisper" TIMEOUT 60)
+    add_test(NAME test-ctc-windows
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ctc_windows.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-ctc-windows PROPERTIES LABELS "unit;align" TIMEOUT 60)
+    add_test(NAME test-whisper-emission-bounds
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_whisper_emission_bounds.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-whisper-emission-bounds PROPERTIES LABELS "unit;whisper" TIMEOUT 60)
+    add_test(NAME test-whisper-vad-timeline
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_whisper_vad_timeline.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-whisper-vad-timeline PROPERTIES LABELS "unit;whisper" TIMEOUT 60)
+    add_test(NAME test-python-legacy-pointer
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_python_legacy_pointer.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-python-legacy-pointer PROPERTIES LABELS "unit;bindings;whisper" TIMEOUT 60)
+    add_test(NAME test-python-audio-utilities
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_python_audio_utilities.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-python-audio-utilities PROPERTIES LABELS "unit;bindings;audio" TIMEOUT 60)
+    add_test(NAME test-python-wrapper-operations
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_python_wrapper_operations.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-python-wrapper-operations PROPERTIES LABELS "unit;session;bindings" TIMEOUT 60)
+    add_test(NAME test-python-api-coverage
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check-python-api-coverage.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-python-api-coverage PROPERTIES LABELS "unit;bindings" TIMEOUT 30)
     add_test(NAME test-session-utf8
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_session_utf8.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     set_tests_properties(test-session-utf8 PROPERTIES LABELS "unit;session" TIMEOUT 60)
+    add_test(NAME test-parakeet-window-metadata
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_parakeet_window_metadata.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-parakeet-window-metadata PROPERTIES LABELS "unit;session;bindings;parakeet" TIMEOUT 120)
+    add_test(NAME test-session-metadata
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_session_metadata.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-session-metadata PROPERTIES LABELS "unit;session;bindings" TIMEOUT 60)
+    add_test(NAME test-align-compact
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_align_compact.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-align-compact PROPERTIES LABELS "unit;align" TIMEOUT 120)
+    add_test(NAME test-alignment-model-profile
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_alignment_model_profile.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-alignment-model-profile PROPERTIES LABELS "unit;align" TIMEOUT 60)
+    add_test(NAME test-subword-align-compact
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_subword_align_compact.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-subword-align-compact PROPERTIES LABELS "unit;align" TIMEOUT 120)
+    add_test(NAME test-canary-align-contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_canary_align_contract.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-canary-align-contract PROPERTIES LABELS "unit;align;abi" TIMEOUT 60)
+    add_test(NAME test-breeze-session-modes
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_breeze_session_modes.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-breeze-session-modes PROPERTIES LABELS "unit;session;breeze" TIMEOUT 60)
     add_test(NAME test-breeze-session-controls
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_breeze_session_controls.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     set_tests_properties(test-breeze-session-controls PROPERTIES LABELS "unit;session;breeze" TIMEOUT 60)
+    add_test(NAME test-tts-session-contracts
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tts_session_contracts.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-tts-session-contracts PROPERTIES LABELS "unit;session;tts" TIMEOUT 60)
     add_test(NAME test-ngram-locale
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ngram_locale.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
@@ -6200,7 +6331,6 @@ target_link_libraries(test-ctc-stitch PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test-ctc-stitch TEST_SPEC "[ctc-stitch]" PROPERTIES LABELS "unit;omniasr")
 
 # Phonon-2 reuses Parakeet; exercise its model alias and metadata through real surfaces.
-find_package(Python3 COMPONENTS Interpreter QUIET)
 # examples/cli is added after tests, so its target does not exist yet here.
 if (Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES AND BUILD_SHARED_LIBS
     AND NOT EMSCRIPTEN AND NOT CRISPASR_BUILD_COMMON_ONLY)
@@ -6283,3 +6413,19 @@ set_tests_properties(test-vad-failure PROPERTIES LABELS "unit;context-assist")
 add_custom_target(context-assist-tests)
 add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy
     test-session-contract-live test-vad-failure)
+# #540: actual upstream CSGU/merge fixtures, including normalization at edges.
+add_executable(test-dolphin-depthwise test-dolphin-depthwise.cpp)
+target_include_directories(test-dolphin-depthwise PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-dolphin-depthwise PRIVATE ggml ggml-cpu)
+add_test(NAME dolphin-depthwise-checkpoint-padding COMMAND test-dolphin-depthwise)
+set_tests_properties(dolphin-depthwise-checkpoint-padding PROPERTIES LABELS "unit;dolphin")
+
+add_executable(test-weight-usage test-weight-usage.cpp)
+target_include_directories(test-weight-usage PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
+target_link_libraries(test-weight-usage PRIVATE Catch2::Catch2WithMain crispasr-core ggml crispasr_link_ggml_cpu)
+catch_discover_tests(test-weight-usage PROPERTIES LABELS "unit;weight-usage")
+
+if(Python3_Interpreter_FOUND AND UNIX)
+    add_test(NAME cann-nz-cache-lifecycle COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_cann_nz_lifecycle.py -v)
+    set_tests_properties(cann-nz-cache-lifecycle PROPERTIES LABELS "unit;cann" TIMEOUT 60)
+endif()
