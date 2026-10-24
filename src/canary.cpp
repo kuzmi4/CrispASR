@@ -36,6 +36,7 @@
 #include "core/attention.h"
 #include "core/cpu_ops.h" // core_cpu::to_f32 (quantized-safe weight read)
 #include "core/beam_decode.h"
+#include "core/asr_context_bias.h"
 #include "core/canary_chunk_merge.h"
 #include "core/crispasr_lcs.h"
 #include "core/asr_overlap_trim.h"
@@ -288,6 +289,13 @@ struct canary_context {
     // #292: decode cap; forwarded from --max-new-tokens when the user set it,
     // else this default. Clamped to the model's decoder context at use.
     int max_new_tokens = 256;
+
+    // Term hints: trie over SentencePiece forms. The match state does not live
+    // here — greedy keeps one per decode call, beam rebuilds it from each
+    // beam's suffix, so a chunk always starts at the root.
+    core_context_bias::Trie hotword_trie;
+    float hotword_boost = 2.0f;
+    int hotwords_inserted = 0;
 };
 
 // ===========================================================================
@@ -1956,6 +1964,41 @@ extern "C" void canary_set_max_new_tokens(struct canary_context* ctx, int n) {
         ctx->max_new_tokens = n;
 }
 
+// Term hints (Context-Assist). A form goes into the trie whole or not at all:
+// core_context_bias::tokenize_spm_form drops a form the SentencePiece vocab
+// does not cover, and the EOS piece is kept out of every form.
+extern "C" int canary_set_hotwords(struct canary_context* ctx, const char** hotwords, int n_hotwords, float boost) {
+    if (!ctx)
+        return -1;
+    ctx->hotword_trie = core_context_bias::Trie{};
+    ctx->hotwords_inserted = 0;
+    ctx->hotword_boost = boost > 0.0f ? boost : 1.5f;
+    if (!hotwords || n_hotwords <= 0)
+        return 0;
+    if (ctx->vocab.id_to_token.empty())
+        return -2;
+    const int eos = ctx->model.hparams.endoftext_id;
+    for (int i = 0; i < n_hotwords; i++) {
+        if (!hotwords[i])
+            continue;
+        const auto ids = core_context_bias::tokenize_spm_form(ctx->vocab.id_to_token, eos, hotwords[i]);
+        if (ids.empty())
+            continue;
+        ctx->hotword_trie.insert(ids, ctx->hotword_boost);
+        ctx->hotwords_inserted++;
+    }
+    // After every insert: failure links propagate the endpoint boosts.
+    ctx->hotword_trie.build_failure_links();
+    if (ctx->params.verbosity >= 1)
+        fprintf(stderr, "canary: hotwords inserted %d of %d form(s), boost %.1f\n", ctx->hotwords_inserted,
+                n_hotwords, (double)ctx->hotword_boost);
+    return ctx->hotwords_inserted;
+}
+
+extern "C" int canary_hotwords_inserted(struct canary_context* ctx) {
+    return ctx ? ctx->hotwords_inserted : -1;
+}
+
 extern "C" int canary_n_vocab(struct canary_context* ctx) {
     return (int)ctx->model.hparams.vocab_size;
 }
@@ -2885,6 +2928,10 @@ static canary_result* canary_finish_from_encoder(canary_context* ctx, const floa
         return nullptr;
     offset = (int)prompt.size();
 
+    // Term hints: greedy walks one match state for this chunk; beam rebuilds a
+    // fresh state per hypothesis from its suffix (see bcfg.logit_bias below).
+    core_context_bias::MatchState hw_state;
+
     // §90 beam search — run_with_probs_branched when beam_size > 1.
     // Cross-attention KV (cross_k/v) is shared across beams; only self-attention
     // KV (kv_k/kv_v) is snapshotted per beam.
@@ -2917,6 +2964,19 @@ static canary_result* canary_finish_from_encoder(canary_context* ctx, const floa
         bcfg.vocab_size = vocab;
         bcfg.beam_size = ctx->beam_size;
         bcfg.prompt_len = (int)prompt.size();
+        if (!ctx->hotword_trie.empty()) {
+            const core_context_bias::Trie* trie = &ctx->hotword_trie;
+            const float boost = ctx->hotword_boost;
+            const int n_vocab = (int)ctx->vocab.id_to_token.size();
+            // A bias that starts or overrides EOS is worse than none (measured
+            // on the reference corpus), so EOS plays the blank-gate role here.
+            bcfg.logit_bias = [trie, boost, n_vocab, eos](const int32_t* toks, int n, float* lg) {
+                core_context_bias::MatchState st;
+                for (int i = 0; i < n; i++)
+                    core_context_bias::advance(*trie, st, toks[i]);
+                core_context_bias::apply_bias(*trie, st, lg, n_vocab, boost, eos);
+            };
+        }
 
         auto br = core_beam_decode::run_with_probs_branched(ctx, logits.data(), save_fn, restore_fn, snap_free_fn,
                                                             step_fn, bcfg);
@@ -2967,6 +3027,10 @@ static canary_result* canary_finish_from_encoder(canary_context* ctx, const floa
     constexpr int kMaxDistinct = 3;
 
     for (int step = 0; step < max_steps && offset < max_ctx - 1; step++) {
+        // Term hints: continuation-only bias, EOS as the gate (a hint never
+        // turns a finished phrase into a word).
+        core_context_bias::apply_bias(ctx->hotword_trie, hw_state, logits.data(), (int)logits.size(),
+                                      ctx->hotword_boost, eos);
         // Argmax (default) or temperature sample
         int best = 0;
         float best_lp = logits[0];
@@ -3007,6 +3071,7 @@ static canary_result* canary_finish_from_encoder(canary_context* ctx, const floa
         }
         if (best == eos)
             break;
+        core_context_bias::advance(ctx->hotword_trie, hw_state, best);
 
         // Degenerate-loop guard: count distinct ids in the last
         // kWindow generated tokens (including this one). Cheap O(W)

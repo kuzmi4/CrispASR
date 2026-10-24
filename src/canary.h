@@ -103,6 +103,16 @@ void canary_set_temperature(struct canary_context* ctx, float temperature, uint6
 void canary_set_beam_size(struct canary_context* ctx, int n);
 void canary_set_max_new_tokens(struct canary_context* ctx, int n);
 
+// Term hints: continuation-only logit bias in greedy and beam decoding. A hint
+// finishes a form the decoder started on its own; it never boosts a form's
+// first token and never overrides an EOS that wins without hints. The state
+// starts at the trie root on every chunk. n_hotwords <= 0 clears the trie.
+// Returns the number of inserted forms, -2 when the model has no SentencePiece
+// hint support (the form would not survive the vocab), -1 on bad arguments.
+int canary_set_hotwords(struct canary_context* ctx, const char** hotwords, int n_hotwords, float boost);
+// Forms the last successful canary_set_hotwords put into the trie.
+int canary_hotwords_inserted(struct canary_context* ctx);
+
 // Hyper-parameters
 int canary_frame_dur_cs(struct canary_context* ctx);
 int canary_n_mels(struct canary_context* ctx);

@@ -146,6 +146,13 @@ struct Config {
     // Logits processors that run AFTER log_softmax in beam search (e.g. the
     // repetition penalty): log_probs[vocab], the beam's generated tokens.
     std::function<void(float*, const int32_t*, int)> logprob_processor;
+    // Term-hint logit bias, applied to each live beam's raw logits BEFORE the
+    // top-K of every step. `tokens` is that beam's generated suffix (post-prompt):
+    // the callee rebuilds its own trie state from it, so this helper keeps no
+    // per-beam hint bookkeeping and beams can be reordered or pruned freely.
+    // Legacy semantics only — hf_search has its own beam struct; Canary pins
+    // Legacy (NeMo search), which is the one caller that sets this.
+    std::function<void(const int32_t* tokens, int n_tokens, float* logits)> logit_bias;
 };
 
 inline Semantics resolve_semantics(const Config& cfg) {
@@ -701,6 +708,9 @@ inline Result run_with_probs_branched(Ctx* ctx, const float* prefill_logits, Sav
                 continue;
             }
             step_snaps[bi] = wrap(save_fn(ctx));
+
+            if (cfg.logit_bias)
+                cfg.logit_bias(b.tokens.data(), (int)b.tokens.size(), lg);
 
             std::vector<int> ids;
             std::vector<double> lps;

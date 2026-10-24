@@ -1733,6 +1733,19 @@ target_link_libraries(test-context-bias PRIVATE
 add_test(NAME test-context-bias COMMAND test-context-bias "[context_bias]")
 set_tests_properties(test-context-bias PROPERTIES LABELS "unit;context-assist")
 
+# ─── test - beam - logit - bias — Config::logit_bias seam used by Canary hints
+add_executable(test-beam-logit-bias
+    test-beam-logit-bias.cpp
+)
+target_include_directories(test-beam-logit-bias PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-beam-logit-bias PRIVATE
+    Catch2::Catch2WithMain
+)
+add_test(NAME test-beam-logit-bias COMMAND test-beam-logit-bias "[beam]")
+set_tests_properties(test-beam-logit-bias PROPERTIES LABELS "unit;context-assist")
+
 # ─── test - windows - mic — regression test for Windows dshow mic selection
 add_executable(test-windows-mic
     test_windows_mic.cpp
@@ -6411,7 +6424,7 @@ set_tests_properties(test-vad-failure PROPERTIES LABELS "unit;context-assist")
 
 # Context-Assist fork: build only the tests labelled `context-assist` (CI job `test`).
 add_custom_target(context-assist-tests)
-add_dependencies(context-assist-tests test-context-bias test-hotwords-live test-rnnt-greedy
+add_dependencies(context-assist-tests test-context-bias test-beam-logit-bias test-hotwords-live test-rnnt-greedy
     test-session-contract-live test-vad-failure)
 # #540: actual upstream CSGU/merge fixtures, including normalization at edges.
 add_executable(test-dolphin-depthwise test-dolphin-depthwise.cpp)

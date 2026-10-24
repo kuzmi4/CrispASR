@@ -15,6 +15,7 @@
 #include "whisper_params.h"
 
 #include "canary.h"
+#include "core/asr_context_bias.h"
 #include "core/script_mismatch.h" // #419 wrong-script warning
 
 #include <algorithm>
@@ -79,6 +80,15 @@ public:
         canary_set_beam_size(ctx_, params.beam_size > 0 ? params.beam_size : 1);
         // #292: forward --max-new-tokens only when explicit; 0 keeps the default.
         canary_set_max_new_tokens(ctx_, params.max_new_tokens_explicit ? params.max_new_tokens : 0);
+
+        // Term hints: same form list as the parakeet/gigaam CLI paths. Empty
+        // list clears the trie, so every file carries its own dictionary.
+        auto hw = core_context_bias::parse_hotwords(params.hotwords);
+        std::vector<const char*> hw_ptrs;
+        for (auto& h : hw)
+            hw_ptrs.push_back(h.c_str());
+        canary_set_hotwords(ctx_, hw_ptrs.empty() ? nullptr : hw_ptrs.data(), (int)hw_ptrs.size(),
+                            params.hotwords_boost);
 
         // Resolve src/tgt language with the fallback chain:
         //   source_lang -> language
