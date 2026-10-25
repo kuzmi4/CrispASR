@@ -1,3 +1,13 @@
+## 2026-10-25 — Context-Assist TDT blank-dominant beam
+
+When blank is the highest-logit token for a Parakeet TDT beam hypothesis,
+retain only its blank continuation. This prevents the reproduced `Yeah.` on
+one second of digital silence without changing greedy, duration transitions
+or VAD. The live regression covers beam 2/4, 1/5 seconds, hotwords off/on/off:
+32 assertions pass on Parakeet v3 Q8_0 CPU. All four Context-Assist unit CTest
+entries pass. The app's 88-case CPU experiment changes one transcript and
+reduces raw WER from 73/744 to 72/744; quiet live speech remains unaccepted.
+
 ## 2026-10-21 — Final issue-follow-up source accepted for release preparation
 
 Source883549696 passes all13 CI39467977527 and all10 lint39467977612 jobs,

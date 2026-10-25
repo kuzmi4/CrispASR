@@ -2260,6 +2260,10 @@ static std::vector<parakeet_emitted_token> parakeet_tdt_beam_decode(parakeet_con
             if (!has_blank)
                 top_ids.push_back(blank_id);
 
+            // Do not turn a blank-dominant frame into speech through a lower-ranked beam alternative.
+            if (std::max_element(logits.begin(), logits.begin() + n_vocab_blk) - logits.begin() == blank_id)
+                top_ids.assign(1, blank_id);
+
             for (int id : top_ids) {
                 double log_p = (double)logits[id] - logZ;
                 float tok_p = (float)std::exp(log_p);
