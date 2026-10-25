@@ -1,3 +1,14 @@
+## 2026-10-31 — Context-Assist production line merged onto upstream v0.8.49
+
+Upstream `v0.8.49` is merged under the patches the `ca-0.8.44.x` releases carry
+(caps verbs, Nemotron hints/beam/attention context, case-folded hint matching,
+F1–F12), so the production line is no longer tied to the 0.8.44 base. Two source
+conflicts: `crispasr_session_open_explicit` keeps the F3/F5 wrapper and adds
+upstream's `reject_external_file` model gate (tagged MODEL); the caps table keeps
+`unbounded-input`/`internal-chunking` and takes upstream's new TTS rows. The TDT
+blank-dominant beam fix, which the 0.8.44.2 tag carried and 0.8.44.3+ dropped by
+branching earlier, is restored here.
+
 ## 2026-10-30 — v0.8.49 Audio8-TTS (ArkTTS 0.6B), standalone LID, and Qwen3 context
 
 Release v0.8.49 completes integration of the Audio8-TTS (ArkTTS 0.6B) dual-autoregressive
@@ -766,6 +777,16 @@ byte/hash readbacks and no weight changes. This does not waive project
 redistribution obligations or PR #521's unchanged speech-quality gate.
 [Terms and disposition](docs/model-license-policy.md),
 [notice publication receipt](docs/historical/omnivoice-license-notices-2026-10-22.json).
+
+## 2026-10-25 — Context-Assist TDT blank-dominant beam
+
+When blank is the highest-logit token for a Parakeet TDT beam hypothesis,
+retain only its blank continuation. This prevents the reproduced `Yeah.` on
+one second of digital silence without changing greedy, duration transitions
+or VAD. The live regression covers beam 2/4, 1/5 seconds, hotwords off/on/off:
+32 assertions pass on Parakeet v3 Q8_0 CPU. All four Context-Assist unit CTest
+entries pass. The app's 88-case CPU experiment changes one transcript and
+reduces raw WER from 73/744 to 72/744; quiet live speech remains unaccepted.
 
 ## 2026-10-21 — Final issue-follow-up source accepted for release preparation
 

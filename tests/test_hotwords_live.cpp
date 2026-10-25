@@ -113,6 +113,33 @@ TEST_CASE("parakeet_set_hotwords: enrollment forms on Parakeet v3", "[hotwords-l
     parakeet_free(ctx);
 }
 
+TEST_CASE("Parakeet TDT beam keeps silence empty with and without hotwords", "[hotwords-live][parakeet]") {
+    const std::string model = input_path("CRISPASR_MODEL_PARAKEET");
+#ifdef __APPLE__
+    REQUIRE(sha256_file(model) == kParakeetV3Sha256);
+#endif
+    auto params = parakeet_context_default_params();
+    params.use_gpu = false;
+    parakeet_context* ctx = parakeet_init_from_file(model.c_str(), params);
+    REQUIRE(ctx != nullptr);
+    const char* hints[] = {"Thank you", "Спасибо"};
+    for (int beam : {2, 4}) {
+        parakeet_set_beam_size(ctx, beam);
+        for (int n_hints : {0, 2, 0}) {
+            REQUIRE(parakeet_set_hotwords(ctx, hints, n_hints, 4.0f) == n_hints);
+            for (int seconds : {1, 5}) {
+                INFO("beam=" << beam << " hints=" << n_hints << " seconds=" << seconds);
+                const std::vector<float> silence(16000 * seconds, 0.0f);
+                parakeet_result* result = parakeet_transcribe_ex(ctx, silence.data(), (int)silence.size(), 0);
+                REQUIRE(result != nullptr);
+                CHECK(std::string(result->text).empty());
+                parakeet_result_free(result);
+            }
+        }
+    }
+    parakeet_free(ctx);
+}
+
 TEST_CASE("gigaam_set_hotwords: enrollment forms on GigaAM v3 e2e_rnnt", "[hotwords-live][gigaam]") {
     const std::string model = input_path("CRISPASR_MODEL_GIGAAM");
     const std::string hints = input_path("CA_HOTWORDS_FILE");
