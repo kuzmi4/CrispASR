@@ -635,6 +635,13 @@ static constexpr cap_slug kCapSlugs[] = {
     {"tab", CAP_TAB},
     {"piano", CAP_PIANO},
     {"tts-speed", CAP_TTS_SPEED},
+    // «Бэкенд сам режет длинный проход»: без этих слизгов потребитель библиотеки
+    // (#433) не отличает модель, которой нужна внешняя нарезка, от той, что режет
+    // сама (parakeet) или жуёт вход любой длины (FastConformer/CTC). Оба флага
+    // давно в enum, но в таблицу не выводились — Context-Assist держал это знание
+    // у себя таблицей по семейству.
+    {"unbounded-input", CAP_UNBOUNDED_INPUT},
+    {"internal-chunking", CAP_INTERNAL_CHUNKING},
 };
 
 void crispasr_print_backend_matrix_json() {
