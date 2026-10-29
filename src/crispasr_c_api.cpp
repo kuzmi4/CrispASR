@@ -6997,6 +6997,8 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
     if (s->backend == "nemotron" && s->nemotron_ctx) {
         if (lang_set)
             nemotron_set_language(s->nemotron_ctx, lang.c_str());
+        // Session beam_size never reached nemotron (CLI-only), same as parakeet.
+        nemotron_set_beam_size(s->nemotron_ctx, s->beam_size > 0 ? s->beam_size : 1);
         nemotron_result* nr = nemotron_transcribe_ex(s->nemotron_ctx, pcm, n_samples, 0);
         if (!nr) {
             delete r;
