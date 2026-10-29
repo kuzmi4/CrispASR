@@ -90,6 +90,14 @@ void nemotron_set_beam_size(struct nemotron_context* ctx, int beam_size);
 // beam_size > 1. enable=false disables (reverts to standard beam search).
 void nemotron_set_maes(struct nemotron_context* ctx, bool enable, int num_steps, float gamma, int beta);
 
+// Term hints: continuation-only logit bias in greedy and beam decoding (not MAES
+// or streaming). A hint finishes a form the decoder started on its own; it never
+// boosts a form's first token and never overrides a blank that wins without
+// hints. The state starts at the trie root on every call. n_hotwords <= 0 clears
+// the trie. Returns the number of inserted forms, -2 when the model has no vocab,
+// -1 on bad arguments.
+int nemotron_set_hotwords(struct nemotron_context* ctx, const char** hotwords, int n_hotwords, float boost);
+
 // Vocabulary helpers
 int nemotron_n_vocab(struct nemotron_context* ctx);
 int nemotron_blank_id(struct nemotron_context* ctx);

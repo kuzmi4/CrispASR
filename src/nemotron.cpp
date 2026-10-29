@@ -40,6 +40,7 @@
 #include "core/gpu_backend_pref.h" // crispasr_init_gpu_backend (#214)
 #include "core/rnnt_ggml.h"        // §232 GPU transducer decode (shared)
 #include "core/crispasr_env.h"
+#include "core/asr_context_bias.h"
 
 #if defined(HAVE_ACCELERATE)
 #include <Accelerate/Accelerate.h>
@@ -258,6 +259,10 @@ struct nemotron_context {
     float decode_temperature = 0.0f;
     uint64_t decode_seed = 0;
     int decode_beam_size = 1;
+
+    // Term hints, set by nemotron_set_hotwords(); an empty trie = the unbiased decode.
+    core_context_bias::Trie hotword_trie;
+    float hotword_boost = 0.0f;
 
     // MAES controls
     bool decode_maes = false;
@@ -2345,6 +2350,8 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_decode(nemotron_context
     std::vector<nemotron_emitted_token> emitted;
     nemotron_lstm_state state;
     state.init(W.H);
+    const bool has_hotwords = !ctx->hotword_trie.empty();
+    core_context_bias::MatchState hw_state;
 
     std::vector<float> pred_out;
     if (ggml_dec)
@@ -2386,6 +2393,9 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_decode(nemotron_context
                 nemotron_joint_step_ggml(ctx, gdec, proj_e.data(), pred_out.data(), logits);
             else
                 joint_step(J, proj_e.data(), pred_out.data(), logits);
+            if (has_hotwords)
+                core_context_bias::apply_bias(ctx->hotword_trie, hw_state, logits.data(), J.vocab_total,
+                                              ctx->hotword_boost, blank_id);
 
             // Softmax for probability
             float maxl = *std::max_element(logits.begin(), logits.end());
@@ -2417,6 +2427,8 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_decode(nemotron_context
             emitted.push_back(et);
             if (on_tok)
                 on_tok(tok, logits[tok], on_tok_ud);
+            if (has_hotwords)
+                core_context_bias::advance(ctx->hotword_trie, hw_state, tok);
 
             if (ggml_dec)
                 nemotron_predictor_step_ggml(ctx, gdec, tok, state, pred_out);
@@ -2622,7 +2634,9 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_beam_decode(nemotron_co
         double cum_logprob = 0.0;
         std::vector<nemotron_emitted_token> emitted;
         bool active = true;
+        core_context_bias::MatchState hw_state;
     };
+    const bool has_hotwords = !ctx->hotword_trie.empty();
 
     // Seed: single hypothesis at t=0 with SOS predictor state
     std::vector<Hyp> beam(1);
@@ -2670,6 +2684,9 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_beam_decode(nemotron_co
                 nemotron_joint_step_ggml(ctx, gdec, proj_e.data(), h.pred_out.data(), logits);
             else
                 joint_step(J, proj_e.data(), h.pred_out.data(), logits);
+            if (has_hotwords)
+                core_context_bias::apply_bias(ctx->hotword_trie, h.hw_state, logits.data(), n_vocab,
+                                              ctx->hotword_boost, blank_id);
             // Log-partition (log-sum-exp) over all tokens
             float max_logit = logits[0];
             for (int v = 1; v < n_vocab; v++)
@@ -2733,6 +2750,7 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_beam_decode(nemotron_co
             nh.pred_out = parent.pred_out;
             nh.cum_logprob = c.cum_logprob;
             nh.emitted = parent.emitted;
+            nh.hw_state = parent.hw_state;
 
             if (c.token == blank_id) {
                 // Blank: advance frame by 1
@@ -2741,6 +2759,8 @@ static std::vector<nemotron_emitted_token> nemotron_rnnt_beam_decode(nemotron_co
             } else {
                 // Real token: emit, advance predictor, stay on frame
                 nh.emitted.push_back({c.token, parent.t, parent.t + 1, c.tok_p});
+                if (has_hotwords)
+                    core_context_bias::advance(ctx->hotword_trie, nh.hw_state, c.token);
                 if (ggml_dec)
                     nemotron_predictor_step_ggml(ctx, gdec, c.token, nh.lstm, nh.pred_out);
                 else
@@ -3830,6 +3850,33 @@ extern "C" void nemotron_set_beam_size(struct nemotron_context* ctx, int beam_si
     if (!ctx)
         return;
     ctx->decode_beam_size = beam_size > 0 ? beam_size : 1;
+}
+
+extern "C" int nemotron_set_hotwords(struct nemotron_context* ctx, const char** hotwords, int n_hotwords,
+                                     float boost) {
+    if (!ctx)
+        return -1;
+    ctx->hotword_trie = core_context_bias::Trie{};
+    ctx->hotword_boost = boost > 0.0f ? boost : 1.5f;
+    if (!hotwords || n_hotwords <= 0)
+        return 0;
+    if (ctx->vocab.id_to_token.empty())
+        return -2;
+    // Same path as gigaam/canary: a form goes in whole or not at all.
+    const int32_t blank_id = (int32_t)ctx->model.hparams.blank_id;
+    int inserted = 0;
+    for (int i = 0; i < n_hotwords; i++) {
+        if (!hotwords[i])
+            continue;
+        const auto ids = core_context_bias::tokenize_spm_form(ctx->vocab.id_to_token, blank_id, hotwords[i]);
+        if (ids.empty())
+            continue;
+        ctx->hotword_trie.insert(ids, ctx->hotword_boost);
+        inserted++;
+    }
+    // After every insert: failure links propagate the endpoint boosts.
+    ctx->hotword_trie.build_failure_links();
+    return inserted;
 }
 
 extern "C" void nemotron_set_maes(struct nemotron_context* ctx, bool enable, int num_steps, float gamma, int beta) {

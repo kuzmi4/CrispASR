@@ -8,6 +8,7 @@
 #include "whisper_params.h"
 
 #include "nemotron.h"
+#include "core/asr_context_bias.h"
 #include "core/nemotron_text.h"
 
 #include <cstdio>
@@ -125,6 +126,15 @@ public:
 
         nemotron_set_temperature(ctx_, params.temperature, params.seed);
         nemotron_set_beam_size(ctx_, params.beam_size > 0 ? params.beam_size : 1);
+
+        // Term hints: same form list as the parakeet/gigaam/canary CLI paths. Empty
+        // list clears the trie, so every file carries its own dictionary.
+        auto hw = core_context_bias::parse_hotwords(params.hotwords);
+        std::vector<const char*> hw_ptrs;
+        for (auto& h : hw)
+            hw_ptrs.push_back(h.c_str());
+        nemotron_set_hotwords(ctx_, hw_ptrs.empty() ? nullptr : hw_ptrs.data(), (int)hw_ptrs.size(),
+                              params.hotwords_boost);
 
         // MAES beam search (env: CRISPASR_NEMOTRON_MAES=1).
         // Requires beam_size > 1. Configurable via env vars.

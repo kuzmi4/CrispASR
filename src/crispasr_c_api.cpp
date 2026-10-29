@@ -11480,7 +11480,7 @@ CA_EXPORT int crispasr_session_set_hotwords(crispasr_session* s, const char* hot
     s->hotwords = hotwords ? hotwords : "";
     s->hotwords_boost = boost > 0.0f ? boost : 1.5f;
 
-    // Parakeet, GigaAM and Canary bias decoding with their own trie. `set` is the backend
+    // Parakeet, GigaAM, Canary and Nemotron bias decoding with their own trie. `set` is the backend
     // setter: it returns the number of inserted forms, or -2 when the model has no
     // hint support (GigaAM outside rnnt+spm, Canary without a SentencePiece vocab) — then
     // the string is not kept, so it never reaches the ask prompt either.
@@ -11534,6 +11534,10 @@ CA_EXPORT int crispasr_session_set_hotwords(crispasr_session* s, const char* hot
 #ifdef CA_HAVE_CANARY
     if (s->canary_ctx)
         return apply([s](const char** w, int n, float b) { return canary_set_hotwords(s->canary_ctx, w, n, b); });
+#endif
+#ifdef CA_HAVE_NEMOTRON
+    if (s->nemotron_ctx)
+        return apply([s](const char** w, int n, float b) { return nemotron_set_hotwords(s->nemotron_ctx, w, n, b); });
 #endif
 
     // For LLM backends, hotwords are injected into the ask prompt at
