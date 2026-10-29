@@ -6999,6 +6999,10 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
             nemotron_set_language(s->nemotron_ctx, lang.c_str());
         // Session beam_size never reached nemotron (CLI-only), same as parakeet.
         nemotron_set_beam_size(s->nemotron_ctx, s->beam_size > 0 ? s->beam_size : 1);
+        // The session decodes a whole buffer (a recording or a closed VAD segment), so
+        // lookahead adds no latency: widest right context unless the env picks a preset.
+        if (!getenv("CRISPASR_NEMOTRON_CONTEXT_PRESET"))
+            nemotron_set_context_preset(s->nemotron_ctx, nemotron_widest_context_preset(s->nemotron_ctx));
         nemotron_result* nr = nemotron_transcribe_ex(s->nemotron_ctx, pcm, n_samples, 0);
         if (!nr) {
             delete r;
@@ -11709,6 +11713,10 @@ CA_EXPORT crispasr_stream* crispasr_session_stream_open(crispasr_session* s, int
 #ifdef CA_HAVE_NEMOTRON
     if (s->nemotron_ctx) {
         nemotron_set_language(s->nemotron_ctx, lang.empty() ? "auto" : lang.c_str());
+        // Live streaming waits for lookahead: back to the default preset, which the
+        // offline session path above widens.
+        if (!getenv("CRISPASR_NEMOTRON_CONTEXT_PRESET"))
+            nemotron_set_context_preset(s->nemotron_ctx, 0);
         auto* ns = nemotron_stream_create(s->nemotron_ctx);
         if (!ns)
             return nullptr;

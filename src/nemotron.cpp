@@ -3826,6 +3826,17 @@ extern "C" void nemotron_set_context_preset(struct nemotron_context* ctx, int pr
         ctx->att_context_preset = preset;
 }
 
+extern "C" int nemotron_widest_context_preset(struct nemotron_context* ctx) {
+    if (!ctx)
+        return 0;
+    const auto& hp = ctx->model.hparams;
+    int best = 0;
+    for (int p = 1; p < (int)hp.n_att_context_presets; p++)
+        if (hp.att_context_right[p] > hp.att_context_right[best])
+            best = p;
+    return best;
+}
+
 extern "C" void nemotron_set_language(struct nemotron_context* ctx, const char* lang_code) {
     if (!ctx || !lang_code)
         return;

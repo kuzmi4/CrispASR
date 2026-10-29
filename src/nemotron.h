@@ -77,6 +77,10 @@ struct nemotron_result* nemotron_transcribe_ex(struct nemotron_context* ctx, con
 // Default is preset 0.
 void nemotron_set_context_preset(struct nemotron_context* ctx, int preset);
 
+// Index of the preset with the widest right context (most lookahead). For offline
+// passes that see the whole buffer, lookahead costs no latency.
+int nemotron_widest_context_preset(struct nemotron_context* ctx);
+
 // Set the language for prompt features. Pass ISO-639-1 code (e.g. "en", "de"),
 // or "auto" to use the model-native automatic language prompt (prompt_id=101).
 // Default is "en" (prompt_id=0).
