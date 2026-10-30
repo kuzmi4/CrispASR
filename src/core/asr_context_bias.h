@@ -35,8 +35,62 @@ struct TrieNode {
     int depth = 0;                             // number of tokens from root to this node
 };
 
+// UTF-8 → code points with the case folded for ASCII Latin and Cyrillic (Ё → ё,
+// ё ≠ е), as in Recheo's exact term replacement. Invalid UTF-8 (byte-fallback
+// pieces) gives an empty string.
+inline std::u32string fold_utf8(const std::string& s) {
+    std::u32string out;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = (unsigned char)s[i];
+        size_t n = 0;
+        char32_t cp = 0;
+        if (c < 0x80) {
+            n = 1;
+            cp = c;
+        } else if ((c >> 5) == 0x6) {
+            n = 2;
+            cp = c & 0x1F;
+        } else if ((c >> 4) == 0xE) {
+            n = 3;
+            cp = c & 0x0F;
+        } else if ((c >> 3) == 0x1E) {
+            n = 4;
+            cp = c & 0x07;
+        } else {
+            return {};
+        }
+        if (i + n > s.size())
+            return {};
+        for (size_t k = 1; k < n; k++) {
+            const unsigned char d = (unsigned char)s[i + k];
+            if ((d >> 6) != 0x2)
+                return {};
+            cp = (cp << 6) | (d & 0x3F);
+        }
+        if ((cp >= U'A' && cp <= U'Z') || (cp >= 0x410 && cp <= 0x42F))
+            cp += 0x20;
+        else if (cp == 0x401)
+            cp = 0x451;
+        out.push_back(cp);
+        i += n;
+    }
+    return out;
+}
+
+// A node of the case-folded text tries (Trie::fold_case).
+struct CharNode {
+    std::unordered_map<char32_t, int> next;
+    int depth = 0; // code points from the root
+};
+
 struct Trie {
     std::vector<TrieNode> nodes;
+
+    // Text mode, set by fold_case(); empty `text` = ID mode.
+    std::vector<CharNode> text;                  // folded text of the forms
+    std::vector<CharNode> vocab_nodes;           // folded text of the vocab
+    std::vector<std::vector<int32_t>> vocab_ids; // tokens whose folded text ends at a vocab node
+    std::vector<std::u32string> folded;          // folded text per token ID ("" never matches)
 
     Trie() { nodes.emplace_back(); } // root node at index 0
 
@@ -83,7 +137,69 @@ struct Trie {
         }
     }
 
+    // Switch to text mode (Context-Assist #104). Call after all inserts. The
+    // match then runs over the case-folded text of the forms: after the decoder
+    // started a form, every vocab token whose folded text continues it is
+    // boosted, whatever its case and however the text is split into tokens.
+    // In ID mode a form spelled `Сре` (▁С ре) pulled a decoder that spells
+    // `▁С Р Е` onto `ре` — off its own spelling and, on a character-level
+    // vocab, into a merged word ("Сренженер"). The spelling stays the
+    // decoder's; the exact replacement downstream restores the display form.
+    // So every continuation gets the same boost, with no endpoint bonus: a bonus
+    // for the token that ends the form at once (`ре`) again outweighs the
+    // decoder's own shorter step (`Р`).
+    // `<…>` pieces and `skip_id` (blank / EOS) never match.
+    // ponytail: no failure links in text mode — a match that breaks restarts
+    // at the root on the same token; add suffix links if overlapping forms
+    // ("ab", "bc") turn out to matter.
+    void fold_case(const std::vector<std::string>& id_to_token, int32_t skip_id) {
+        text.assign(1, {});
+        vocab_nodes.assign(1, {});
+        vocab_ids.assign(1, {});
+        folded.assign(id_to_token.size(), {});
+        for (int32_t id = 0; id < (int32_t)id_to_token.size(); id++) {
+            const auto& p = id_to_token[(size_t)id];
+            if (id == skip_id || (p.size() >= 2 && p.front() == '<' && p.back() == '>'))
+                continue;
+            folded[(size_t)id] = fold_utf8(p);
+            int cur = 0;
+            for (char32_t c : folded[(size_t)id])
+                cur = child(vocab_nodes, cur, c, &vocab_ids);
+            if (cur != 0)
+                vocab_ids[(size_t)cur].push_back(id);
+        }
+        std::vector<std::pair<int, int>> stack{{0, 0}}; // (ID node, text node)
+        while (!stack.empty()) {
+            const auto [id_node, text_node] = stack.back();
+            stack.pop_back();
+            for (const auto& [tid, id_child] : nodes[(size_t)id_node].children) {
+                if (tid < 0 || tid >= (int32_t)folded.size() || folded[(size_t)tid].empty())
+                    continue;
+                int cur = text_node;
+                for (char32_t c : folded[(size_t)tid])
+                    cur = child(text, cur, c, nullptr);
+                stack.push_back({id_child, cur});
+            }
+        }
+    }
+
+    bool text_mode() const { return !text.empty(); }
     bool empty() const { return nodes.size() <= 1; }
+
+  private:
+    static int child(std::vector<CharNode>& t, int cur, char32_t c, std::vector<std::vector<int32_t>>* ids) {
+        const auto it = t[(size_t)cur].next.find(c);
+        if (it != t[(size_t)cur].next.end())
+            return it->second;
+        const int next = (int)t.size();
+        const int depth = t[(size_t)cur].depth + 1;
+        t[(size_t)cur].next[c] = next;
+        t.emplace_back();
+        t.back().depth = depth;
+        if (ids)
+            ids->emplace_back();
+        return next;
+    }
 };
 
 // Runtime state for one ongoing decode. One per utterance.
@@ -96,6 +212,25 @@ struct MatchState {
 // Advance the match state by one emitted token. Call this AFTER argmax
 // with the chosen token_id to update the trie position.
 inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
+    if (trie.text_mode()) {
+        // Continue the match by the token's folded text, else start over at the root.
+        static const std::u32string none;
+        const auto& f = token_id >= 0 && token_id < (int32_t)trie.folded.size() ? trie.folded[(size_t)token_id] : none;
+        const auto walk = [&](int from) {
+            int cur = from;
+            for (char32_t c : f) {
+                const auto it = trie.text[(size_t)cur].next.find(c);
+                if (it == trie.text[(size_t)cur].next.end())
+                    return 0;
+                cur = it->second;
+            }
+            return cur;
+        };
+        st.node = f.empty() ? 0 : walk(st.node);
+        if (st.node == 0 && !f.empty())
+            st.node = walk(0);
+        return;
+    }
     int cur = st.node;
     while (cur != 0 && trie.nodes[cur].children.find(token_id) == trie.nodes[cur].children.end())
         cur = trie.nodes[cur].fail;
@@ -118,12 +253,37 @@ inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
 //     unbiased argmax, the step is left untouched: the bias picks between
 //     words, it never turns a pause into a word. -1 disables the gate.
 // A hotword of a single token therefore gets no boost at all.
+// Text mode (fold_case): the same limits over the folded text — a token gets
+// `default_boost` when its whole text continues a form from the current match
+// (no endpoint bonus); a form started only by a lone "▁" is not started at all.
 inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, int n_vocab, float default_boost,
                        int blank_id) {
     if (trie.empty() || st.node == 0)
         return;
     if (blank_id >= 0 && blank_id < n_vocab && std::max_element(logits, logits + n_vocab) - logits == blank_id)
         return;
+
+    if (trie.text_mode()) {
+        if (trie.text[(size_t)st.node].depth < 2)
+            return;
+        // Walk the form text and the vocab text together; every vocab token met
+        // on the way continues the form. Each token is reached once.
+        std::vector<std::pair<int, int>> stack{{st.node, 0}}; // (text node, vocab node)
+        while (!stack.empty()) {
+            const auto [t, v] = stack.back();
+            stack.pop_back();
+            for (const auto& [c, t_child] : trie.text[(size_t)t].next) {
+                const auto it = trie.vocab_nodes[(size_t)v].next.find(c);
+                if (it == trie.vocab_nodes[(size_t)v].next.end())
+                    continue;
+                for (int32_t id : trie.vocab_ids[(size_t)it->second])
+                    if (id < n_vocab)
+                        logits[id] += default_boost;
+                stack.push_back({t_child, it->second});
+            }
+        }
+        return;
+    }
 
     // Walk from the current node down the failure chain; the root is not boosted.
     for (int cur = st.node; cur != 0; cur = trie.nodes[cur].fail) {

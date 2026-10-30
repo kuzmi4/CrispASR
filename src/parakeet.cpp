@@ -3329,6 +3329,7 @@ extern "C" int parakeet_set_hotwords(struct parakeet_context* ctx, const char** 
 
     ctx->hotword_boost = boost;
     ctx->hotword_trie = core_context_bias::build_trie(hw_list, tokenize, boost);
+    ctx->hotword_trie.fold_case(ctx->vocab.id_to_token, (int32_t)ctx->model.hparams.blank_id);
     return inserted;
 }
 

@@ -1989,6 +1989,7 @@ extern "C" int canary_set_hotwords(struct canary_context* ctx, const char** hotw
     }
     // After every insert: failure links propagate the endpoint boosts.
     ctx->hotword_trie.build_failure_links();
+    ctx->hotword_trie.fold_case(ctx->vocab.id_to_token, eos);
     if (ctx->params.verbosity >= 1)
         fprintf(stderr, "canary: hotwords inserted %d of %d form(s), boost %.1f\n", ctx->hotwords_inserted,
                 n_hotwords, (double)ctx->hotword_boost);

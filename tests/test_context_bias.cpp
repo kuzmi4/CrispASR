@@ -338,3 +338,118 @@ TEST_CASE("blank gate: no bias when blank wins unbiased", "[context_bias]") {
     apply_bias(trie, st, off.data(), V, 4.0f, -1);
     REQUIRE(off[2] > off[blank]);
 }
+
+// ── Text mode (fold_case) ────────────────────────────────────────────
+
+namespace {
+// A character-level vocab like nemotron's: the hint `Сре` is ▁С ре, the
+// decoder's own spelling is ▁С Р Е.
+const std::string S = "\xE2\x96\x81"; // ▁
+const std::vector<std::string> kText = {
+    "<blk>",   // 0 — blank
+    S + "С",   // 1
+    "ре",      // 2
+    "Р",       // 3
+    "Е",       // 4
+    S + "и",   // 5
+    "н",       // 6
+    "р",       // 7
+    "е",       // 8
+    S,         // 9
+    "э",       // 10
+    S + "с",   // 11
+    "<0xD0>",  // 12
+};
+const int32_t kTextBlank = 0;
+
+Trie text_trie(const std::vector<std::string>& forms, float boost) {
+    Trie trie;
+    for (const auto& f : forms)
+        trie.insert(tokenize_spm_form(kText, kTextBlank, f), boost);
+    trie.build_failure_links();
+    trie.fold_case(kText, kTextBlank);
+    return trie;
+}
+
+std::vector<float> biased(const Trie& trie, const MatchState& st, float boost) {
+    std::vector<float> logits(kText.size(), 0.0f);
+    logits[5] = 0.1f; // a non-blank wins: the blank gate stays open
+    apply_bias(trie, st, logits.data(), (int)logits.size(), boost, kTextBlank);
+    logits[5] -= 0.1f;
+    return logits;
+}
+} // namespace
+
+TEST_CASE("fold_case: the decoder's own spelling of a form is boosted", "[context_bias]") {
+    // Recheo dictation: the hint `Сре` pulled `▁С Р Е` onto `ре` → "Сренженер".
+    const Trie trie = text_trie({"Сре"}, 5.0f);
+    MatchState st;
+    REQUIRE(biased(trie, st, 2.0f)[1] == 0.0f); // the start is never boosted
+
+    advance(trie, st, 1); // ▁С
+    auto lg = biased(trie, st, 2.0f);
+    // ре (the hint's spelling), Р and р alike: the decoder keeps its own
+    // spelling; ре ending the form at once gets no endpoint bonus over Р.
+    REQUIRE(lg[2] == 2.0f);
+    REQUIRE(lg[3] == 2.0f);
+    REQUIRE(lg[7] == 2.0f);
+    REQUIRE(lg[5] == 0.0f); // ▁и does not continue the form
+
+    advance(trie, st, 3); // Р
+    lg = biased(trie, st, 2.0f);
+    REQUIRE(lg[4] == 2.0f); // Е ends the form
+    REQUIRE(lg[8] == 2.0f);
+    REQUIRE(lg[2] == 0.0f); // ре would read "срре"
+
+    advance(trie, st, 4); // Е — the form is complete, nothing continues it
+    lg = biased(trie, st, 2.0f);
+    REQUIRE(std::all_of(lg.begin(), lg.end(), [](float x) { return x == 0.0f; }));
+}
+
+TEST_CASE("fold_case: case variants are one form", "[context_bias]") {
+    const Trie trie = text_trie({"Сре", "сре"}, 5.0f);
+    MatchState st;
+    advance(trie, st, 11); // ▁с starts the same folded form
+    REQUIRE(biased(trie, st, 2.0f)[2] == 2.0f); // boosted once, not per variant
+}
+
+TEST_CASE("fold_case: a broken match restarts on the same token", "[context_bias]") {
+    const Trie trie = text_trie({"Сре"}, 5.0f);
+    MatchState st;
+    advance(trie, st, 1); // ▁С
+    advance(trie, st, 5); // ▁и — off the form
+    REQUIRE(st.node == 0);
+    advance(trie, st, 1); // ▁С again
+    REQUIRE(biased(trie, st, 2.0f)[2] == 2.0f);
+    advance(trie, st, 12); // a byte piece never matches
+    REQUIRE(st.node == 0);
+}
+
+TEST_CASE("fold_case: a lone ▁ does not start a form", "[context_bias]") {
+    // ▁С is a piece, so `Сэ` is covered; a decoder at a lone ▁ must not get
+    // the second letter of every form boosted.
+    const Trie trie = text_trie({"Сре"}, 5.0f);
+    MatchState st;
+    advance(trie, st, 9); // ▁
+    REQUIRE(st.node != 0);
+    const auto lg = biased(trie, st, 2.0f);
+    REQUIRE(std::all_of(lg.begin(), lg.end(), [](float x) { return x == 0.0f; }));
+}
+
+TEST_CASE("fold_case: the blank gate holds in text mode", "[context_bias]") {
+    const Trie trie = text_trie({"Сре"}, 5.0f);
+    MatchState st;
+    advance(trie, st, 1);
+    std::vector<float> pause(kText.size(), 0.0f);
+    pause[kTextBlank] = 0.5f;
+    apply_bias(trie, st, pause.data(), (int)pause.size(), 2.0f, kTextBlank);
+    REQUIRE(pause[2] == 0.0f);
+}
+
+TEST_CASE("fold_utf8: ASCII and Cyrillic fold, ё stays apart from е", "[context_bias]") {
+    REQUIRE(fold_utf8("SRE") == U"sre");
+    REQUIRE(fold_utf8("СРЕ") == U"сре");
+    REQUIRE(fold_utf8("Ёж") == U"ёж");
+    REQUIRE(fold_utf8("ё") != fold_utf8("е"));
+    REQUIRE(fold_utf8("\xD0").empty());
+}

@@ -3887,6 +3887,7 @@ extern "C" int nemotron_set_hotwords(struct nemotron_context* ctx, const char** 
     }
     // After every insert: failure links propagate the endpoint boosts.
     ctx->hotword_trie.build_failure_links();
+    ctx->hotword_trie.fold_case(ctx->vocab.id_to_token, blank_id);
     return inserted;
 }
 
