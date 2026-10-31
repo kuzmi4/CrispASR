@@ -56,3 +56,69 @@ Two habits that repeatedly cost time here:
 
 - Ruby Session/Stream/Chat context guard declarations and registrations →
   `python tools/sync_ruby_context_guards.py` (`--check` runs in the Ruby ABI probe).
+
+---
+
+## Context-Assist fork (`kuzmi4/CrispASR`) — read before fork work
+
+This checkout is the fork that ships the STT engine for Recheo. Upstream is
+`CrispStrobe/CrispASR`; the fork adds the Context-Assist patches (F1–F12) and publishes
+static arm64 + Metal archives that the app pins. This section wins over the generic maintainer routine above
+when the two disagree about this line's branches, tags or scope.
+
+**Where the work happens.** Fork work — merging a new upstream release, keeping the
+patches, cutting `ca-*` tags — runs in an agent session whose working directory is *this
+checkout*. The Recheo session only consumes a release tag: it bumps the pin and releases
+the app, and the procedure for that half lives in Recheo
+(`docs/operations.md#движок-crispasr-форк-релиз-пин`). Do not edit Recheo's pin files
+(`scripts/vendor-crispasr.sh`, `CRISPASR_PIN`, `crispasr.rs` constants, bench pins) from
+here.
+
+**Branches.**
+
+| Branch | Role |
+| --- | --- |
+| `main` | mirror of `upstream/main`, no own commits |
+| `context-assist` (default) | production line — the patches, and the only source of `ca-*` tags |
+| `context-assist-<version>` | frozen lines behind old pins: never commit to them |
+
+**Tags.** `ca-<upstream version>.<n>` (`ca-0.8.49.1`); `-local` marks the local fallback
+(`context-assist/build-static.sh`, `scripts/ca-local-release.sh` in Recheo). A `ca-*` tag
+may be deleted and re-cut on the corrected commit only while no app pin points at it —
+after that a mistake is fixed by a new `<n>`. CI `context-assist-static.yml` runs `test`
+first and deletes the tag on red, then `build` publishes the archive, its `.sha256` and
+`BUILD-INFO`.
+
+**Bumping to a new upstream release.**
+
+1. `git fetch upstream main --tags`; pick the release (`gh release list -R CrispStrobe/CrispASR`).
+2. `git checkout -b sync/<release> origin/context-assist` and **merge** (never rebase)
+   `upstream/main`, so the fork's history stays linear for the app's pins.
+3. Resolve conflicts keeping our patches **and** upstream validation: the model gate in
+   `session_open_explicit_impl` (`reject_external_file`, category `MODEL`), upstream's new
+   rows in `backend_caps_table.h` plus our `unbounded-input`/`internal-chunking` verbs.
+4. Verify the footprint before committing:
+   - `git diff --stat upstream/main -- src/ include/ models/ tests/` is exactly our patches;
+     an empty or foreign file in that diff means a patch was lost;
+   - `git grep -n "Context-Assist" HEAD -- src/ include/` — the F1–F12 anchors are present;
+   - fixes from earlier pins still exist **by content, not by tag** (`git grep <marker> HEAD`):
+     a fix can live on a side line and silently drop out of a rebased release — that is how
+     `ca-0.8.44.3`–`.7` shipped without the TDT blank gate of `ca-0.8.44.2`.
+5. Build and test as CI does: submodules (`ggml`, `third_party/c2pa-audio`), the ggml Metal
+   patch, `cmake -DCRISPASR_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug`,
+   `cmake --build build-test --target context-assist-tests`,
+   `ctest --test-dir build-test -L unit -L context-assist --no-tests=error`.
+6. `git push origin sync/<release>:context-assist`, tag, push the tag, watch the workflow.
+7. One `HISTORY.md` entry per merge; upstream's entries are never shortened.
+
+**Keeping merges cheap.** Upstream owns most of this repo, so every fork-only line is a
+future conflict:
+
+- fork-only tests live in their own files, and the `tests/CMakeLists.txt` hunk stays as
+  small as possible;
+- the CI gate stays model-free (`live` label excluded): models and corpora belong to
+  Recheo's benchmark, not to this repository's tests;
+- the `ggml` submodule pointer is upstream's; Metal behaviour changes arrive as a patch in
+  `context-assist/patches/`;
+- a test that needs a GGUF, a dataset or the app's pipeline belongs to Recheo, where the
+  behaviour it protects is owned.
