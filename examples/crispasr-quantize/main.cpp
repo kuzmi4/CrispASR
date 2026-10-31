@@ -300,6 +300,14 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     // rules apply: skip enc.* / proj.* unless explicitly overridden.
     const bool is_granite_family =
         (arch.find("granite_speech") != std::string::npos) || (arch.find("granite_nle") != std::string::npos);
+    // Granite5's input embeddings are sensitive even at Q8_0: the controlled
+    // embedding-only F16 substitution brings pipeline logit norms back inside
+    // the reference gate (hosted precision diagnostic39979238513). Scope this
+    // to the new YaRN profile so existing Granite quants remain unchanged.
+    const int granite_rope_type_key = gguf_find_key(ctx_in, "granite_speech.llm.rope_scaling.type");
+    const bool granite_yarn = is_granite_family && granite_rope_type_key >= 0 &&
+                              gguf_get_kv_type(ctx_in, granite_rope_type_key) == GGUF_TYPE_STRING &&
+                              std::string(gguf_get_val_str(ctx_in, granite_rope_type_key)) == "yarn";
     // Optional: downcast granite-family encoder F32 weights to F16 instead of
     // preserving F32. Halves the encoder footprint (~960 MB on 4.1-2b) at
     // negligible quality cost — F16 is what every Whisper / Llama / parakeet
@@ -314,6 +322,19 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     // of ~0.999. Off by default; opt in with the env var.
     const char* env_quant_all = std::getenv("CRISPASR_GRANITE_QUANT_ALL");
     const bool granite_quant_all = is_granite_family && env_quant_all && *env_quant_all && *env_quant_all != '0';
+
+    // Granite5 Q4_K needs higher precision in the value/readout projections.
+    // Controlled original-reference tests retain the head, attention values and
+    // FFN down projections; the bulk query/key/output and FFN gate/up weights
+    // remain Q4_K. Existing non-YaRN Granite models keep their original recipe.
+    const char* granite_q4_legacy_env = std::getenv("CRISPASR_GRANITE_Q4_LEGACY");
+    const bool granite_q4_legacy = granite_q4_legacy_env && *granite_q4_legacy_env && *granite_q4_legacy_env != '0';
+    const bool granite_yarn_q4 = granite_yarn && qtype == GGML_TYPE_Q4_K && !granite_quant_all && !granite_q4_legacy;
+    if (granite_yarn_q4) {
+        printf("%s: Granite5 Q4_K keeps value/down projections at source precision "
+               "(CRISPASR_GRANITE_Q4_LEGACY=1 restores the previous recipe)\n",
+               __func__);
+    }
 
     // OmniASR-CTC: 48-layer wav2vec2-style encoder + CTC head. Per-layer
     // activation cosine analysis on JFK (Q4_K vs Q8_0 dumps via
@@ -534,6 +555,18 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     // and output/embedding can be quantized.
     const bool is_miotts = (arch.find("miotts") != std::string::npos);
 
+    // ArkTTS (Audio8-TTS-Realistic-0.6b): 24-layer slow transformer + 4-layer
+    // fast subnetwork + BigVGAN/Snake vocoder. The codec (codec.*) is
+    // precision-sensitive: Snake activations amplify quantization noise through
+    // the ConvTranspose upsampling chain. The token embedding (embeddings.weight)
+    // is tied with the LM head (155776 x 896) and drives autoregressive next-token
+    // logits; quantizing it degrades logit margins. The codebook embeddings
+    // (codebook_embeddings, fast_embeddings, fast_output) are small codebook
+    // lookup tables. Keep codec.*, embeddings.weight, codebook_embeddings.*,
+    // and fast_embeddings/output at source precision; the 24 slow transformer
+    // layers and 4 fast transformer layers are safe to quantize.
+    const bool is_arktts = (arch == "arktts" || arch == "audio8-tts" || arch == "ark-tts");
+
     // Canary-Qwen: FastConformer encoder + linear projection + Qwen3-1.7B LLM.
     // The encoder is precision-sensitive (conformer drift), keep at source.
     // Only LLM block projections (blk.*.attn_*, blk.*.ffn_*) should be quantized.
@@ -552,6 +585,18 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     const bool is_qwen3_asr = (arch == "qwen3asr" || arch == "qwen3-asr");
     const bool qwen3asr_quant_audio = []() {
         const char* e = std::getenv("CRISPASR_QWEN3ASR_QUANT_AUDIO");
+        return e && *e && *e != '0';
+    }();
+
+    // Hikari (sbintuitions/hikari-medium): 24-layer causal encoder + 24-layer decoder.
+    // Sub-8-bit enc.* compounds per-block drift across the 24 causal self-attention
+    // layers (encoder cos drops to 0.36; breaks delicate WAIT token logit margins
+    // and causes German translation repetition/hallucinations). Floor enc.* at
+    // Q8_0 (~lossless) when targeting sub-8-bit quants (e.g. Q4_K).
+    // CRISPASR_HIKARI_QUANT_ENCODER=1 quantizes enc.* at the target type anyway (A/B gate).
+    const bool is_hikari = (arch == "hikari");
+    const bool hikari_quant_encoder = []() {
+        const char* e = std::getenv("CRISPASR_HIKARI_QUANT_ENCODER");
         return e && *e && *e != '0';
     }();
 
@@ -906,6 +951,10 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
             // Supertonic-3: allow-list vf.*/voc.* (see is_supertonic note).
             !(is_supertonic && !(sname.rfind("vf.", 0) == 0 || sname.rfind("voc.", 0) == 0)) &&
             !(is_granite_family && !granite_quant_all && sname.find("enc.") == 0) &&
+            !(granite_yarn && !granite_quant_all && sname == "token_embd.weight") &&
+            !(granite_yarn_q4 &&
+              ((!allow_lmhead && sname == "output.weight") ||
+               (sname.rfind("blk.", 0) == 0 && (ends_with(".attn_v.weight") || ends_with(".ffn_down.weight"))))) &&
             // MOSS-Audio: keep encoder + adapter + deepstack at F16
             !(arch == "moss_audio" &&
               (sname.find("enc.") == 0 || sname.find("adapter.") == 0 || sname.find("deepstack.") == 0)) &&
@@ -1025,6 +1074,9 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
                            sname.find("feature_projection.projection.") != std::string::npos)) &&
             !(is_higgs && (sname == "token_embd.weight" || sname == "output.weight")) &&
             !(is_miotts && sname.find("codec.") == 0) &&
+            !(is_arktts && (sname.find("codec.") == 0 || sname == "embeddings.weight" ||
+                            sname.find("codebook_embeddings") == 0 || sname.find("fast_embeddings") == 0 ||
+                            sname.find("fast_output") == 0)) &&
             !(is_parakeet && parakeet_is_rnnt && !parakeet_quant_all &&
               (sname.find("joint.") == 0 || sname.find("decoder.embed") == 0)) &&
             // encoder.pre.* stays unquantized for the same reason it is F32 in the
@@ -1127,6 +1179,13 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         // Applies only when the chosen type is a sub-8-bit quant; Q8_0 and
         // unquantized targets pass through. Rows not 32-aligned keep source.
         if (is_qwen3_asr && !qwen3asr_quant_audio && sname.find("audio.") == 0 && should_quantize &&
+            ggml_is_quantized(target_types[i]) && target_types[i] != GGML_TYPE_Q8_0) {
+            target_types[i] = (ncols % ggml_blck_size(GGML_TYPE_Q8_0) == 0) ? GGML_TYPE_Q8_0 : t->type;
+        }
+
+        // Hikari causal encoder Q8_0 floor (see is_hikari note above).
+        // Preserves encoder cosine parity and prevents WAIT-margin collapse in Q4_K.
+        if (is_hikari && !hikari_quant_encoder && sname.find("enc.") == 0 && should_quantize &&
             ggml_is_quantized(target_types[i]) && target_types[i] != GGML_TYPE_Q8_0) {
             target_types[i] = (ncols % ggml_blck_size(GGML_TYPE_Q8_0) == 0) ? GGML_TYPE_Q8_0 : t->type;
         }

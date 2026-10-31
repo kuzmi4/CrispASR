@@ -38,10 +38,18 @@
 
 #pragma once
 
+#if defined(HAVE_ACCELERATE)
+#include <Accelerate/Accelerate.h>
+#elif defined(CRISPASR_HAVE_BLAS)
+#include <cblas.h>
+#endif
+
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <vector>
 
 #ifndef M_PI
@@ -139,29 +147,109 @@ static inline std::vector<float> istft(const float* mag, const float* phase, int
     std::vector<float> output(ola_len, 0.0f);
     std::vector<float> win_sum(ola_len, 0.0f);
 
-    // Per-frame scratch.
-    std::vector<float> frame_re(n_freq);
-    std::vector<float> frame_im(n_freq);
-    std::vector<float> frame_out(n_fft);
+#if defined(HAVE_ACCELERATE) || defined(CRISPASR_HAVE_BLAS)
+    if (n_freq >= 3) {
+        const int K = n_freq - 2;
+        const double inv_N = 1.0 / n_fft;
 
-    for (int t = 0; t < T_frames; t++) {
-        // Build complex spectrum from magnitude + phase.
-        const float* m_row = mag + (size_t)t * n_freq;
-        const float* p_row = phase + (size_t)t * n_freq;
-        for (int f = 0; f < n_freq; f++) {
-            frame_re[f] = m_row[f] * std::cos(p_row[f]);
-            frame_im[f] = m_row[f] * std::sin(p_row[f]);
+        struct FourierBasis {
+            std::vector<float> M_cos;
+            std::vector<float> M_sin;
+        };
+        static std::map<int, FourierBasis> s_basis_cache;
+        static std::mutex s_basis_mtx;
+
+        const FourierBasis* basis_ptr = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(s_basis_mtx);
+            auto it = s_basis_cache.find(n_fft);
+            if (it == s_basis_cache.end()) {
+                FourierBasis fb;
+                fb.M_cos.resize(n_fft * K);
+                fb.M_sin.resize(n_fft * K);
+                for (int n = 0; n < n_fft; n++) {
+                    double angle_base = 2.0 * M_PI * n * inv_N;
+                    for (int k = 1; k < n_freq - 1; k++) {
+                        double angle = angle_base * k;
+                        fb.M_cos[n * K + (k - 1)] = (float)(2.0 * std::cos(angle));
+                        fb.M_sin[n * K + (k - 1)] = (float)(-2.0 * std::sin(angle));
+                    }
+                }
+                it = s_basis_cache.emplace(n_fft, std::move(fb)).first;
+            }
+            basis_ptr = &it->second;
         }
 
-        // Inverse RFFT.
-        irfft_hermitian(frame_re.data(), frame_im.data(), n_fft, frame_out.data());
+        const auto& M_cos = basis_ptr->M_cos;
+        const auto& M_sin = basis_ptr->M_sin;
 
-        // Overlap-add with window.
-        int offset = t * hop;
-        for (int i = 0; i < n_fft && (offset + i) < ola_len; i++) {
-            float w = window[i];
-            output[offset + i] += frame_out[i] * w;
-            win_sum[offset + i] += w * w;
+        std::vector<float> spec_re(T_frames * K);
+        std::vector<float> spec_im(T_frames * K);
+        for (int t = 0; t < T_frames; t++) {
+            const float* m_row = mag + (size_t)t * n_freq;
+            const float* p_row = phase + (size_t)t * n_freq;
+            for (int k = 1; k < n_freq - 1; k++) {
+                float s, c;
+#if defined(__APPLE__)
+                __sincosf(p_row[k], &s, &c);
+#elif defined(_GNU_SOURCE)
+                sincosf(p_row[k], &s, &c);
+#else
+                s = std::sin(p_row[k]);
+                c = std::cos(p_row[k]);
+#endif
+                spec_re[t * K + (k - 1)] = m_row[k] * c;
+                spec_im[t * K + (k - 1)] = m_row[k] * s;
+            }
+        }
+
+        std::vector<float> all_frames(T_frames * n_fft, 0.0f);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T_frames, n_fft, K, 1.0f, spec_re.data(), K, M_cos.data(),
+                    K, 0.0f, all_frames.data(), n_fft);
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T_frames, n_fft, K, 1.0f, spec_im.data(), K, M_sin.data(),
+                    K, 1.0f, all_frames.data(), n_fft);
+
+        for (int t = 0; t < T_frames; t++) {
+            const float* m_row = mag + (size_t)t * n_freq;
+            const float* p_row = phase + (size_t)t * n_freq;
+            float dc = m_row[0] * std::cos(p_row[0]);
+            float nyq = (n_fft % 2 == 0) ? m_row[n_fft / 2] * std::cos(p_row[n_fft / 2]) : 0.0f;
+            const float* f_out = all_frames.data() + t * n_fft;
+            int offset = t * hop;
+            for (int i = 0; i < n_fft && (offset + i) < ola_len; i++) {
+                float val = (f_out[i] + dc + nyq * ((i & 1) ? -1.0f : 1.0f)) * (float)inv_N;
+                float w = window[i];
+                output[offset + i] += val * w;
+                win_sum[offset + i] += w * w;
+            }
+        }
+    } else
+#endif
+    {
+        // Per-frame scratch.
+        std::vector<float> frame_re(n_freq);
+        std::vector<float> frame_im(n_freq);
+        std::vector<float> frame_out(n_fft);
+
+        for (int t = 0; t < T_frames; t++) {
+            // Build complex spectrum from magnitude + phase.
+            const float* m_row = mag + (size_t)t * n_freq;
+            const float* p_row = phase + (size_t)t * n_freq;
+            for (int f = 0; f < n_freq; f++) {
+                frame_re[f] = m_row[f] * std::cos(p_row[f]);
+                frame_im[f] = m_row[f] * std::sin(p_row[f]);
+            }
+
+            // Inverse RFFT.
+            irfft_hermitian(frame_re.data(), frame_im.data(), n_fft, frame_out.data());
+
+            // Overlap-add with window.
+            int offset = t * hop;
+            for (int i = 0; i < n_fft && (offset + i) < ola_len; i++) {
+                float w = window[i];
+                output[offset + i] += frame_out[i] * w;
+                win_sum[offset + i] += w * w;
+            }
         }
     }
 

@@ -1,12 +1,148 @@
 # OpenVoice2 reference and cloning validation
 
-Status (2026-10-19): strict reference/runtime wiring is implemented. Fresh
-model, CUDA and speech-quality acceptance is pending execution and independent
-audit; the June cosine measurements in HISTORY.md are historical evidence.
-CUDA package run39266520251/source0b4213c39 passed compilation, linking and
-dependency checks. Package delivery audit is still pending; it did not execute
-a GPU/model test. See [the handoff](maintenance-handoff.md) and [PLAN.md](../PLAN.md)
-for current queue blockers, exact source pins and acceptance tasks.
+Status (2026-10-28): the bounded three-case conditioned-cloning test is accepted
+on T4 CUDA: 27/27, 27/27 and 28/28 original-reference stages, raw C API,
+exact-repeat/cache and clip-mean controls, WER <=0.2 and independent speaker
+improvement >0.01. [Accepted quality receipt](historical/openvoice-conditioning-accepted-2026-10-28.json).
+The separate current-runtime replay also passes all 27 stages on CPU and CUDA
+against the v0.8.47 SDK and matching ggml headers. The real Python Session/C ABI
+composition also passes both sentences through
+raw and normal marked output, with architecture detection, exact repeats,
+native rates, actual CUDA and unchanged quality gates.
+[Session receipt](historical/openvoice-session-accepted-2026-10-28.json). Actual CLI and full rebuilt-current-library acceptance, and model publication,
+are recorded in the current update below. Broader voices/languages remain separate. The older attempts below are historical failed controls,
+not instructions to repeat a passing campaign. See [the handoff](maintenance-handoff.md).
+
+**Current update (2026-10-29):** The full current CLI and Session/C ABI
+passed the declared F16 profile on CPU and T4 CUDA. The qualified generic
+converter is published at [revision `61741391da62c278148a2c75b6c0c5611d447149`](https://huggingface.co/cstr/openvoice2-tcc-GGUF/tree/61741391da62c278148a2c75b6c0c5611d447149), with
+the original MIT notice and pinned provenance. All four uploaded files pass
+anonymous full-byte readback; validation recordings, target embeddings and
+reference captures remain private. Broader languages, natural references,
+other devices and voice identity rights remain separate. See the
+[publication receipt](historical/openvoice2-tcc-publication-2026-10-29.json) and
+[maintainer handoff](maintenance-handoff.md).
+
+## Recovered execution state — 2026-10-28
+
+The previous bake is terminal **ERROR**. Its uploaded worker identifies itself
+as `2026-10-19.openvoice-bake.2`, native source `71e329c`. The recovered native
+log reports **no CPU ggml backend registered**, then aborts at the backend
+buffer assertion while loading MeloTTS. It supplies no pretrained numerical,
+GPU, conditioning or speech-quality acceptance. The old source and terminal
+logs are preserved privately before any replacement submission.
+
+The already prepared worker adds `GGML_BACKEND_DL` and module discovery from
+the audited bundle directory. Its conditioning mode uses source `6be9fda36`,
+with the same ggml revision as the frozen runtime. No model implementation
+changed since that source. New worker versions add retained load, available
+memory, scratch and GPU-memory checks before compilation and every reference
+or native inference phase; insufficient resources stop before work. The two
+host C++ delta compilations remain sequential and use the shared harness
+heartbeat. No ggml/CUDA SDK rebuild or Torch reinstall is needed.
+
+Conditioning kernel version **1**, worker
+`2026-10-28.openvoice-conditioning.2`, was admitted after a bounded capacity
+check. It received two T4s, passed both C++ delta compilations and conversion,
+and retained five successful resource checks. It then failed with HTTP 403
+while trying to create a Hugging Face staging model repository, **before model
+loading or inference**. GPU allocation is not GPU execution. The receipt has
+`complete: false`, `model_acceptance: false`, `gpu_executed: false`.
+[Portable failed-attempt receipt](historical/openvoice-conditioning-attempt-2026-10-28.json).
+The uploaded source, terminal log and output are preserved before replacement.
+
+Worker `2026-10-28.openvoice-conditioning.3` separates validation from publication.
+By default it saves the converted model, original references, full MIT notice,
+attribution and hash/size checkpoints in kernel output without requiring Hub
+write permissions. `CRISPASR_OV2_PUBLISH=1` explicitly enables publication and
+requires write access; a requested publication failure remains a failure.
+`publication_requested` and `publication_complete` are separate from numerical
+`model_acceptance`. No reference, stage, waveform, content or speaker gate is
+relaxed. Bounded model-free tests prove that read-only validation makes no Hub
+write calls and that denied requested writes preserve evidence and fail.
+
+Do not poll the entire historical kernel list in a burst: an initial roster
+query hit rate limiting. Use a bounded current roster after backoff, respect
+the two-session cap, and preserve the previous terminal artifacts before a
+software retry. Never infer a running kernel's failure from missing logs.
+
+## First pretrained numerical failure and bounded repair
+
+Conditioning kernel version **2**, worker `.3`, passed the loader and read-only
+checkpoint path, generated a capture-neutral original reference, and executed
+the native CUDA vocoder on T4. It failed **11/27 required stages**. Both PCM
+inputs and frontend/reference encoder match closely; the first material
+posterior WaveNet difference is cosine 0.994142 and norm ratio 0.980296.
+Posterior statistics fail the unchanged magnitude gate; forward-flow cosine
+then drops to 0.133117, and waveform cosine is -0.030380.
+[Full stage receipt](historical/openvoice-original-parity-failure-2026-10-28.json).
+The producer's `gpu_executed` flag is set only after every case; its false flag
+in this failed first case does not negate the scheduler's actual CUDA splits
+and completed vocoder output. Numerical/model acceptance remains false.
+
+Reading the pinned original inference path identifies two recipe defects:
+
+- `zero_g` passes a **zero tensor** through the posterior conditioning affine
+  layer. The native path skipped that layer entirely, dropping its learned
+  bias. The actual F32 checkpoint has 6,144 nonzero bias values (norm 11.9577).
+- Forward residual flow is **coupling then channel flip**; inverse flow visits
+  the flip first. Native forward flow incorrectly flipped before coupling too.
+
+Tiny tests compile the actual production CPU bodies against biased affine
+fixtures. Both fail before repair (bias output 0.0572535 versus 0.2013839;
+flow first value 4 versus 3.5), then pass after the two corrections, including
+one/two-block forward expectations and inverse reconstruction. Existing owned
+conditioning/noise/clip-average controls still pass. No large local model runs.
+These tests justify the bounded fixes; they do not qualify pretrained speech.
+
+Next replay the **identical retained model and original reference bytes** on
+Kaggle CPU/CUDA, retaining every original gate. Keep real model/reference data
+separate from tooling caches and carry the full MIT notice and synthetic-audio
+attribution. Full three-case cloning, shared-noise, independent ASR/speaker and
+higher-level Session/CLI acceptance remain separate after structural replay.
+Do not replace this failed reference with native output or loosen tolerances.
+
+## Frozen replay v1 — two repairs verified, final activation isolated
+
+The exact same model/reference hashes were replayed on CPU and T4 CUDA with
+model CPP `581234dfb` and the original audited runtime/header ABI. Both now pass
+**26/27** unchanged gates. Posterior WaveNet and forward/reverse flows reach
+cosine 1.0 and near-unit magnitudes. This verifies the zero-input bias and flow
+ordering corrections on the actual pretrained case.
+[Both full stage tables](historical/openvoice-frozen-replay-2026-10-28.json).
+
+Only raw `dec_output` still fails: norm ratio 1.11145, despite cosine 0.999420.
+The normalized waveform passes, illustrating why raw magnitude is mandatory.
+The original Generator uses explicit slope 0.1 inside upsample blocks, then
+`F.leaky_relu(x)` with its **default 0.01** before `conv_post`; native code used
+0.1 for both. Only that last slope is corrected.
+
+A small test executes both real graph-builder activation calls on signed inputs;
+it fails before correction (-0.1 versus -0.01), then passes while preserving the
+upsample slope. Separately, an owned-input replay of just the last activation,
+224-weight convolution and tanh uses frozen original `dec_stage3` plus unchanged
+F16 model weights. Correcting the slope changes norm ratio 1.111307 to 0.999915
+and relative L2 0.116960 to 0.000125; cosine becomes 0.999999996.
+[Owned-input evidence](historical/openvoice-final-activation-owned-input-2026-10-28.json).
+This subsecond boundary check used one CPU thread after a resource check, without
+running the full model locally. Whole-model CPU/CUDA replay of the final slope
+and the full cloning/quality gates remain required. No acceptance bar changed.
+
+## Frozen replay v2 — 27/27 on CPU and T4 CUDA
+
+With model CPP `1b874a104`, the same model/reference bytes now pass **all 27**
+unchanged stage and magnitude gates on CPU and actual T4 CUDA. Raw waveform
+cosine is 0.99999973 and norm ratio is 1.000042 (relative L2 about0.000735).
+All input/source/hash, device-work and resource evidence was independently
+checked. [Accepted structural receipt](historical/openvoice-frozen-replay-accepted-2026-10-28.json).
+`replay_acceptance` is true; `model_acceptance` intentionally remains false.
+
+The next proof is the original three-case conditioning/quality worker with the
+same three corrections: tau0/0.3, shared original noise, exact cache reuse,
+uninstrumented model C API waveform/embedding, unequal clip means and mean-
+conditioned waveform, then independent ASR and speaker improvement. The current
+worker pins the audited old runtime/header ABI; whole-current-ggml and Session/
+CLI acceptance remain separate. No default model is promoted from replay.
 
 ## Recipe and license boundary
 
@@ -142,7 +278,7 @@ operational paths and account details in ignored maintainer notes.
 
 ## Checkpoint-free numerical encoder probe
 
-[The synthetic receipt](openvoice2-refenc-synthetic-2026-10-19.json) compares
+[The synthetic receipt](historical/openvoice2-refenc-synthetic-2026-10-19.json) compares
 the unmodified original ReferenceEncoder class to the literal native CPU encoder
 body, using deterministic F32 tensors and synthetic coefficients. Input129x513
 exercises all six convolutions and three GRU steps. All nine boundaries pass:
@@ -161,6 +297,37 @@ It establishes the encoder's CPU math/layout and a rejecting structural control;
 it does not replace the pending actual-model/GPU/quality matrix.
 
 ## Producer checkpoint and publication policy
+
+The repaired conditioning worker (`.6`, kernel version 4) passes all three
+cases. Clone WER is 0.1111, 0 and 0.1111; independent speaker cosine improves
+by 0.1833, 0.2373 and 0.1494 over the baseline. Original and native clips pass
+the unchanged content gate. All artifact hashes and reported WER values were
+independently checked after download. This closes the bounded raw C API
+conditioning/quality proof on the frozen runtime, without promoting a default.
+The current-runtime 27-stage CPU/CUDA proof is retained separately.
+No model was published: validation was explicitly read-only. Earlier Hub
+repository creation returned 403; publishing needs an authorized destination
+and retained notices, followed by full anonymous byte readback.
+
+Conditioning kernel version 3 passed all three original-reference CUDA cases
+(27/27, 27/27, 28/28), exact repeats, uninstrumented raw C API conversion and
+clip-mean conditioning. Its independent quality process failed in PyAV decoding
+before ASR results; this historical failure is superseded by accepted version 4. The repair reads the
+generated WAVs with SoundFile, averages channels and resamples to mono float32
+at 16 kHz before passing arrays to the unchanged Whisper decoder. It preserves
+the WER <=0.2 and independent speaker-improvement >0.01 gates.
+[Structural receipt](historical/openvoice-conditioning-structural-2026-10-28.json).
+
+The separate `tools/kaggle/openvoice-current-replay` worker qualifies the same
+frozen inputs against the shipped v0.8.47 CUDA SDK and matching `e2ae679a` ggml
+headers. It verifies archive bytes, dependency resolution and the owning shared
+library for model symbols before running all 27 stages on CPU and CUDA. Only
+the corrected OpenVoice/Melo translation units and driver compile. No SDK or
+Torch rebuild is involved. This structural profile keeps `model_acceptance`
+false and does not replace full speech, Session or CLI qualification. Kernel
+version 1 has now passed all 27 stages on CPU and T4 CUDA, with resolved
+dependencies and verified overlay symbol owners. Raw waveform norm ratio is
+1.000042. [Current-runtime receipt](historical/openvoice-current-runtime-replay-2026-10-28.json).
 
 The shared worker checkpoints the converted GGUF under an explicitly unvalidated
 staging path and each original-module reference before native execution. Each

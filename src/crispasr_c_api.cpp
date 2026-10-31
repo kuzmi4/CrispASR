@@ -15,6 +15,7 @@
 #include "crispasr_session.h"
 #include "core/win_compat.h"
 #include "core/arch_backend_map.h" // #335: general.architecture → backend table, SHARED with the CLI
+#include "core/parakeet_gguf.h"
 #include "core/bpe.h"
 #include "core/utf8.h"
 #include "core/asr_segment_group.h" // issue #257: output-segment grouping (parakeet --chunk-seconds)
@@ -151,6 +152,7 @@
 #endif
 #if __has_include("granite_speech.h")
 #include "granite_speech.h"
+#include "core/granite_prompt.h"
 #define CA_HAVE_GRANITE 1
 #endif
 #if __has_include("granite_nle.h")
@@ -208,6 +210,10 @@
 #if __has_include("miotts.h")
 #include "miotts.h"
 #define CA_HAVE_MIOTTS 1
+#endif
+#if __has_include("arktts.h")
+#include "arktts.h"
+#define CA_HAVE_ARKTTS 1
 #endif
 #if __has_include("confucius4_tts.h")
 #include "confucius4_tts.h"
@@ -397,6 +403,10 @@
 #if __has_include("rvc_svc.h")
 #include "rvc_svc.h"
 #define CA_HAVE_RVC_SVC 1
+#endif
+#if __has_include("meanvc2.h")
+#include "meanvc2.h"
+#define CA_HAVE_MEANVC2 1
 #endif
 #if __has_include("btc_chords.h")
 #include "btc_chords.h"
@@ -1089,6 +1099,7 @@ struct crispasr_stream {
     int keep_ms = 200;
     std::string language; // empty = auto
     bool translate = false;
+    int audio_ctx = 0;
 
     int n_samples_step = 0; // cached from step_ms
     int n_samples_length = 0;
@@ -1291,6 +1302,27 @@ static int crispasr_stream_run_decode(crispasr_stream* s) {
     wparams.language = s->language.empty() ? nullptr : s->language.c_str();
     wparams.detect_language = s->language.empty();
     wparams.no_context = true;
+
+    // Strided audio context for streaming: bound encoder evaluation context to
+    // the active sliding window instead of padding every step to 30s (1500 frames).
+    // Gated by CRISPASR_WHISPER_STREAM_AUDIO_CTX or crispasr_session_set_audio_ctx:
+    //   0 = default: full 1500 padding (100% baseline parity)
+    //   1 = adaptive context bounded to sliding window
+    //  >1 = explicit fixed context size (e.g. 1024 for 33% speedup)
+    static const int stream_audio_ctx_gate = []() {
+        const char* e = getenv("CRISPASR_WHISPER_STREAM_AUDIO_CTX");
+        return e ? atoi(e) : 0;
+    }();
+    const int effective_audio_ctx = (s->audio_ctx > 0) ? s->audio_ctx : stream_audio_ctx_gate;
+    if (effective_audio_ctx != 0 && !pcm.empty()) {
+        if (effective_audio_ctx > 1) {
+            wparams.audio_ctx = std::min(1500, effective_audio_ctx);
+        } else {
+            const int enc_frames = (int)((pcm.size() + 319) / 320);
+            const int enc_ctx = std::min(1500, std::max(64, ((enc_frames + 31) / 32) * 32));
+            wparams.audio_ctx = enc_ctx;
+        }
+    }
 
     if (whisper_full(s->ctx, wparams, pcm.data(), (int)pcm.size()) != 0) {
         return -1;
@@ -1657,7 +1689,13 @@ CA_EXPORT int crispasr_detect_backends_from_gguf(const char* path, char* out, in
         gguf_free(gctx);
         return -4;
     }
-    const std::vector<std::string> names = core_arch::backends_for_arch(arch);
+    if (core_parakeet_gguf::reject_external(gctx, path)) {
+        gguf_free(gctx);
+        return 0;
+    }
+    std::vector<std::string> names = core_arch::backends_for_arch(arch);
+    if (!names.empty() && names.front() == "parakeet" && core_parakeet_gguf::compatible_ctc(gctx))
+        names = {"fastconformer-ctc"};
     gguf_free(gctx);
 
     std::string joined;
@@ -1702,6 +1740,12 @@ CA_EXPORT int crispasr_detect_backend_from_gguf(const char* path, char* out_name
     // writes) while this copy only knew the hyphen spelling, so the CLI opened
     // the model via its filename pass and every binding got a NULL session.
     const char* backend = core_arch::backend_for_arch(arch);
+    if (core_parakeet_gguf::reject_external(gctx, path)) {
+        gguf_free(gctx);
+        return 0;
+    }
+    if (std::strcmp(backend, "parakeet") == 0 && core_parakeet_gguf::compatible_ctc(gctx))
+        backend = "fastconformer-ctc";
 
     std::strncpy(out_name, backend, out_cap - 1);
     out_name[out_cap - 1] = '\0';
@@ -2084,6 +2128,10 @@ struct crispasr_session {
     // (keep the model default). Applied to parakeet_ctx before each transcribe.
     int parakeet_att_context_left = INT_MIN;
     int parakeet_att_context_right = INT_MIN;
+    // Whisper audio context: bounds encoder evaluation context (0 = full 1500 pad).
+    int audio_ctx = 0;
+    // Strided window refresh interval for Hikari streaming (-1 = default 16, 0 = exact).
+    int hikari_refresh_stride = -1;
 
     // Issue #208: per-session progress callback for long-form (chunked)
     // transcription. Fired once per finished window from the chunked merge
@@ -2211,6 +2259,9 @@ struct crispasr_session {
 #ifdef CA_HAVE_MIOTTS
     miotts_context* miotts_ctx = nullptr;
 #endif
+#ifdef CA_HAVE_ARKTTS
+    arktts_context* arktts_ctx = nullptr;
+#endif
 #ifdef CA_HAVE_CONFUCIUS4_TTS
     confucius4_tts_context* confucius4_ctx = nullptr;
 #endif
@@ -2274,6 +2325,9 @@ struct crispasr_session {
 #ifdef CA_HAVE_RVC_SVC
     rvc_svc_context* rvc_ctx = nullptr;
     rvc_svc_result* rvc_last = nullptr;
+#endif
+#ifdef CA_HAVE_MEANVC2
+    meanvc2_context* meanvc2_ctx = nullptr;
 #endif
 #ifdef CA_HAVE_TABCNN
     // Emission scores from the last crispasr_session_tab() call, kept alive so
@@ -2878,6 +2932,11 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
         return nullptr;
     }
 
+    if (core_parakeet_gguf::reject_external_file(model_path)) {
+        g_last_error_category = CRISPASR_ERR_MODEL;
+        return nullptr;
+    }
+
     if (simulate_on_gpu_open("CRISPASR_SIMULATE_GPU_OPEN_FAILURE")) {
         g_last_error_category = CRISPASR_ERR_GPU;
         return nullptr;
@@ -3389,6 +3448,21 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
         return s;
     }
 #endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->backend == "arktts" || s->backend == "audio8-tts" || s->backend == "ark-tts") {
+        arktts_context_params p = arktts_context_default_params();
+        p.n_threads = s->n_threads;
+        p.verbosity = g_open_verbosity_tls;
+        p.use_gpu = s->use_gpu;
+        p.temperature = 0.8f;
+        s->arktts_ctx = arktts_init_from_file(model_path, p);
+        if (!s->arktts_ctx) {
+            delete s;
+            return nullptr;
+        }
+        return s;
+    }
+#endif
 #ifdef CA_HAVE_PIANO_TRANSCRIPTION
     if (s->backend == "piano-transcription" || s->backend == "piano_transcription") {
         piano_transcription_params p = piano_transcription_default_params();
@@ -3559,6 +3633,19 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
         return s;
     }
 #endif
+#ifdef CA_HAVE_MEANVC2
+    if (s->backend == "meanvc2" || s->backend == "mean-vc2") {
+        meanvc2_context_params p = meanvc2_context_default_params();
+        p.n_threads = s->n_threads;
+        p.use_gpu = g_open_use_gpu_tls;
+        s->meanvc2_ctx = meanvc2_init_from_file(model_path, p);
+        if (!s->meanvc2_ctx) {
+            delete s;
+            return nullptr;
+        }
+        return s;
+    }
+#endif
 #ifdef CA_HAVE_TABCNN
     if (s->backend == "tabcnn" || s->backend == "tab" || s->backend == "tablature") {
         s->tabcnn_ctx = tabcnn_init(model_path, s->n_threads);
@@ -3649,6 +3736,9 @@ static crispasr_session* session_open_explicit_impl(const char* model_path, cons
         if (!s->hikari_ctx) {
             delete s;
             return nullptr;
+        }
+        if (s->hikari_refresh_stride >= 0) {
+            hikari_set_refresh_stride(s->hikari_ctx, s->hikari_refresh_stride);
         }
         // Without Silero's speech probability the policy's wait penalty never
         // rises and the model hardly emits (en->de on jfk: empty text). Same
@@ -5001,6 +5091,10 @@ CA_EXPORT int crispasr_session_output_sample_rate(crispasr_session* s) {
     if (s->speecht5_ctx)
         return 16000;
 #endif
+#ifdef CA_HAVE_MEANVC2
+    if (s->meanvc2_ctx)
+        return 16000;
+#endif
         // Every remaining audio-producing ctx uses the 24 kHz adapter default.
 #ifdef CA_HAVE_BT2_TTS
     // Breeze-TTS-2 renders through the qwen3-tts-tokenizer-12hz codec (24 kHz),
@@ -5048,6 +5142,10 @@ CA_EXPORT int crispasr_session_output_sample_rate(crispasr_session* s) {
 #ifdef CA_HAVE_MIOTTS
     if (s->miotts_ctx)
         return miotts_get_sample_rate(s->miotts_ctx);
+#endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx)
+        return arktts_get_sample_rate(s->arktts_ctx);
 #endif
 #ifdef CA_HAVE_CONFUCIUS4_TTS
     if (s->confucius4_ctx)
@@ -5232,6 +5330,9 @@ CA_EXPORT int crispasr_session_available_backends(char* out_csv, int out_cap) {
 #ifdef CA_HAVE_MIOTTS
     list += ",miotts";
 #endif
+#ifdef CA_HAVE_ARKTTS
+    list += ",arktts";
+#endif
 #ifdef CA_HAVE_CONFUCIUS4_TTS
     list += ",confucius4-tts";
 #endif
@@ -5285,6 +5386,9 @@ CA_EXPORT int crispasr_session_available_backends(char* out_csv, int out_cap) {
 #endif
 #ifdef CA_HAVE_RVC_SVC
     list += ",rvc-svc";
+#endif
+#ifdef CA_HAVE_MEANVC2
+    list += ",meanvc2";
 #endif
 #ifdef CA_HAVE_KYUTAI
     list += ",kyutai-stt";
@@ -6459,6 +6563,10 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
             wparams.grammar_strict = s->grammar_strict;
         }
 
+        if (s->audio_ctx > 0) {
+            wparams.audio_ctx = s->audio_ctx;
+        }
+
         // Set progress callback — writes to the module-level atomic so
         // Dart can poll via crispasr_get_progress().
         g_progress.store(0, std::memory_order_relaxed);
@@ -7298,8 +7406,12 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
                     assistant_prefill = "language " + ca_iso_to_english_lang(eff_lang) + "<asr_text>";
             }
         }
+        // Like VibeVoice, opt in to using session hotwords as free-form context.
+        const char* context_env = getenv("CRISPASR_QWEN3_HOTWORDS_AS_CONTEXT");
+        const bool hotwords_as_context = qwen3_system_hotwords && context_env && atoi(context_env) != 0;
         std::string text = core_qwen3_prompt::build(N_enc, sys_instruction, s->ask, assistant_prefill,
-                                                    qwen3_system_hotwords ? s->hotwords : "");
+                                                    qwen3_system_hotwords && !hotwords_as_context ? s->hotwords : "",
+                                                    hotwords_as_context ? s->hotwords : "");
         if (raon) { // RaonPipeline.stt; --ask replaces the instruction
             const std::string eff_lang = lang_set ? lang : s->source_language;
             static bool warned = false;
@@ -7592,13 +7704,14 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
                 std::free(a);
         } else {
             // granite-4.0-1b legacy hardcoded ids: "USER: " + transcription request.
-            static const int32_t kPrefix4[] = {6584, 25, 220};
+            using core_granite_prompt::kPrefix4;
+            using core_granite_prompt::kSuffix4;
             prefix_ids.assign(kPrefix4, kPrefix4 + (sizeof(kPrefix4) / sizeof(kPrefix4[0])));
             if (!s->ask.empty() || want_lang) {
                 const std::string instr =
                     !s->ask.empty() ? s->ask
                                     : "can you transcribe the speech into " + ca_iso_to_english_lang(eff_lang) + "?";
-                const std::string suffix4_str = instr + "\nASSISTANT:";
+                const std::string suffix4_str = core_granite_prompt::legacy_suffix(instr);
                 int n = 0;
                 int32_t* a = granite_speech_tokenize(s->granite_ctx, suffix4_str.c_str(), &n);
                 if (a && n > 0) {
@@ -7607,8 +7720,6 @@ static crispasr_session_result* transcribe_single(crispasr_session* s, const flo
                 } else if (a)
                     std::free(a);
             } else {
-                static const int32_t kSuffix4[] = {4919, 499,  1380, 3191, 279,   8982, 1139, 264,
-                                                   5439, 3645, 30,   198,  36660, 3931, 2891, 25};
                 suffix_ids.assign(kSuffix4, kSuffix4 + (sizeof(kSuffix4) / sizeof(kSuffix4[0])));
             }
         }
@@ -9569,6 +9680,25 @@ CA_EXPORT int crispasr_session_set_parakeet_att_context(crispasr_session* s, int
     return 0;
 }
 
+CA_EXPORT int crispasr_session_set_audio_ctx(crispasr_session* s, int audio_ctx) {
+    if (!s || audio_ctx < 0)
+        return -1;
+    s->audio_ctx = audio_ctx;
+    return 0;
+}
+
+CA_EXPORT int crispasr_session_set_hikari_refresh_stride(crispasr_session* s, int stride) {
+    if (!s || stride < 0)
+        return -1;
+    s->hikari_refresh_stride = stride;
+#ifdef CA_HAVE_HIKARI
+    if (s->hikari_ctx) {
+        hikari_set_refresh_stride(s->hikari_ctx, stride);
+    }
+#endif
+    return 0;
+}
+
 CA_EXPORT int crispasr_session_set_codec_path(crispasr_session* s, const char* path) {
     if (!s || !path)
         return -1;
@@ -10750,6 +10880,17 @@ static float* crispasr_session_synthesize_raw_impl(crispasr_session* s, const ch
         return pcm;
     }
 #endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx) {
+        if (s->max_new_tokens > 0)
+            arktts_set_max_new_tokens(s->arktts_ctx, s->max_new_tokens);
+        int n = 0;
+        float* pcm = arktts_synthesize(s->arktts_ctx, text, &n);
+        if (out_n_samples)
+            *out_n_samples = n;
+        return pcm;
+    }
+#endif
 #ifdef CA_HAVE_CONFUCIUS4_TTS
 #ifdef CA_HAVE_BT2_TTS
     if (s->bt2_ctx) {
@@ -11458,6 +11599,21 @@ static float* crispasr_session_speech_to_speech_impl(crispasr_session* s, const 
         return pcm;
     }
 #endif
+#ifdef CA_HAVE_MEANVC2
+    if (s->meanvc2_ctx) {
+        int n = 0;
+        float* pcm = meanvc2_convert(s->meanvc2_ctx, in_samples, n_in_samples, &n);
+        if (!pcm || n <= 0) {
+            s->last_synth_error = "MeanVC2 voice conversion produced no audio";
+            if (pcm)
+                meanvc2_free_audio(pcm);
+            return nullptr;
+        }
+        if (out_n_samples)
+            *out_n_samples = n;
+        return pcm;
+    }
+#endif
 
     s->last_synth_error = "backend '" + s->backend + "' does not support speech-to-speech";
     return nullptr;
@@ -11840,8 +11996,14 @@ CA_EXPORT crispasr_stream* crispasr_session_stream_open(crispasr_session* s, int
         return w;
     }
 #endif
-    if (s->whisper_ctx)
-        return crispasr_stream_open(s->whisper_ctx, n_threads, step_ms, length_ms, keep_ms, language, translate);
+    if (s->whisper_ctx) {
+        crispasr_stream* st =
+            crispasr_stream_open(s->whisper_ctx, n_threads, step_ms, length_ms, keep_ms, language, translate);
+        if (st) {
+            st->audio_ctx = s->audio_ctx;
+        }
+        return st;
+    }
 #if __has_include("kyutai_stt.h")
     if (s->kyutai_ctx) {
         // Chunked-batch over a rolling window — see PLAN #62c.
@@ -11921,6 +12083,80 @@ CA_EXPORT crispasr_stream* crispasr_session_stream_open(crispasr_session* s, int
             return nullptr;
         auto* w = new crispasr_stream();
         w->vibevoice_stream_state = vs;
+        return w;
+    }
+#endif
+#ifdef CA_HAVE_HIKARI
+    if (s->hikari_ctx) {
+        (void)n_threads;
+        (void)keep_ms;
+        (void)step_ms;
+        (void)length_ms;
+        const std::string tl = language ? language : s->target_language;
+        const bool tr = translate || (!tl.empty() && tl != "en" && tl != "auto");
+        hikari_set_task(s->hikari_ctx, tr ? 1 : 0, (!tl.empty() && tl != "auto") ? tl.c_str() : "en");
+        if (s->hikari_refresh_stride >= 0) {
+            hikari_set_refresh_stride(s->hikari_ctx, s->hikari_refresh_stride);
+        }
+        hikari_stream_reset(s->hikari_ctx);
+        if (s->hikari_vad) {
+            float z = 0.0f;
+            whisper_vad_detect_speech(s->hikari_vad, &z, 0);
+        }
+        auto* w = new crispasr_stream();
+        auto hc = s->hikari_ctx;
+        w->append = [w, hc](const float* pcm, int n, bool flush) {
+            int rc = 0;
+            if (n > 0 && pcm) {
+                rc = hikari_stream_push(hc, pcm, n);
+            }
+            if (flush) {
+                rc = hikari_stream_flush(hc);
+            }
+            if (rc < 0)
+                return -2;
+            char* txt = hikari_stream_text(hc);
+            std::string text_str = txt ? txt : "";
+            if (txt)
+                free(txt);
+            return crispasr_stream_publish(w, text_str);
+        };
+        return w;
+    }
+#endif
+#ifdef CA_HAVE_PARAKEET
+    if (s->parakeet_ctx) {
+        (void)n_threads;
+        (void)language;
+        (void)translate;
+        auto* w = new crispasr_stream();
+        auto pc = s->parakeet_ctx;
+        auto state = std::make_shared<std::vector<float>>();
+        const int step_samples = (step_ms > 0 ? step_ms : 1000) * 16;
+        const int length_samples = (length_ms > 0 ? length_ms : 8000) * 16;
+        auto pending = std::make_shared<std::vector<float>>();
+        w->append = [w, pc, state, pending, step_samples, length_samples](const float* pcm, int n, bool flush) {
+            if (n > 0 && pcm) {
+                pending->insert(pending->end(), pcm, pcm + n);
+            }
+            if ((int)pending->size() < step_samples && !flush) {
+                return 0;
+            }
+            state->insert(state->end(), pending->begin(), pending->end());
+            pending->clear();
+            if ((int)state->size() > length_samples) {
+                const int drop = (int)state->size() - length_samples;
+                state->erase(state->begin(), state->begin() + drop);
+            }
+            if (state->empty())
+                return 0;
+            parakeet_result* pr = parakeet_transcribe_ex(pc, state->data(), (int)state->size(), 0);
+            if (!pr)
+                return -2;
+            std::string text = pr->text ? pr->text : "";
+            parakeet_result_free(pr);
+            return crispasr_stream_publish(w, text);
+        };
         return w;
     }
 #endif
@@ -12830,6 +13066,10 @@ CA_EXPORT void crispasr_session_close(crispasr_session* s) {
     if (s->miotts_ctx)
         miotts_free(s->miotts_ctx);
 #endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx)
+        arktts_free(s->arktts_ctx);
+#endif
 #ifdef CA_HAVE_CONFUCIUS4_TTS
     if (s->confucius4_ctx)
         confucius4_tts_free(s->confucius4_ctx);
@@ -12895,6 +13135,10 @@ CA_EXPORT void crispasr_session_close(crispasr_session* s) {
         rvc_svc_result_free(s->rvc_last);
     if (s->rvc_ctx)
         rvc_svc_free(s->rvc_ctx);
+#endif
+#ifdef CA_HAVE_MEANVC2
+    if (s->meanvc2_ctx)
+        meanvc2_free(s->meanvc2_ctx);
 #endif
 #ifdef CA_HAVE_BTC_CHORDS
     if (s->btc_ctx)
@@ -13546,6 +13790,13 @@ CA_EXPORT int crispasr_session_set_temperature(crispasr_session* s, float temper
         touched++;
     }
 #endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx) {
+        arktts_set_temperature(s->arktts_ctx, temperature);
+        arktts_set_seed(s->arktts_ctx, seed);
+        touched++;
+    }
+#endif
 #ifdef CA_HAVE_CANARY
     if (s->canary_ctx) {
         canary_set_temperature(s->canary_ctx, temperature, seed);
@@ -13677,6 +13928,12 @@ CA_EXPORT int crispasr_session_set_tts_seed(crispasr_session* s, uint64_t seed) 
 #ifdef CA_HAVE_MIOTTS
     if (s->miotts_ctx) {
         miotts_set_seed(s->miotts_ctx, seed);
+        touched++;
+    }
+#endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx) {
+        arktts_set_seed(s->arktts_ctx, seed);
         touched++;
     }
 #endif
@@ -14229,6 +14486,10 @@ CA_EXPORT int crispasr_session_set_max_new_tokens(crispasr_session* s, int n) {
 #ifdef CA_HAVE_DIA
     if (s->dia_tts_ctx)
         dia_tts_set_max_tokens(s->dia_tts_ctx, s->max_new_tokens);
+#endif
+#ifdef CA_HAVE_ARKTTS
+    if (s->arktts_ctx)
+        arktts_set_max_new_tokens(s->arktts_ctx, s->max_new_tokens);
 #endif
     return 0;
 }

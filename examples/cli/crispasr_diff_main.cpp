@@ -103,6 +103,8 @@
 #include "parler_tts.h"
 #include "melotts.h"
 #include "moss_audio.h"
+#include "arktts.h"
+#include "meanvc2.h"
 #include "hojo_asr.h"
 #include "moss_transcribe.h"
 #include "lfm2_audio.h"
@@ -5596,7 +5598,7 @@ int main(int argc, char** argv) {
         }
 
         wespeaker_free(ctx);
-    } else if (backend_name == "parakeet" || backend_name == "phonon2") {
+    } else if (backend_name == "parakeet" || backend_name == "haas" || backend_name == "phonon2") {
         auto cp = parakeet_context_default_params();
         cp.n_threads = 4;
         if (const char* threads = std::getenv("CRISPASR_PARAKEET_DIFF_THREADS")) {
@@ -9973,6 +9975,12 @@ int main(int argc, char** argv) {
 
         printf("miocodec: %d tokens, global_emb dim=%zu\n", n_tokens, emb_pair.second);
 
+        int target_audio_len = 0;
+        auto wav_pair = ref.get_f32("output_waveform");
+        if (wav_pair.first && wav_pair.second > 0) {
+            target_audio_len = (int)wav_pair.second;
+        }
+
         // Compare each stage that exists in the reference
         const char* stages[] = {"fsq_decoded",       "wave_prenet_out",    "wave_prior_net_out", "wave_decoder_out",
                                 "wave_post_net_out", "wave_upsampler_out", "istft_mag_phase",    "output_waveform"};
@@ -9985,7 +9993,8 @@ int main(int argc, char** argv) {
             }
 
             int out_n = 0;
-            float* cpp_data = miocodec_extract_stage(ctx, tokens.data(), n_tokens, global_emb, 0, stage, &out_n);
+            float* cpp_data =
+                miocodec_extract_stage(ctx, tokens.data(), n_tokens, global_emb, target_audio_len, stage, &out_n);
             if (!cpp_data || out_n == 0) {
                 printf("[SKIP] %-25s (stage not implemented)\n", stage);
                 n_skip++;
@@ -10103,6 +10112,192 @@ int main(int argc, char** argv) {
         }
 
         crepe_free(ctx);
+
+    } else if (backend_name == "arktts") {
+        auto cp = arktts_context_default_params();
+        cp.n_threads = 4;
+        cp.verbosity = 0;
+        cp.temperature = 0.0f;
+        arktts_context* ctx = arktts_init_from_file(model_path.c_str(), cp);
+        if (!ctx) {
+            fprintf(stderr, "failed to load arktts model '%s'\n", model_path.c_str());
+            return 4;
+        }
+
+        // Stage 1: embed_tokens
+        auto ids_pair = ref.get_f32("text_input_ids");
+        if (ids_pair.first) {
+            int n_tokens = (int)ids_pair.second / 11;
+            if (n_tokens <= 0)
+                n_tokens = (int)ids_pair.second;
+            std::vector<int32_t> ids(ids_pair.second);
+            for (size_t i = 0; i < ids_pair.second; i++)
+                ids[i] = (int32_t)ids_pair.first[i];
+
+            int out_dim = 0;
+            float* embeds = arktts_run_embed(ctx, ids.data(), n_tokens, &out_dim);
+            if (embeds) {
+                auto rep = ref.compare("embed_tokens", embeds, (size_t)n_tokens * out_dim);
+                print_row("embed_tokens", rep, COS_THRESHOLD);
+                record(rep);
+
+                // Stage 2: slow_logits_last
+                int out_vocab = 0;
+                float* logits = arktts_run_slow_transformer(ctx, embeds, n_tokens, &out_vocab);
+                if (logits) {
+                    if (ref.has("slow_logits_last")) {
+                        auto rep_l = ref.compare("slow_logits_last", logits, out_vocab);
+                        print_row("slow_logits_last", rep_l, COS_THRESHOLD);
+                        record(rep_l);
+                    }
+                    std::free(logits);
+                }
+                std::free(embeds);
+            }
+        }
+
+        // Stage 3: frame0_codebooks
+        if (ref.has("frame0_codebooks")) {
+            auto sem_pair = ref.get_f32("selected_semantic_id");
+            int32_t sem_id = sem_pair.first ? (int32_t)sem_pair.first[0] : 151678;
+            int32_t codes[10] = {0};
+            if (arktts_run_fast_subnetwork(ctx, nullptr, sem_id, codes) == 0) {
+                float codes_f[10];
+                for (int i = 0; i < 10; i++)
+                    codes_f[i] = (float)codes[i];
+                auto rep_c = ref.compare("frame0_codebooks", codes_f, 10);
+                print_row("frame0_codebooks", rep_c, COS_THRESHOLD);
+                record(rep_c);
+            }
+        }
+
+        // Stage 4: vocoder stages
+        if (ref.has("test_codes_4frames")) {
+            auto c_pair = ref.get_f32("test_codes_4frames");
+            if (c_pair.first && c_pair.second >= 40) {
+                std::vector<int32_t> test_codes(c_pair.second);
+                for (size_t i = 0; i < c_pair.second; i++)
+                    test_codes[i] = (int32_t)c_pair.first[i];
+
+                if (ref.has("quant_sum_latents")) {
+                    float* qs = arktts_run_quant_sum(ctx, test_codes.data(), 10, 4);
+                    if (qs) {
+                        auto rep_qs = ref.compare("quant_sum_latents", qs, 1024 * 4);
+                        print_row("quant_sum_latents", rep_qs, COS_THRESHOLD);
+                        record(rep_qs);
+                        std::free(qs);
+                    }
+                }
+
+                auto qs_pair = ref.get_f32("quant_sum_latents");
+                if (qs_pair.first && ref.has("post_module_out")) {
+                    float* pm = arktts_run_post_module(ctx, qs_pair.first, 4);
+                    if (pm) {
+                        auto rep_pm = ref.compare("post_module_out", pm, 1024 * 4);
+                        print_row("post_module_out", rep_pm, COS_THRESHOLD);
+                        record(rep_pm);
+                        std::free(pm);
+                    }
+                }
+
+                auto pm_pair = ref.get_f32("post_module_out");
+                if (pm_pair.first && ref.has("upsample_out")) {
+                    float* up = arktts_run_upsample(ctx, pm_pair.first, 4);
+                    if (up) {
+                        auto rep_up = ref.compare("upsample_out", up, 1024 * 16);
+                        print_row("upsample_out", rep_up, COS_THRESHOLD);
+                        record(rep_up);
+                        std::free(up);
+                    }
+                }
+
+                if (ref.has("decoded_pcm")) {
+                    int out_samples = 0;
+                    float* pcm = arktts_decode_codes(ctx, test_codes.data(), 10, 4, &out_samples);
+                    if (pcm) {
+                        auto rep_pcm = ref.compare("decoded_pcm", pcm, out_samples);
+                        print_row("decoded_pcm", rep_pcm, COS_THRESHOLD);
+                        record(rep_pcm);
+                        arktts_free_audio(pcm);
+                    }
+                }
+            }
+        }
+
+        arktts_free(ctx);
+
+    } else if (backend_name == "meanvc2" || backend_name == "mean-vc2") {
+        auto cp = meanvc2_context_default_params();
+        cp.verbosity = 0;
+        meanvc2_context* ctx = meanvc2_init_from_file(model_path.c_str(), cp);
+        if (!ctx) {
+            fprintf(stderr, "failed to load meanvc2 model '%s'\n", model_path.c_str());
+            return 4;
+        }
+
+        // Stage 1: ASR Fast-U2++ BNF
+        auto raw_audio = ref.get_f32("raw_audio");
+        if (raw_audio.first) {
+            int out_frames = 0, out_dim = 0;
+            float* bns = meanvc2_run_asr(ctx, raw_audio.first, (int)raw_audio.second, &out_frames, &out_dim);
+            if (bns && ref.has("asr_bn")) {
+                auto rep = ref.compare("asr_bn", bns, (size_t)out_frames * out_dim);
+                print_row("asr_bn", rep, COS_THRESHOLD);
+                record(rep);
+                std::free(bns);
+            }
+        }
+
+        // Stage 2: GTM memory KV
+        auto spk_pair = ref.get_f32("spk_emb");
+        if (spk_pair.first && spk_pair.second >= 256) {
+            std::vector<float> k_mem(32 * 256), v_mem(32 * 256);
+            if (meanvc2_run_gtm(ctx, spk_pair.first, k_mem.data(), v_mem.data()) == 0) {
+                if (ref.has("gtm_k")) {
+                    auto rep_k = ref.compare("gtm_k", k_mem.data(), 32 * 256);
+                    print_row("gtm_k", rep_k, COS_THRESHOLD);
+                    record(rep_k);
+                }
+                if (ref.has("gtm_v")) {
+                    auto rep_v = ref.compare("gtm_v", v_mem.data(), 32 * 256);
+                    print_row("gtm_v", rep_v, COS_THRESHOLD);
+                    record(rep_v);
+                }
+            }
+
+            // Stage 3: DiT mel
+            auto bn_interp = ref.get_f32("asr_bn_interp");
+            auto noise_pair = ref.get_f32("noise");
+            if (bn_interp.first && noise_pair.first) {
+                int n_frames = (int)bn_interp.second / 256;
+                int out_mel_dim = 0;
+                float* mel =
+                    meanvc2_run_dit(ctx, bn_interp.first, n_frames, spk_pair.first, noise_pair.first, &out_mel_dim);
+                if (mel && ref.has("dit_mel")) {
+                    auto rep_mel = ref.compare("dit_mel", mel, (size_t)out_mel_dim * n_frames);
+                    print_row("dit_mel", rep_mel, COS_THRESHOLD);
+                    record(rep_mel);
+
+                    // Stage 4: Vocos waveform decode
+                    if (ref.has("vocos_pcm")) {
+                        int out_pcm_samples = 0;
+                        auto ref_mel = ref.get_f32("dit_mel");
+                        const float* vocos_in =
+                            (ref_mel.first && ref_mel.second == (size_t)out_mel_dim * n_frames) ? ref_mel.first : mel;
+                        float* pcm = meanvc2_run_vocos(ctx, vocos_in, n_frames, &out_pcm_samples);
+                        if (pcm) {
+                            auto rep_pcm = ref.compare("vocos_pcm", pcm, out_pcm_samples);
+                            print_row("vocos_pcm", rep_pcm, COS_THRESHOLD);
+                            record(rep_pcm);
+                            meanvc2_free_audio(pcm);
+                        }
+                    }
+                    std::free(mel);
+                }
+            }
+        }
+
+        meanvc2_free(ctx);
 
     } else {
         fprintf(stderr,

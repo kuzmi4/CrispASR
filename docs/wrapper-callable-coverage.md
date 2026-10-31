@@ -449,3 +449,28 @@ Compiled public-method probes cover callback close, same/shared-context overlap,
 result/cursor reads, recovery/abort, native pthread re-entry, parameter races and
 owned result retention after close. Low-level raw Go Context pointers, independent
 native result states and other-language lifecycle remain separate tasks.
+
+## C# explicit setter failures
+
+`Session.SetPuncModel`, `SetVoice` and `SetSpeakerId` require native zero-success.
+Native `-2` means model load failure, invalid voice-reference settings, or an
+out-of-range speaker ID respectively. These errors now throw
+`InvalidOperationException` with the native return code. Previously the shared
+helper silently accepted `-2` as an unsupported tuning control. Optional tuning
+controls retain that compatibility behavior.
+
+The actual public C# methods run against a compiled public-header fixture in
+`CSharpWrapperContract`, covering `0`, `-1`, `-2`, `-3` and positive failure
+codes, plus the unsupported tuning case. The new fixture failed before the
+repair (`setter swallowed rc=-2`); afterward its current/older-library runs
+pass 101/35 assertions. This proves wrapper error transport, not model quality.
+Native punctuation replacement unloads the old model before attempting the new
+load; the exception exposes that failure so callers can recover.
+
+Java `CrispasrSession.setSpeakerId` and Ruby `Session.set_speaker_id` had the
+same out-of-range `-2` omission. Both now reject it. Their real public adapters
+run against a shared two-speaker C fixture, accepting 0/1 and rejecting negative,
+upper-bound and maximum-integer IDs. Both new probes fail before the repair;
+afterward Java passes 95 current/9 older-ABI assertions and Ruby passes 343
+assertions, with all 155 Ruby context guards still checked. Python, Go, Rust
+and Dart already reject this error; WASM exposes the return code to its caller.

@@ -21,17 +21,32 @@ Platform wheels **bundle the native `libcrispasr`** — nothing else to install 
 for Linux (x86_64, arm64), macOS (Apple Silicon, Metal-accelerated), and
 Windows (x86_64).
 
+Prebuilt Linux wheels use `manylinux_2_35` (glibc 2.35 or newer, with the
+corresponding host C++ runtime). Their native libraries import GLIBC 2.34 and
+GLIBCXX 3.4.30; the earlier `manylinux_2_28` label overstated compatibility.
+The Apple Silicon wheel targets macOS 11.0, including its optional C helper.
+Release packaging checks every included native library against these floors.
+Installing the source distribution does not make an incompatible prebuilt
+native library compatible; supply a native build suitable for your system.
+
 ### GPU wheels
 
-CUDA and Vulkan builds are published to a separate index (llama-cpp-python
-style — pass `--extra-index-url`):
+CUDA, Vulkan and ROCm/HIP builds are published to a separate index
+(llama-cpp-python style — pass `--extra-index-url`):
 
 ```bash
-# NVIDIA CUDA (Linux + Windows)
+# NVIDIA CUDA (Linux x86_64 + Windows; Linux aarch64/SBSA from 0.8.47, not Jetson)
 pip install crispasr --extra-index-url https://crispstrobe.github.io/CrispASR/whl/cuda/
-# Vulkan (Windows)
+# Vulkan (Windows; Linux x86_64 from 0.8.47)
 pip install crispasr --extra-index-url https://crispstrobe.github.io/CrispASR/whl/vulkan/
+# AMD ROCm/HIP (Linux x86_64, from 0.8.47)
+pip install crispasr --extra-index-url https://crispstrobe.github.io/CrispASR/whl/hip/
 ```
+
+GPU wheels do not ship a GPU driver or vendor runtime. Linux `+vulkan` needs
+the host's Vulkan loader (`libvulkan.so.1`) and a Vulkan driver; `+hip` needs a
+ROCm 6.x install (HIP runtime, hipBLAS/rocBLAS and ROCm's `libomp`) on the
+loader path, e.g. `/opt/rocm/lib` and `/opt/rocm/lib/llvm/lib`.
 
 ### Other platforms / bring-your-own library
 

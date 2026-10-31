@@ -2215,14 +2215,15 @@ class Session(SessionExtras):
         return vocab
 
     # ---------------------------------------------------------------------
-    # TTS synthesis (vibevoice, qwen3-tts, miotts, moss-tts, moss-tts-local, confucius4-tts, omnivoice, kokoro, orpheus, chatterbox, outetts, indextts, voxcpm2, csm, dia, zonos-tts, bark, speecht5, parler-tts, pocket-tts, kugelaudio, tada, lfm2-audio, dots-tts, fireredtts3)
+    # TTS synthesis (vibevoice, qwen3-tts, miotts, arktts, moss-tts, moss-tts-local, confucius4-tts, omnivoice, kokoro, orpheus, chatterbox, outetts, indextts, voxcpm2, csm, dia, zonos-tts, bark, speecht5, parler-tts, pocket-tts, kugelaudio, tada, lfm2-audio, dots-tts, fireredtts3)
     # ---------------------------------------------------------------------
 
     def set_codec_path(self, path: str) -> None:
         """Load a separate codec GGUF.
 
         Required for qwen3-tts (12 Hz tokenizer), moss-tts (1.6B transformer
-        RVQ codec) and orpheus (SNAC codec); no-op for other backends.
+        RVQ codec) and orpheus (SNAC codec). For MeloTTS, load the OpenVoice2
+        tone-color converter here before setting a reference voice.
         """
         if not hasattr(self._lib, "crispasr_session_set_codec_path"):
             raise RuntimeError("TTS API not present in this libcrispasr build")
@@ -2259,6 +2260,26 @@ class Session(SessionExtras):
         rc = self._lib.crispasr_session_set_parakeet_att_context(self._handle, int(left), int(right))
         if rc != 0:
             raise RuntimeError(f"set_parakeet_att_context failed (rc={rc}) for backend {self.backend!r}")
+
+    def set_audio_ctx(self, audio_ctx: int) -> None:
+        """Set Whisper encoder evaluation audio context size (in 20ms frames, e.g. 1024; 0 = all/1500)."""
+        if not hasattr(self._lib, "crispasr_session_set_audio_ctx"):
+            raise RuntimeError("crispasr_session_set_audio_ctx not present in this libcrispasr build")
+        self._lib.crispasr_session_set_audio_ctx.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._lib.crispasr_session_set_audio_ctx.restype = ctypes.c_int
+        rc = self._lib.crispasr_session_set_audio_ctx(self._handle, int(audio_ctx))
+        if rc != 0:
+            raise RuntimeError(f"set_audio_ctx failed (rc={rc}) for backend {self.backend!r}")
+
+    def set_hikari_refresh_stride(self, stride: int) -> None:
+        """Set Hikari streaming strided window refresh interval (0 = exact sliding, K > 0 = strided)."""
+        if not hasattr(self._lib, "crispasr_session_set_hikari_refresh_stride"):
+            raise RuntimeError("crispasr_session_set_hikari_refresh_stride not present in this libcrispasr build")
+        self._lib.crispasr_session_set_hikari_refresh_stride.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._lib.crispasr_session_set_hikari_refresh_stride.restype = ctypes.c_int
+        rc = self._lib.crispasr_session_set_hikari_refresh_stride(self._handle, int(stride))
+        if rc != 0:
+            raise RuntimeError(f"set_hikari_refresh_stride failed (rc={rc}) for backend {self.backend!r}")
 
     def set_voice(self, path: str, ref_text: Optional[str] = None) -> None:
         """Load a voice prompt: a baked GGUF voice pack OR a *.wav reference.
@@ -3212,7 +3233,7 @@ class Session(SessionExtras):
         ``csm``, ``dia``, ``fastpitch``, ``bananamind-tts``, ``speecht5``,
         ``melotts``, ``piper``, ``parler-tts``, ``outetts``, ``cosyvoice3-tts``,
         ``pocket-tts``, ``f5-tts``, ``irodori-tts``, ``supertonic``, ``bark``, ``kugelaudio``, ``tada``,
-        ``lfm2-audio``, ``voxtral-tts``, ``dots-tts``, ``fireredtts3``, ``omnivoice``, ``miotts``.
+        ``lfm2-audio``, ``voxtral-tts``, ``dots-tts``, ``fireredtts3``, ``omnivoice``, ``miotts``, ``arktts``.
         For MioTTS, call :meth:`set_voice` with a preset embedding GGUF and
         use :meth:`output_sample_rate` (44.1 kHz for MioCodec-v2).
         For qwen3-tts call :meth:`set_codec_path` and one of:

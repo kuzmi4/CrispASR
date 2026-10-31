@@ -133,6 +133,20 @@ catch_discover_tests(test-convt-permute
     TEST_SPEC "[unit][core][convt]"
     PROPERTIES LABELS "unit;core")
 
+# Actual tokenizer loader/rebind helpers with tiny synthetic GGUF weights.
+add_executable(test-omnivoice-encoder test-omnivoice-encoder.cpp)
+target_include_directories(test-omnivoice-encoder PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
+target_link_libraries(test-omnivoice-encoder PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
+add_test(NAME omnivoice-encoder-parity COMMAND test-omnivoice-encoder)
+set_tests_properties(omnivoice-encoder-parity PROPERTIES LABELS "unit;tts;omnivoice")
+
+add_executable(test-omnivoice-codec test-omnivoice-codec.cpp)
+target_include_directories(test-omnivoice-codec PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
+target_compile_definitions(test-omnivoice-codec PRIVATE TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test-omnivoice-codec PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
+add_test(NAME omnivoice-codec-lifecycle COMMAND test-omnivoice-codec)
+set_tests_properties(omnivoice-codec-lifecycle PROPERTIES LABELS "unit;tts;omnivoice")
+
 add_executable(test-step-graph-cache test-step-graph-cache.cpp)
 target_include_directories(test-step-graph-cache PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-step-graph-cache PRIVATE Catch2::Catch2WithMain ggml ggml-base)
@@ -1921,6 +1935,23 @@ catch_discover_tests(test-confucius4-tts-params
 )
 endif()
 
+if (TARGET arktts)
+add_executable(test-arktts-params
+    test-arktts-params.cpp
+)
+target_include_directories(test-arktts-params PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-arktts-params PRIVATE
+    Catch2::Catch2WithMain
+    arktts
+)
+catch_discover_tests(test-arktts-params
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit;arktts"
+)
+endif()
+
 # ─── test-funasr-params — Catch2 unit tests for funasr_context_params defaults
 # and null-guard coverage. No GGUF required. ───────────────────────────────────
 add_executable(test-funasr-params
@@ -2505,6 +2536,18 @@ catch_discover_tests(test-qwen3tts-params
     PROPERTIES LABELS "unit;qwen3_tts"
 )
 
+# Model-free #555 regression: actual public loader, prefill bounds, rollback.
+add_executable(test-qwen3tts-voice-pack test-qwen3tts-voice-pack.cpp)
+target_include_directories(test-qwen3tts-voice-pack PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-qwen3tts-voice-pack PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu)
+add_test(NAME qwen3tts-voice-pack-lifecycle COMMAND test-qwen3tts-voice-pack)
+set_tests_properties(qwen3tts-voice-pack-lifecycle PROPERTIES LABELS "unit;qwen3_tts")
+
+# Public loader lifecycle probe; needs a real model, run by the #555 worker.
+add_executable(qwen3-voice-pack-probe ../tools/ci-heavy/qwen3_voice_pack_probe.cpp)
+target_include_directories(qwen3-voice-pack-probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(qwen3-voice-pack-probe PRIVATE qwen3_tts)
+
 # ─── test-moss-tts-params — Catch2 unit tests for moss_tts_context_params /
 # moss_tts_synth_params defaults + null-guards. No GGUF required. ───────────────
 add_executable(test-moss-tts-params
@@ -2693,6 +2736,13 @@ catch_discover_tests(test-glmasr-params
 
 # ─── test-granitespeech-params — Catch2 unit tests for granite_speech_context_params defaults
 # and null-guard coverage. No GGUF required. ───────────────────────────────────
+add_executable(granite5-rope-probe ../tools/ci-heavy/granite5_rope_probe.cpp)
+target_include_directories(granite5-rope-probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(granite5-rope-probe PRIVATE ggml ggml-base crispasr_link_ggml_cpu)
+add_executable(granite5-stage-probe ../tools/ci-heavy/granite5_stage_probe.cpp)
+target_include_directories(granite5-stage-probe PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(granite5-stage-probe PRIVATE granite_speech ggml-base)
+
 add_executable(test-granitespeech-params
     test-granitespeech-params.cpp
 )
@@ -2829,6 +2879,34 @@ target_include_directories(test-openvoice2-hifi PRIVATE
 )
 target_link_libraries(test-openvoice2-hifi PRIVATE
     openvoice2
+)
+
+# ─── test-meanvc2-params — Catch2 unit tests for meanvc2_context_params defaults
+# and null-guard coverage. No GGUF required. ───────────────────────────────────
+add_executable(test-meanvc2-params
+    test-meanvc2-params.cpp
+)
+target_include_directories(test-meanvc2-params PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-meanvc2-params PRIVATE
+    Catch2::Catch2WithMain
+    meanvc2
+)
+catch_discover_tests(test-meanvc2-params
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit;meanvc2"
+)
+
+# ─── test-meanvc2-convert — standalone convert harness (needs GGUF + wav). ────
+add_executable(test-meanvc2-convert
+    test-meanvc2-convert.cpp
+)
+target_include_directories(test-meanvc2-convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-meanvc2-convert PRIVATE
+    meanvc2
 )
 
 # ─── test-t5translate-params — Catch2 unit tests for t5_translate_context_params defaults
@@ -4701,6 +4779,112 @@ catch_discover_tests(test-core-mel-parallel
     PROPERTIES LABELS "unit;mel"
 )
 
+# ─── test-core-mel-features — core/mel.cpp multi-configuration parity ──────────
+add_executable(test-core-mel-features test-core-mel-features.cpp)
+target_include_directories(test-core-mel-features PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-core-mel-features PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-core
+)
+catch_discover_tests(test-core-mel-features
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit;mel"
+)
+
+# ─── test-mel-ab-bench — core/mel.cpp paired A/B speed and quality bench ───────
+add_executable(test-mel-ab-bench test-mel-ab-bench.cpp)
+target_include_directories(test-mel-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-mel-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-core
+)
+catch_discover_tests(test-mel-ab-bench
+    TEST_SPEC "[bench]"
+    PROPERTIES LABELS "bench;mel"
+)
+
+# ─── test-align-ab-bench — src/align.cpp paired A/B speed and quality bench ────
+add_executable(test-align-ab-bench test-align-ab-bench.cpp ${PROJECT_SOURCE_DIR}/src/align.cpp)
+target_include_directories(test-align-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-align-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    Threads::Threads
+)
+catch_discover_tests(test-align-ab-bench
+    TEST_SPEC "[align][ab-bench]"
+    PROPERTIES LABELS "bench;align"
+)
+
+# ─── test-conformer-ab-bench — conformer_ibm.h paired A/B speed and parity bench ────
+add_executable(test-conformer-ab-bench test-conformer-ab-bench.cpp)
+target_include_directories(test-conformer-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-conformer-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    Threads::Threads
+    ggml
+)
+catch_discover_tests(test-conformer-ab-bench
+    TEST_SPEC "[conformer][ab-bench]"
+    PROPERTIES LABELS "bench;conformer"
+)
+
+# ─── test-cpu-ops-ab-bench — cpu_ops.h & conv.h paired A/B speed and parity bench ────
+add_executable(test-cpu-ops-ab-bench test-cpu-ops-ab-bench.cpp)
+target_include_directories(test-cpu-ops-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-cpu-ops-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    Threads::Threads
+    ggml
+)
+catch_discover_tests(test-cpu-ops-ab-bench
+    TEST_SPEC "[cpu_ops][convt][ab-bench]"
+    PROPERTIES LABELS "bench;cpu_ops"
+)
+
+# ─── test-firered-ab-bench — firered_asr & f5_tts paired A/B speed and parity bench ────
+add_executable(test-firered-ab-bench test-firered-ab-bench.cpp)
+target_include_directories(test-firered-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-firered-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    Threads::Threads
+    ggml
+)
+catch_discover_tests(test-firered-ab-bench
+    TEST_SPEC "[firered][f5_tts][ab-bench]"
+    PROPERTIES LABELS "bench;firered"
+)
+
+# ─── test-voxcpm2-ab-bench — voxcpm2 & mel-band-roformer paired A/B speed and parity bench ────
+add_executable(test-voxcpm2-ab-bench test-voxcpm2-ab-bench.cpp)
+target_include_directories(test-voxcpm2-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(test-voxcpm2-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    voxcpm2_tts
+    mel-band-roformer
+    Threads::Threads
+    ggml
+)
+catch_discover_tests(test-voxcpm2-ab-bench
+    TEST_SPEC "[voxcpm2][roformer][ab-bench]"
+    PROPERTIES LABELS "bench;voxcpm2"
+)
+
 # ─── test-core-cross-attn — core/cross_attn.h manual path (ggml graph) ────────
 # Computes the header's cross-attention graph and compares to a plain-C++ MHA
 # reference (verifies the bug-fixed V-transpose + unscaled T5 contract).
@@ -5445,6 +5629,18 @@ set_tests_properties(test-package-lib-bundle PROPERTIES
 # Discover Python before constructing commands or guarding their registration.
 # A later find_package leaves clean builds without the guarded unit tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES)
+    add_test(NAME granite-quant-policy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-granite-quant-policy.py
+            $<TARGET_FILE:crispasr-quantize>)
+    set_tests_properties(granite-quant-policy PROPERTIES LABELS "unit;gh;granite;regression-552" TIMEOUT 120)
+endif()
+if(Python3_Interpreter_FOUND)
+    add_test(NAME omnivoice-acceptance-policy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_omnivoice_acceptance_policy.py -v)
+    set_tests_properties(omnivoice-acceptance-policy PROPERTIES LABELS "unit;tts;omnivoice")
+endif()
+
 
 # ─── test-server-ws-stream — live: --ws-port real-time WebSocket ASR streaming.
 # Raw-socket client (stdlib only) verifies the RFC 6455 handshake + a streaming
@@ -5651,6 +5847,24 @@ if(UNIX AND Python3_EXECUTABLE)
     add_test(NAME ja-metadata-validator
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ja_metadata_live_validator.py -v)
     set_tests_properties(ja-metadata-validator PROPERTIES LABELS "unit;bindings" TIMEOUT 30)
+    add_test(NAME wheel-platform-floor
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_wheel_platform_floor.py -v)
+    add_test(NAME pypi-distributions
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_pypi_distributions.py -v)
+    set_tests_properties(pypi-distributions PROPERTIES LABELS "unit;python")
+    add_test(NAME regression-failure-diagnostics
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_regression_diagnostics.py -v)
+    set_tests_properties(regression-failure-diagnostics PROPERTIES LABELS "unit;python" TIMEOUT 30)
+    add_test(NAME csm-rope-metadata
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_csm_rope_metadata.py -v)
+    set_tests_properties(csm-rope-metadata PROPERTIES LABELS "unit;python" TIMEOUT 30)
+    add_test(NAME csm-prefill-capture-guards
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_csm_prefill_capture.py -v)
+    set_tests_properties(csm-prefill-capture-guards PROPERTIES LABELS "unit;python" TIMEOUT 30)
+    add_test(NAME csm-rope-component-check
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_csm_rope_component_check.py -v)
+    set_tests_properties(csm-rope-component-check PROPERTIES LABELS "unit;python" TIMEOUT 30)
+    set_tests_properties(wheel-platform-floor PROPERTIES LABELS "unit;packaging" TIMEOUT 30)
     # Model-free language ABI probes skip on developer machines without SDKs.
     # binding-contracts.yml uses the strict runner and rejects every skip.
     foreach(wrapper_language csharp java ruby dart wasm)
@@ -5846,6 +6060,23 @@ catch_discover_tests(test-arch-backend-map
         LABELS unit
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+
+# ─── #551: real GGUF schema routing and C ABI/CLI rejection (no weights)
+add_executable(test-parakeet-gguf test-parakeet-gguf.cpp)
+target_include_directories(test-parakeet-gguf PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-parakeet-gguf PRIVATE Catch2::Catch2WithMain crispasr-lib)
+catch_discover_tests(test-parakeet-gguf
+    TEST_SPEC "[parakeet-schema]"
+    PROPERTIES LABELS "unit;parakeet"
+)
+# The examples directory defines crispasr-cli after this directory. Test the
+# build option here; the target-file generator expression resolves later.
+if(Python3_EXECUTABLE AND CRISPASR_BUILD_EXAMPLES)
+    add_test(NAME parakeet-schema-cli COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_parakeet_schema_cli.py
+        --cli $<TARGET_FILE:crispasr-cli> --audio ${PROJECT_SOURCE_DIR}/samples/jfk.wav)
+    set_tests_properties(parakeet-schema-cli PROPERTIES LABELS "unit;parakeet" TIMEOUT 120)
+endif()
 
 # ─── test-btc-vocab — chord vocabulary + positional encoding (hermetic, unit)
 add_executable(test-btc-vocab test-btc-vocab.cpp)
@@ -6245,7 +6476,8 @@ foreach(_stub fastconformer-ctc wav2vec2 bananamind-tts)
     string(REPLACE "-" "_" _safe "${_stub}")
     set(_tgt "test-${_stub}-params")
     add_executable(${_tgt} test-${_stub}-params.cpp)
-    target_link_libraries(${_tgt} PRIVATE Catch2::Catch2WithMain)
+    target_include_directories(${_tgt} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(${_tgt} PRIVATE Catch2::Catch2WithMain ggml ggml-cpu)
     catch_discover_tests(${_tgt} TEST_SPEC "[unit]" PROPERTIES LABELS "unit")
 endforeach()
 
@@ -6339,7 +6571,7 @@ catch_discover_tests(test-torchaudio-resample
 
 # ─── test-ctc-stitch — overlapping-window CTC grid stitching (omniASR CTC chunking; hermetic, unit)
 add_executable(test-ctc-stitch test-ctc-stitch.cpp)
-target_include_directories(test-ctc-stitch PRIVATE ${PROJECT_SOURCE_DIR}/examples/cli)
+target_include_directories(test-ctc-stitch PRIVATE ${PROJECT_SOURCE_DIR}/examples/cli ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-ctc-stitch PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(test-ctc-stitch TEST_SPEC "[ctc-stitch]" PROPERTIES LABELS "unit;omniasr")
 
@@ -6368,6 +6600,7 @@ catch_discover_tests(test-moonshine-tokenizer TEST_SPEC "[unit]" PROPERTIES LABE
 # Exact CTC label spans, repeated Unicode letters and JSON; no models needed.
 add_executable(test-align-characters test-align-characters.cpp ${PROJECT_SOURCE_DIR}/src/align.cpp)
 target_include_directories(test-align-characters PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-align-characters PRIVATE Threads::Threads)
 if(MSVC)
     target_compile_options(test-align-characters PRIVATE /utf-8)
 endif()

@@ -1,0 +1,407 @@
+{
+  "date": "2026-10-25",
+  "complete": true,
+  "scope": "Release recovery, contributor binding fixes and full-nightly error investigation; closure deferred until the agenda reaches its final item and required results are reviewed.",
+  "integration_source": "85a6203669094b2477a1f58333bb2c1be6da7575",
+  "diagnostic_source": "c0266a0e85ec5e3d357c34d673bd09c5fe7340c5",
+  "pypi": {
+    "version": "0.8.44",
+    "source_run": 39599409648,
+    "recovery_run": 40171262926,
+    "anonymous_readbacks": [
+      {
+        "filename": "crispasr-0.8.44-py3-none-macosx_11_0_arm64.whl",
+        "bytes": 34782512,
+        "sha256": "e25d7d7e27097eab4c03f1133cd6a7b11114bc8887965dae20e000e22b7d3e9b",
+        "url": "https://files.pythonhosted.org/packages/fb/df/b8fc821e59745b73016a8d4774c4a3226f3ad2e480d2e39115f16c625e84/crispasr-0.8.44-py3-none-macosx_11_0_arm64.whl",
+        "passed": true
+      },
+      {
+        "filename": "crispasr-0.8.44-py3-none-manylinux_2_35_aarch64.whl",
+        "bytes": 45734910,
+        "sha256": "cf094118d300cc17802578fcce90d8656416ce90f0222daf81f28dfc1d73c268",
+        "url": "https://files.pythonhosted.org/packages/4e/1b/8d5ba94b0f7e642b8f549d3943d20d9349815148c1070edc32b61fa71b59/crispasr-0.8.44-py3-none-manylinux_2_35_aarch64.whl",
+        "passed": true
+      },
+      {
+        "filename": "crispasr-0.8.44-py3-none-manylinux_2_35_x86_64.whl",
+        "bytes": 53533227,
+        "sha256": "c202726b313c45edb3d5852a904a11c55a42baf21131965fddd0baa8e745bd15",
+        "url": "https://files.pythonhosted.org/packages/6e/01/b63d8f1b99793decfa34c8b35d3f448de0d20e15b9629fd411d68ad6b10b/crispasr-0.8.44-py3-none-manylinux_2_35_x86_64.whl",
+        "passed": true
+      },
+      {
+        "filename": "crispasr-0.8.44-py3-none-win_amd64.whl",
+        "bytes": 14703773,
+        "sha256": "e6ba54db65b987c2cbc1cccbe886ede532f50981ee21baf0812a6e418bbdfc4b",
+        "url": "https://files.pythonhosted.org/packages/0b/fb/22758d26b2a0f83f186628a0371a8e616eee2eece3a6ed3f1c801e62f6df/crispasr-0.8.44-py3-none-win_amd64.whl",
+        "passed": true
+      },
+      {
+        "filename": "crispasr-0.8.44.tar.gz",
+        "bytes": 70898,
+        "sha256": "cac12e864d8760c8d3018e94ac7a2e5380b02b3c3162fd685e10da8b630fa849",
+        "url": "https://files.pythonhosted.org/packages/5c/d2/1d5c75bdc6288c6aab1108e78a055211b99ec4c070f1604e10a2e56658d7/crispasr-0.8.44.tar.gz",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "packaging_controls": {
+    "tests": 7,
+    "passed": true,
+    "receipt_contamination_rejected": true,
+    "wrong_version_rejected": true,
+    "wrong_project_rejected": true,
+    "missing_platform_rejected": true,
+    "gpu_local_version_rejected": true,
+    "distribution_set": "four CPU wheels plus sdist, no rebuilt release artifacts",
+    "python310_compatibility_fix": "008b421e7",
+    "older_hashlib_surface_regression_passed": true,
+    "initial_unit_failure": {
+      "run": 40171756881,
+      "job": 121104038437,
+      "cause": "New validator used Python3.11 hashlib.file_digest on the Python3.10 unit runner; fixed with streamed SHA256."
+    },
+    "fresh_ci_run": 40173179590,
+    "fresh_unit_tier_step": "success; full linux-unit job success"
+  },
+  "bindings": {
+    "dart": {
+      "pr": 553,
+      "contributor_commit": "7293151b2629aea48a167a115901561cc5a3b108",
+      "integration_commit": "1a9ff6889",
+      "run": 40171253902,
+      "conclusion": "success",
+      "actual_native_library_linked": true,
+      "new_truncated_utf8_probe_executed": true,
+      "formatter_changed_files": 0,
+      "analyzer_issues": 0
+    },
+    "rust": {
+      "pr": 554,
+      "contributor_commit": "d50f43b36e5b7ed7228dbb99b53338234baa9543",
+      "integration_commit": "2fdc45923",
+      "run": 40171253931,
+      "conclusion": "success",
+      "actual_native_library_linked": true,
+      "native_error_and_null_fallback_probe": "executed and passed",
+      "probe_cases": 36,
+      "doctests": 5
+    },
+    "contract_run": 40171253885,
+    "contract_conclusion": "success",
+    "local_probe_attempt": "stopped before Rust execution when load exceeded local resource allowance; no passing claim"
+  },
+  "model_campaigns": {
+    "omnivoice": {
+      "run": 40171264744,
+      "conclusion": "success",
+      "gate": "all integrity-eligible references, unchanged WER <= 0.2; no outcome-based exclusions",
+      "independent_audit": {
+        "passed": true,
+        "scope": "Independent raw array/code inventory and original unchanged acceptance receipt replay; no new inference.",
+        "run": 40171264744,
+        "source": "85a6203669094b2477a1f58333bb2c1be6da7575",
+        "references": [
+          "station",
+          "window"
+        ],
+        "checks": [
+          {
+            "label": "session-raw",
+            "samples": 62375,
+            "wer": 0.0,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-full",
+            "samples": 67176,
+            "wer": 0.0,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-marked",
+            "samples": 67176,
+            "wer": 0.0,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-clone-window-primary",
+            "samples": 57576,
+            "wer": 0.1111111111111111,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-marked-clone",
+            "samples": 57576,
+            "wer": 0.1111111111111111,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-clone-window-second",
+            "samples": 78696,
+            "wer": 0.0,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-clone-station-primary",
+            "samples": 53736,
+            "wer": 0.1111111111111111,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "session-clone-station-second",
+            "samples": 70056,
+            "wer": 0.0,
+            "pcm_and_codes_verified": true
+          },
+          {
+            "label": "cli-clone",
+            "samples": 57576,
+            "wer": 0.1111111111111111,
+            "pcm_and_codes_verified": true
+          }
+        ],
+        "receipt_sha256": "a4820df6b7e152ed4c68a53c8c2b580b6c3df1a08ab97eff12f9753eaf7fa382",
+        "max_wer": 0.1111111111111111,
+        "waveform_oracle_max_abs": 0.0
+      },
+      "historical_m1_counterexample_retained": true,
+      "scope_limits": [
+        "CPU campaign only",
+        "No original-TTS generated-code parity claim",
+        "No speaker-similarity or universal audible-click-removal claim",
+        "No blanket cross-GPU acceptance claim"
+      ],
+      "private_archive": {
+        "sha256": "4367a17c27bbd00ff61b36960a11adc8f02797e8d702009045089fa4c5b27098",
+        "bytes": 38737766,
+        "members": 1657,
+        "all_members_read_back_and_hashed": true,
+        "additional_raw_archive_publication": false,
+        "rights_limit": "Exact upstream card specifies CC-BY-NC without a version; fixture README is generic. Preserve notices without inferring a version or additional redistribution grant."
+      }
+    },
+    "nightly_ab": {
+      "run": 40171767752,
+      "conclusion": "success",
+      "prior_source": "8bc09441a1f47d0e3aeac44e98bf90cf79819d81",
+      "nightly_source": "96aeb4269a68a7d1e2208cf04d692419198f554f",
+      "original_failed_run": 40078771993,
+      "gates_unchanged": true,
+      "retained": "CTC logits, generated WAVs, raw stdout/stderr, CPU info, compiler commands and resource readings",
+      "independent_audit": {
+        "passed": true,
+        "run": 40171767752,
+        "scope": "Independent retained-byte/gate audit of same-host pinned-source CPU A/B; original nightly failures remain unreproduced on this host. No NN fix or cross-host parity claim.",
+        "cpu": "AMD EPYC 7763 64-Core Processor",
+        "records": {
+          "prior": {
+            "source": "8bc09441a1f47d0e3aeac44e98bf90cf79819d81",
+            "ctc_shape": [
+              549,
+              32
+            ],
+            "ctc_bytes_sha256": "266f9b9d9483f88dcfd144e14d8268028b9303653c08692dc036835fab5b8bec",
+            "ctc_json_sha256": "bff111ee97a30e47b770e722f0528a9ce11ed75738df630f707de49fe3a3868b",
+            "ctc_frame47_top2_gap": 0.0651702880859375,
+            "f16_cosine": 0.999141,
+            "csm": {
+              "csm": {
+                "wav_sha256": "c577dd9a07adb52b0155597defa2f6d151f755d5e36bc8ca06ec49db6f859a65",
+                "pcm_sha256": "fff79f9c32a62304fb2348866f4a497436c67b359ea482909eaf56b58b6ded96",
+                "samples": 113280,
+                "wer": 0.0,
+                "transcript": "The quick brown fox jumps over the lazy dog."
+              },
+              "csm-repeat": {
+                "wav_sha256": "ec75ed5b8aea51482bae966f647d33a5b749745d0d796ab17c92e648929cc169",
+                "pcm_sha256": "fff79f9c32a62304fb2348866f4a497436c67b359ea482909eaf56b58b6ded96",
+                "samples": 113280,
+                "wer": 0.0,
+                "transcript": "The quick brown fox jumps over the lazy dog."
+              }
+            }
+          },
+          "nightly": {
+            "source": "96aeb4269a68a7d1e2208cf04d692419198f554f",
+            "ctc_shape": [
+              549,
+              32
+            ],
+            "ctc_bytes_sha256": "266f9b9d9483f88dcfd144e14d8268028b9303653c08692dc036835fab5b8bec",
+            "ctc_json_sha256": "bff111ee97a30e47b770e722f0528a9ce11ed75738df630f707de49fe3a3868b",
+            "ctc_frame47_top2_gap": 0.0651702880859375,
+            "f16_cosine": 0.999141,
+            "csm": {
+              "csm": {
+                "wav_sha256": "c1abf851d639f6d893354248b84dc52d14030544791f9de0cba3cdab0faa359b",
+                "pcm_sha256": "fff79f9c32a62304fb2348866f4a497436c67b359ea482909eaf56b58b6ded96",
+                "samples": 113280,
+                "wer": 0.0,
+                "transcript": "The quick brown fox jumps over the lazy dog."
+              },
+              "csm-repeat": {
+                "wav_sha256": "22029ef2f1650a8e078f3b1d841a7b806519df02b0e9ed3cdd0bf31fe27b4735",
+                "pcm_sha256": "fff79f9c32a62304fb2348866f4a497436c67b359ea482909eaf56b58b6ded96",
+                "samples": 113280,
+                "wer": 0.0,
+                "transcript": "The quick brown fox jumps over the lazy dog."
+              }
+            }
+          }
+        },
+        "csm_all_four_pcm_equal": true
+      },
+      "neural_runtime_fix_applied": false,
+      "cross_host_failure_cause_identified": false,
+      "original_failure_preserved": true,
+      "followup": "Use retained CPU/ISA/compiler commands and raw arrays on a future failure; do not repeat the same passing pair or relax gates without new evidence."
+    }
+  },
+  "unresolved": {
+    "532": "Reported allocation crash remains unreproduced; assertion/device/model/commit/failing clip still missing.",
+    "483": "Matched CUDA12.6 packages confirmed by reporter; MMQ performance needs GTX1660/MX150 evidence. Existing A/B artifacts11532751916 and11532004516 expire2026-11-07.",
+    "461": "VoxCPM2 performance needs actual B390 Vulkan profiling with ten-step quality preserved.",
+    "456": "Retain separate license-review hold; upstream terms rechecked2026-10-25 still cover generated alignments."
+  },
+  "closure": {
+    "performed": true,
+    "rows": [
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:25:56Z",
+        "number": 556,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/556"
+      },
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:25:58Z",
+        "number": 555,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/555"
+      },
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:26:01Z",
+        "number": 552,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/552"
+      },
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:26:02Z",
+        "number": 551,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/551"
+      },
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:26:04Z",
+        "number": 549,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/549"
+      },
+      {
+        "kind": "issue",
+        "closedAt": "2026-10-25T08:26:06Z",
+        "number": 518,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/issues/518"
+      },
+      {
+        "kind": "pr",
+        "integration": "author-preserving patch already on main",
+        "closedAt": "2026-10-25T08:26:08Z",
+        "number": 553,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/pull/553"
+      },
+      {
+        "kind": "pr",
+        "integration": "author-preserving patch already on main",
+        "closedAt": "2026-10-25T08:26:10Z",
+        "number": 554,
+        "state": "CLOSED",
+        "url": "https://github.com/CrispStrobe/CrispASR/pull/554"
+      }
+    ],
+    "fresh_sweep_after_closure": {
+      "time_utc": "2026-10-25 08:26:36 UTC",
+      "open_issues": [
+        532,
+        483,
+        461,
+        456
+      ],
+      "open_prs": [],
+      "new_issues_or_prs_created_today": [],
+      "new_actionable_followups": false
+    }
+  },
+  "validation_source": "008b421e7b9c4253c1e320c5c25b04c5b2b739ac",
+  "checks": {
+    "ci": {
+      "run": 40173179590,
+      "source": "008b421e7b9c4253c1e320c5c25b04c5b2b739ac",
+      "conclusion": "success",
+      "linux_unit_job": 121108457091,
+      "linux_unit_conclusion": "success",
+      "native_ctest_selected": 2094,
+      "native_ctest_failed": 0,
+      "dictionary_data_skips": 4,
+      "python_tests": 189,
+      "python_subtests": 34,
+      "jobs": 13
+    },
+    "lint": {
+      "run": 40171253899,
+      "source": "85a6203669094b2477a1f58333bb2c1be6da7575",
+      "conclusion": "success",
+      "jobs": 10,
+      "actual_native_build_proof": {
+        "passed": true,
+        "run": 40171253899,
+        "job": 121102354815,
+        "source": "85a6203669094b2477a1f58333bb2c1be6da7575",
+        "actual_native_link": "2026-10-25T07:18:33.2208134Z [544/546] Linking CXX shared library src/libcrispasr.so.0.8.44",
+        "failed_build_markers": 0,
+        "log_sha256": "02aec97537a06df212ba4a7406a2f651ab209e75dce4db1312349288e40b417f"
+      }
+    },
+    "secret": {
+      "run": 40173179676,
+      "source": "008b421e7b9c4253c1e320c5c25b04c5b2b739ac",
+      "conclusion": "success"
+    },
+    "deep_lint": {
+      "run": 40171253900,
+      "source": "85a6203669094b2477a1f58333bb2c1be6da7575",
+      "conclusion": "success",
+      "actual_native_build_verified": true
+    },
+    "additional_scheduled_deep_lint": {
+      "run": 40173354661,
+      "source": "008b421e7b9c4253c1e320c5c25b04c5b2b739ac",
+      "conclusion": null,
+      "required": false,
+      "scope": "Later scheduled duplicate; C/C++ sources are unchanged from the completed successful deep-analysis run.",
+      "status": "in_progress",
+      "cpp_source_changes_from_completed_run": []
+    }
+  },
+  "native_source_equivalence": {
+    "baseline": "96aeb4269a68a7d1e2208cf04d692419198f554f",
+    "paths": [
+      "src",
+      "include",
+      "examples/cli",
+      "examples/crispasr-quantize",
+      "ggml",
+      "CMakeLists.txt"
+    ],
+    "git_diff_exit_code": 0
+  }
+}

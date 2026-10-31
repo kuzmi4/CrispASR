@@ -191,7 +191,7 @@ from the GGUF metadata. Jump to the [TTS table](#text-to-speech-models) for the 
 | **mini-omni2** | [`gpt-omni/mini-omni2`](https://huggingface.co/gpt-omni/mini-omni2) | Whisper-small + Qwen2-0.5B (ASR+TTS+S2S) | en | MIT |
 | **cohere** | [`CohereLabs/cohere-transcribe-03-2026`](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | Conformer + Transformer | 13 | Apache-2.0 |
 | **cohere** | [`efwkjn/cohere-asr-ja-v0.1`](https://huggingface.co/TransWithAI/cohere-transcribe-ja-v0.1-GGUF) | Japanese fine-tune of cohere-transcribe-03-2026 (TedX/JSUT-tuned) | Japanese | Apache-2.0 |
-| **granite** | [`ibm-granite/granite-speech-{3.2-8b,3.3-2b,3.3-8b}`](https://huggingface.co/ibm-granite/granite-speech-3.3-2b), [`granite-4.0-1b-speech`](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | Conformer + Q-Former + Granite LLM (μP) ([more](docs/architecture.md#granite--granite-41--granite-41-plus--granite-41-nar)) | en fr de es pt ja | Apache-2.0 |
+| **granite** | [`granite-speech-5.0-2b`](https://huggingface.co/ibm-granite/granite-speech-5.0-2b), [`3.2/3.3`](https://huggingface.co/ibm-granite/granite-speech-3.3-2b), [`4.0`](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | Conformer + Q-Former + Granite LLM (μP); 5.0 F16/Q4_K validated on CPU/CUDA, native context4096 ([more](docs/architecture.md#granite--granite-41--granite-41-plus--granite-41-nar)) | en fr de es pt ja | Apache-2.0 |
 | **granite-4.1** | [`ibm-granite/granite-speech-4.1-2b`](https://huggingface.co/ibm-granite/granite-speech-4.1-2b) | 16L Conformer + Q-Former + Granite LLM; single ggml graph ([more](docs/architecture.md#granite--granite-41--granite-41-plus--granite-41-nar)) | en fr de es pt ja | Apache-2.0 |
 | **granite-4.1-plus** | [`ibm-granite/granite-speech-4.1-2b-plus`](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) | 4.1 + hidden-state concat; punctuated output ([more](docs/architecture.md#granite--granite-41--granite-41-plus--granite-41-nar)) | en fr de es pt | Apache-2.0 |
 | **granite-4.1-nar** | [`ibm-granite/granite-speech-4.1-2b-nar`](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-nar) | Non-autoregressive: single LLM forward + slot argmax ([more](docs/architecture.md#granite--granite-41--granite-41-plus--granite-41-nar)) | en fr de es pt | Apache-2.0 |
@@ -270,6 +270,7 @@ quick-start commands and engine selection guidance.
 |---------|--------|-------------|-----------|---------|
 | **bt2-tts** | [`breeze-tts-2`](https://huggingface.co/cstr/breeze-tts-2-GGUF) | T5Gemma2 text encoder + Qwen3 backbone + 12L depth decoder over 16 codebooks @ 12.5 Hz; voice cloning, plus voice design / direction via `--tts-instruct` (strengthen with `--tts-cfg-scale 4`). Codec companion is the shipped qwen3-tts tokenizer. **NON-COMMERCIAL weights** — needs `--accept-license other`. Derived from Breeze TTS 2 by BreezeBlue and licensed for research and non-commercial use only. | en, zh | other (BreezeBlue Research & Non-Commercial) |
 | **miotts** | [`MioTTS-0.6B`](https://huggingface.co/cstr/miotts-0.6b-GGUF) | Qwen3 LLM + MioCodec-v2 FSQ codec (25 Hz, 44.1 kHz output) | ja, en | Apache-2.0 |
+| **arktts** | [`Edge0/Audio8-TTS-Realistic-0.6b`](https://huggingface.co/Edge0/Audio8-TTS-Realistic-0.6b) | 24L AR backbone + 4L RAS fast code predictor + Snake 44.1 kHz vocoder | multilingual | Apache-2.0 |
 | **vibevoice-tts** | [`VibeVoice-Realtime-0.5B`](https://huggingface.co/cstr/vibevoice-realtime-0.5b-GGUF), [`VibeVoice-1.5B`](https://huggingface.co/cstr/vibevoice-1.5b-GGUF) | DPM-Solver++ + σ-VAE decoder; voice presets or cloning | en, zh | MIT |
 | **kugelaudio** | [`kugelaudio-0-open`](https://huggingface.co/cstr/kugelaudio-0-open-GGUF) | Qwen2.5-7B LM + 4L DiT diffusion + acoustic VAE decoder; voice cloning | multilingual | Apache-2.0 |
 | **qwen3-tts** | [`Qwen3-TTS-12Hz-0.6B-Base`](https://huggingface.co/cstr/qwen3-tts-0.6b-base-GGUF), [`1.7B-Base`](https://huggingface.co/cstr/qwen3-tts-1.7b-base-GGUF), [`1.7B-VoiceDesign`](https://huggingface.co/cstr/qwen3-tts-1.7b-voicedesign-GGUF) | Qwen3 talker LM + 12 Hz RVQ ([more](docs/architecture.md#qwen3-tts)) | multilingual | Apache-2.0 |
@@ -277,7 +278,8 @@ quick-start commands and engine selection guidance.
 | **moss-tts** | [`OpenMOSS-Team/MOSS-TTS-v1.5`](https://huggingface.co/cstr/moss-tts-v1.5-GGUF) | Qwen3-8B backbone emitting 32 RVQ audio codebooks under a delay pattern, decoded by a 1.6B pure-transformer codec companion; voice cloning via `--voice ref.wav`; `--backend moss-tts -m <backbone> --codec-model <codec>` | multilingual | Apache-2.0 |
 | **moss-tts-local** | [`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`](https://huggingface.co/cstr/moss-tts-local-v1.5-GGUF) | Qwen3-4B backbone; a 1-layer local/depth transformer autoregressively emits 12 RVQ codebooks per frame (RQ-Transformer, no delay), decoded to 48 kHz by MOSS-Audio-Tokenizer-v2 (downmixed to mono); `--backend moss-tts-local -m <backbone> --codec-model <codec>` | multilingual | Apache-2.0 |
 | **omnivoice** | [`k2-fsa/OmniVoice`](https://huggingface.co/cstr/omnivoice-GGUF) | Qwen3-0.6B + masked iterative 8-codebook TTS (SoundStorm-style); voice cloning; 600+ languages ([more](docs/architecture.md#omnivoice)) | 600+ langs | CC-BY-NC weights + custom tokenizer terms; explicit bundle acceptance, review pending |
-| **melotts** | [`myshell-ai/MeloTTS`](https://github.com/myshell-ai/MeloTTS) EN_V2 | VITS2 (6L transformer + SDP/DP + transformer coupling flow + HiFi-GAN); 44.1 kHz, 102 MB + 52 MB BERT Q4_K companion (154 MB total); neural G2P; 4 EN speakers ([more](docs/architecture.md#melotts)) | en | MIT |
+| **arktts** | [`Edge0/Audio8-TTS-Realistic-0.6b`](https://huggingface.co/cstr/Audio8-TTS-Realistic-0.6b-GGUF) | Dual transformer (24L Slow LM + 4L Fast Subnetwork) + 44.1 kHz Snake causal vocoder; 10 acoustic codebooks; 1.2 GB Q4_K | en, zh | Apache-2.0 |
+| **melotts** | [`myshell-ai/MeloTTS`](https://github.com/myshell-ai/MeloTTS) EN_V2 | VITS2 (6L transformer + SDP/DP + transformer coupling flow + HiFi-GAN); 44.1 kHz, 102 MB + 238 MB F16 BERT companion (340 MB total); neural G2P; 4 EN speakers ([more](docs/architecture.md#melotts)) | en | MIT (Melo); Apache-2.0 (BERT) |
 | **piper** | [`rhasspy/piper`](https://github.com/rhasspy/piper) community voices | VITS (6L transformer + SDP + 4-block coupling flow + HiFi-GAN); 22 kHz mono, 30 MB F16 per voice; built-in G2P for EN/DE/FR/ES/RU (`--g2p-dict`) | 30+ langs (built-in + espeak dlopen) | MIT |
 | **kokoro** | [`hexgrad/Kokoro-82M`](https://huggingface.co/hexgrad/Kokoro-82M) + German backbones | StyleTTS2 / iSTFTNet (82M); per-voice GGUF ([more](docs/architecture.md#kokoro)) | en, es, fr, hi, it, ja, pt, zh, de | Apache-2.0 |
 | **orpheus** | [`Orpheus-3B-FT`](https://huggingface.co/cstr/orpheus-3b-0.1-ft-GGUF) + [`SNAC 24 kHz`](https://huggingface.co/cstr/snac-24khz-GGUF) | Llama-3.2-3B + SNAC RVQ codec; 8 speakers ([more](docs/architecture.md#orpheus)) | en, de | Llama 3.2 Community License / MIT |
@@ -499,6 +501,8 @@ The static table below is a curated subset focusing on the ASR backends and the 
 
 The matrix above covers 24 ASR backends. **Additional ASR backends** not shown: `nemotron` (39-lang streaming ASR with cache-aware FastConformer + RNN-T), `lfm2-audio` (ASR + TTS + S2S in one model), `moss-audio` (audio understanding + ASR), `moss-transcribe` (Qwen3-Omni encoder + Qwen3-1.7B ASR), `hojo-asr` (Qwen3-Omni encoder + Conformer adapter + Qwen3-4B multilingual ASR), `mini-omni2` (ASR + TTS + S2S), `kugelaudio` (7B audio understanding). See [`docs/feature-matrix.md`](docs/feature-matrix.md) for the full 109-backend matrix. **TTS-only backends** (`kokoro`, `qwen3-tts` + variants, `vibevoice-tts`, `orpheus` + DE variants, `chatterbox` / `chatterbox-turbo` / `chatterbox-nano` / `kartoffelbox-turbo` / `lahgtna-chatterbox`, `dia`, `bark`, `outetts`, `zonos`, `csm`, `f5-tts`, `irodori-tts`, `supertonic`, `parler-tts`, `speecht5`, `piper`, `fastpitch`, `pocket-tts`, `melotts`, `cosyvoice3`, `voxcpm2`, `tada-tts`) all carry the TTS, AUTO_DOWNLOAD, TEMPERATURE, and FLASH_ATTN caps; per-backend cloning + voice-pack support is documented in the [Text-to-Speech models](#text-to-speech-models) table above and [`docs/tts.md`](docs/tts.md). The vibevoice and lfm2-audio columns mark dual-mode (ASR + TTS) backends.
 
+Nemotron managed downloads use pinned F16 (~1.3 GB); the former Q4 default fails the fixed CPU/T4 original-reference controls. See the [default qualification and existing-release usage](docs/historical/nemotron-default-policy-2026-10-26.md).
+
 **Key:** ✔ = native/built-in, `-am` = via CTC forced aligner (`-am canary-ctc-aligner.gguf` or `-am qwen3-forced-aligner.gguf`), **LID** = via external language identification pre-step (`-l auto`), **pp** = via `--punc-model` post-processor (FireRedPunc or fullstop-punc), * = experimental or partial support, † = PLUS variant only (native `[T:N]` word timestamps with `-owts`; base uses `-am`). granite-4.1 covers both the regular and `-plus` variants; granite-4.1-nar is a non-autoregressive variant with encoder+projector only (no LLM decode features). The **KV quant** row marks backends that honor `CRISPASR_KV_QUANT={f16,q8_0,q4_0}` — CTC-style backends without a KV cache (parakeet, fc-ctc, wav2vec2, kyutai-stt, firered, moonshine variants, omniasr-CTC) don't apply. The same backends also honor the per-half `CRISPASR_KV_QUANT_K` / `CRISPASR_KV_QUANT_V` overrides (llama.cpp `--cache-type-k` / `--cache-type-v` parity) for asymmetric K-vs-V precision; common recipe `K=q8_0 V=q4_0` saves ~40 % more KV memory than symmetric Q8_0. The **mmap weights** row marks backends consuming `core_gguf::load_weights()` and therefore honoring `CRISPASR_GGUF_MMAP=1`; whisper itself uses upstream's loader and is unaffected. See [`docs/cli.md`](docs/cli.md) Memory footprint for usage + recommended combos.
 
 **Speaker diarization** as a post-processing step via `--diarize`:
@@ -646,6 +650,25 @@ These VAD providers are available:
 - **Whisper-VAD-EncDec** *(experimental)* — Whisper-base encoder + TransformerDecoder head, 22 MB Q4_K. Trained on Japanese ASMR; may not generalise well to all domains. Pass `--vad -vm whisper-vad`. Slower than others (~1s vs ~50ms). ([`cstr/whisper-vad-encdec-asmr-GGUF`](https://huggingface.co/cstr/whisper-vad-encdec-asmr-GGUF))
 
 Pass `--lid-backend off` to skip LID entirely.
+
+By default, the external detector checks the first 15 seconds. Pass
+`--lid-full-recording` with `--detect-language` to classify each 15-second
+window and return one language for the recording. The same opt-in applies to
+external or self-probe LID during `-l auto` transcription. The final language
+is chosen by the duration of non-silent windows; ties keep the first language
+seen. Near-silent windows are skipped. A final fragment under five seconds is
+classified with preceding context but counted by its own duration. The reported
+confidence is a support estimate, not a calibrated recording-wide posterior.
+It takes longer on long recordings and reports one dominant language,
+not language changes over time. For standalone detection, no ASR model is needed:
+
+Native providers reuse a loaded detector across windows. The sherpa-ONNX
+subprocess fallback launches and loads its model once per window, so this mode
+can be substantially slower with that provider.
+
+```bash
+crispasr --detect-language --lid-full-recording -f recording.wav
+```
 
 ### Text language identification (post-ASR / standalone)
 
@@ -1163,6 +1186,7 @@ reference (see [Debug a new backend against PyTorch ground truth](docs/contribut
 | `CRISPASR_QWEN3_ASR_FUSED_QKV=0` | Opt out of the runtime fused-QKV LLM path for qwen3-asr (default-on; works on F16/F32/Q4_K/Q8_0/...). |
 | `CRISPASR_VOXTRAL_FUSED_QKV=1` | Opt **in** to the runtime fused-QKV LLM path for voxtral 3B. Off by default (no measurable speedup on JFK-shape decodes; useful for long-form workloads where decode dominates). |
 | `QWEN3_TTS_FUSED_QKV=1` | Opt in to the runtime fused-QKV talker path. |
+| `CRISPASR_GRANITE_Q4_LEGACY=1` | In `crispasr-quantize`, restore the earlier Granite5 Q4_K recipe for diagnosis. The qualified default retains head/value/down projections at source precision. |
 | `GRANITE_DISABLE_ENCODER_GRAPH=1` | Force the granite-speech / -plus / -nar encoder back to the per-layer CPU loop (slower but kept around for debugging). The single ggml-graph encoder with per-layer Shaw RPE is the default and is bit-near-identical to the CPU loop while being ~2× faster end-to-end across all three variants. |
 | `CRISPASR_NO_REL_POS=1` | Ablate the relative-position bias in the Gemma-4 audio encoder (development only). |
 | `ECAPA_REF_FBANK=path` | Reference filterbank tensor for the ECAPA-TDNN LID model (regression harness). |

@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 0.8.49
+
+* **Native speech:** integrate Audio8-TTS (ArkTTS 0.6B) dual-autoregressive TTS
+  and causal neural vocoder; chunked causal decoding bounds memory (<2.5 GB) for
+  arbitrary audio lengths, with FASTCONV k=1 bypass and dual-transformer KV caching.
+* **Recognition:** support free-form transcription context in Qwen3-ASR (#559);
+  standalone LID mode exits before model load, and dominant language detection
+  spans full recordings (#560).
+* **Streaming & Context:** adaptive strided audio context gating for Hikari and
+  Parakeet; Moonshine attention mask caching.
+* **Bindings:** synchronize audio context and strided refresh parameters across
+  Dart, Go, Rust, Python, JavaScript, and C ABI.
+
+## 0.8.48
+
+* **Native speech:** restore original Melo/OpenVoice conditioning, duration and
+  decoder behavior; preserve output rates and reject invalid speaker choices.
+* **Models:** managed Melo V2 downloads select the qualified F16 BERT companion
+  with immutable source pins and separate Apache-2.0 attribution.
+* **Recognition and CLI:** preserve standalone Parakeet word boundaries and
+  make standalone language detection exit before loading an ASR model.
+* Public Dart interfaces are unchanged. CPU/T4 speech acceptance is bounded to
+  the documented English profile; additional GPU families remain unverified.
+
+## 0.8.47
+
+* **Packaging:** Linux GPU Python wheels and native bundles (#557). Dart
+  interfaces and native inference are unchanged.
+
+## 0.8.46
+
+* **Models:** the managed Nemotron download now selects the original-qualified
+  F16 model with its OpenMDW-1.1 notices; the former plain Q4 default failed
+  fixed original-model controls. Public Dart interfaces are unchanged.
+
+## 0.8.45
+
+* **Native speech:** restore original CSM rotary scaling for both transformer
+  stacks and shared CLI/C ABI initialization.
+* **Models:** add the qualified Granite Speech5 F16/Q4_K profiles and model-matched
+  Qwen3-TTS designed voice packs with retained source/license provenance.
+* **Bindings:** decode incomplete UTF-8 safely in Dart results and preserve
+  native synthesis errors in the Rust wrapper. Public Dart interfaces are unchanged.
+
 ## 0.8.44
 
 * **Native results and alignment:** preserve owned Session token metadata and

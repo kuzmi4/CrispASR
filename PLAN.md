@@ -1,1068 +1,136 @@
-# CrispASR — Pending work
-
-## NOW — v0.8.44 release (2026-10-21)
-
-Owner: Codex, branch `fix/issue-followups-20261020`, accepted base `883549696`.
-User authorized release preparation and publication after the validated issue
-follow-ups. Freeze scope to integrated fixes; keep optional NZ caching off,
-shared-ggml PR2 unmerged, and OmniVoice PR521/custom-license promotion held.
-Reconcile user-facing notes and Flutter changelog, use the version-bump script,
-then require versioned CI/lint and inspected package/wheel dry runs before tag
-publication. Inspect the complete published asset set and downstream wheels;
-update issue549 for the actual shipped release and request downstream validation.
-Physical Radeon/Ascend and private reporter inputs remain external dependencies.
-Initial versioned candidate7f612fb8e exposed two Dart formatting failures with
-CI SDK3.13.6. Exact-SDK formatting and11 analyzer brace fixes now pass strict
-analysis plus all40 compiled FFI tests locally. Pin that formatter SDK and run
-the analyzer explicitly in the binding job. Re-freeze the unpublished local tag
-through the bump script, then require fresh source-bound CI and package checks.
-Native runtime/model sources remain unchanged; no release tag is public yet.
-WASM preflight39566986243 compiles all variants but the three threaded arms
-exceed the stale12MiB size gate (12,639,767–12,641,853 bytes). Owner Codex:
-recover the isolated, previously validated size-budget adjustment9bf5994ea
-without merging its held feature branch, retain the200KiB JS gate, and require
-all five variants and export/runtime checks before publication.
-
-## NOW — issue follow-ups and license policy (2026-10-20)
-
-Owner: Codex, branch `fix/issue-followups-20261020`, base `069365a42`.
-
-Active follow-up: exact-tip Linux CI at8237 passes 2,039 CTest cases, but its
-full log exposes missing Python test registration in a clean configuration:
-the interpreter is discovered after the guarded declarations. Discovery ordering
-is repaired, the model-free Japanese validator no longer matches `-E live`, and
-CI asserts all four follow-up validators are selected before compilation.
-The exact CI guard rejects the original clean configuration and accepts a new
-fixed configuration; 29 Python tests become eligible. All 23 non-SDK suites pass
-through CTest locally; six language SDK probes retain separate acceptance.
-Completed source883549696 passes all13 CI39467977527 jobs and all10
-lint39467977612 jobs, plus Ruby, Metal-cache, CTC-alignment and secret checks.
-The full unit log confirms 2,068 selected CTest tests with zero failures and four
-dictionary-data skips, plus189 Python tests and34 subtests. All four required
-validators actually execute. Conditional SDK skips are not complete SDK coverage.
-The same run's macOS job never acquired a hosted runner (capacity annotation),
-so its cancellation is not a source build result.
-
-Completed checkpoint: ordinary NC support retained; missing OmniVoice/OpenRAIL
-acceptance gates repaired and the public OmniVoice license card corrected.
-Issue550 actual T4 long-input and issue549 actual Metal metadata controls pass
-independent review. Shared ggml PR2 passes CPU/Metal and hosted CPU/software-
-Vulkan controls and remains unmerged. Repaired Linux/Mac/Windows native bundles
-and all three hosted installed-wheel checks pass; library bytes match the
-frozen bundles. [Package acceptance](docs/followup-package-dry-runs-2026-10-20.json).
-Main `0c355f398` now passes all 13 CI39445302976 jobs and all 10 lint39445303065
-jobs. The remaining host review now passes 108 cases each on Mac CPU,
-Metal/CPU, Linux CPU and software Vulkan/CPU, including BF16-weight and
-strided-input fallback with actual placement checks. The candidate is unchanged.
-The retained T4 trace also proves a sampled 2,735 → 125 MiB transition after the
-public cache-free call and before fresh CLI model residency; six guards reject
-wrong-device/phase interpretations. No new Kaggle run is needed.
-[Cache-release audit](docs/alignment-cache-release-2026-10-20.json).
-Future release checks, custom-license review and actual Radeon/Ascend gates
-remain open. No tag or release is published here.
-Checkpoint: [follow-up evidence and reporter actions](docs/issue-followups-2026-10-20.md).
-NC models remain eligible behind explicit license opt-in; research-only and
-additional use/revenue/hosting restrictions require separate review and are not
-automatically accepted by a generic switch. Audit original revision and codec
-licenses for OmniVoice; do not remove ordinary NC support. The existing issue550 CUDA run and issue549 exported-getter/live metadata
-proofs are now audited; do not dispatch duplicates. Review shared ggml PR2 with
-precision and fallback controls before considering integration. Reconcile
-fulfilled issue485 and keep hardware/reporter dependencies explicit.
-
-
-## CANN weight layout — remaining device and CI acceptance
-
-Owner: maintainer; optional implementation integrated 2026-10-20.
-
-NOW (2026-10-20), owner Codex: lifecycle/telemetry and pinned physical runner
-are implemented at18b540bd5 (ggmle2ae679a).53 host lifecycle checks and576
-independently audited CPU probe computes pass. The real Mac CPU/Metal F32
-reference/CLI/Session/short-long-short matrix passes unchanged gates, with
-22/44/22 words on each device. [Complete receipt and pinned device procedure](docs/cann-layout-followup-2026-10-20.md).
-SDK39401353196 (both device families), all13 CI39401352847 jobs and all10
-lint39401352899 jobs pass for this exact source. Code and evidence are on remote main; verified scope and the optional
-bounded request are posted on [PR544](https://github.com/CrispStrobe/CrispASR/pull/544#issuecomment-6288185477)
-and [shared-ggml PR4](https://github.com/CrispStrobe/ggml/pull/4#issuecomment-6288187900).
-Next: optional physical Ascend proof; completed host/SDK controls need no rerun.
-No Kaggle work is needed. Physical Ascend execution remains external.
-
-Implemented explicit usage hints across normal/filtered/split/fit/repack loads,
-audited MiMo/Moonshine policies and shared-ggml optional NZ cache. The ordinary
-ND representation is retained for reads/copies/fallback, with chunk coverage,
-write invalidation and captured-graph pointer invalidation. Published artifacts
-remain unchanged; the cache is off by default and the old path remains for A/B.
-
-Host proof: [receipt](docs/cann-weight-layout-host-2026-10-20.json):83 usage
-assertions in each mmap mode,188 split/11 bounds/28 release assertions,26 SDK-free
-policy checks and432 actual CPU probe computes over48 cases pass. The actual
-CANN request correctly rejects absent hardware. MiMo/Moonshine/core/shared ABI
-and probe targets link. This is not physical NPU/model or performance acceptance.
-
-Shared candidate4d734595 includes completion synchronization before publishing
-cache readiness. The first SDK/CI/lint jobs target146392764 /ggmldc3bc0bb;
-they are superseded for final-source acceptance by source3d808b76d, pinning
-ggml4d734595: [SDK39391430100](https://github.com/CrispStrobe/CrispASR/actions/runs/39391430100),
-[CI39391432699](https://github.com/CrispStrobe/CrispASR/actions/runs/39391432699) and
-[lint39391434462](https://github.com/CrispStrobe/CrispASR/actions/runs/39391434462).
-These jobs were submitted and pending/running at this checkpoint, not accepted
-as passing. Physical310P3 and910B3 cache-on/off, ACL replay, full-model
-diff/magnitudes/CLI/Session and memory/timing gates remain open under
-[the procedure](docs/cann-weight-layout.md). This checkpoint changes only tracking;
-the compiled implementation code is unchanged from3d808b76d. Integration uses
-shared-fork merge6b4bd833, whose source tree is exactly identical to4d734595
-(tree30cc056e19599bb7667013c02be3cd75bb6f48e3). The newer fork history is
-preserved on its canonical `crispstrobe-ops` branch. The cache remains off by
-default; this integration does not accept pending CI or physical performance.
-
-## NOW — OpenVoice2 actual-model and CUDA acceptance
-
-Owner: unassigned; ready for a fresh agent (handoff 2026-10-19). Implementation, exact source
-speaker dispatch, clip means/noise replay and the nine-stage synthetic CPU
-encoder proof are archived in HISTORY.md. Method and scopes:
-[OpenVoice baking](docs/openvoice2-baking.md). The synthetic F32 arithmetic
-receipt does not establish pretrained embedding/conversion or GPU quality.
-
-External state and next actions:
-
-1. CUDA packaging [run39266520251](https://github.com/CrispStrobe/CrispASR/actions/runs/39266520251)
-   succeeded on source0b4213c39d9ae335df32fb8d09f80febd2f2d8ae.
-   Artifact12193662775 is698,965,729 bytes (Actions ZIP digest
-   bce0538953a84094fc86c63729c37e2bc8dc41e27d25337a27f5de793bbc5030).
-   Next: download to external storage, independently inspect provenance/member
-   hashes and dependency closure; retain or mirror before its14-day expiry.
-   Logs are retained locally. This is compile/link/package proof only, not
-   actual GPU/model acceptance. Earlier failed build attempts are in HISTORY.md.
-2. Kaggle `openvoice-bake` version2 is queued on old native source71e329ccf.
-   Version1 terminal logs/output are retained after its pre-inference loader
-   failure. Version2 preserves host loader paths but lacks the later dynamic
-   backend ABI flags/discovery repair; it cannot qualify current conditioning.
-   Retain logs/output before superseding it. Do not guess session IDs, launch
-   hardware-fishing retries or exceed the two-session GPU cap.
-3. Prepared `tools/kaggle/openvoice-conditioning/` pins a shared worker and
-   native source6be9fda36. Bootstrap commit0b4213c39 pins shared worker5f9ad8b36
-   by SHA256, including DL repair and early producer checkpoints.
-   Its submission was rejected by the two-session batch-GPU cap: both the old
-   OpenVoice and needed alignment jobs are queued. Cancellation needs an exact
-   session ID, which the public API cannot resolve from a kernel slug; the
-   maintainer has been asked to stop the obsolete run or supply its session ID.
-   Submit once with tools/kaggle/kpush.py after a slot is confirmed free;
-   check the actual response (CLI exit0 can still report rejection). The prebuilt
-   base191815511 uses GGML_BACKEND_DL and exact ggml0a862076; compile
-   the small model/driver delta with that macro, discover modules from the
-   bundle directory and isolate Torch with host loader paths/different cwd.
-4. Independently audit27/28 required stages, original pristine/captured replay,
-   exact PCM and actual posterior noise, both norms/errors, clip means and
-   mean-conditioned waveforms, uninstrumented C API/cache reuse and actual
-   CUDA scheduler splits. Retain original/model/GGUF/input/library/source hashes.
-   Publish vetted immutable reference artifacts. Keep F32-sensitive and any
-   quant variants explicitly identified; no silent threshold relaxation.
-5. Require baseline/original/clone ASR WER<=0.2 and independent speaker cosine
-   improvement>0.01 in the bounded synthetic matrix. Then extend only new
-   scope: full shared Session/CLI actual-model paths, raw mixed-rate processing,
-   automatic Silero selection, natural references/languages, free-running noise
-   and additional devices/quantization. GPU vocoder remains gated by
-   CRISPASR_OV2_GPU=1; reference encoder/flows remain CPU. No release claim yet.
-
-## Character-alignment acceptance qualification
-
-Arabic CTC/Java39214206020 is complete and its retained output is independently
-audited; see HISTORY.md and docs/arabic-characters-java-audit-2026-10-19.json.
-Do not rerun the repaired Java preflight or accepted output matrix without a
-new scope. Separate future oracle/DP replay needs retained vocabulary/binaries;
-this older worker did not preserve those, or a separate raw Python output.
-
-## Issue550 — completed actual CUDA acceptance
-
-Closed after the independently audited T4 short/long/short matrix: complete
-147/8,925/147 units, exact returning-short offset reuse, fresh CLI agreement
-and 95 actual CUDA encoder splits. Long-phase sampled device total peaks at
-2,735 MiB. The complete former procedure and failed controls are archived in
-HISTORY.md; do not submit another run to recreate this acceptance.
-[Receipt](docs/alignment-cuda-live-2026-10-20.json),
-[closure and scope](https://github.com/CrispStrobe/CrispASR/issues/550#issuecomment-6291711315).
-Host memory still grows with duration; natural-speech boundary accuracy and
-RTX3090-specific behavior are not certified.
-
-## Go lifecycle — remaining scope after actual CPU model acceptance
-
-High-level Model implementation,51 Go race cases/35 Rust cases/five doctests,
-and the real tiny.en/JFK Go model proof are complete; see HISTORY.md and
-[the independent audit](docs/go-model-lifecycle-audit-2026-10-19.json).
-Run39228691810/source5aba585ce verifies actual callback close/re-entry,
-concurrent rejection, cancellation/recovery, parallel decoding and owned results.
-Do not rerun the same accepted fixture merely because an older note says pending.
-Next extend only new scope: beam/partial UTF-8, actual VAD model, DTW model mode,
-other supported platforms/devices and other wrapper languages. Raw low-level
-Go pointers and generic speaker handles remain caller-serialized; assess an
-owned adapter before promising concurrent safety. High-level Contexts share the
-latest native result state. All six earlier binding contracts39215435420 pass;
-current-tip CI remains a separate integration gate.
-
-## Generic speaker primitives — remaining model/platform scope
-
-Python/Dart and C#/Java operation review is now complete alongside Go/Rust and
-Ruby/WASM; repairs and their scoped local probes are archived in HISTORY.md and
-mapped in docs/wrapper-callable-coverage.md. Do not reimplement these methods.
-Remaining: real speaker-model/device quality, additional target platforms,
-owned concurrent adapters and callback/concurrent-close behavior. Generic
-handles remain caller-serialized; static/callable closure is not model or
-universal concurrency acceptance. Broader API inventory remains below.
-
-## NOW — finish the callable wrapper inventory and remaining adapters
-
-Owner: maintainer coordinator (active). Whisper CPU pointer/Python model proof
-and Japanese/Echo artifact audits are now complete; see HISTORY.md and receipts.
-Issue550 actual CUDA memory/reuse is completed and independently audited.
-Continue wrapper lifecycle/callable gaps, updated PR521 and release acceptance.
-Go high-level parallel access and Python CI expectation repairs are complete;
-see HISTORY.md. Do not infer model acceptance from the local glue regressions.
-The Rust scalar-helper family now has compatible public controls and parallel
-forwarding; completed repairs and measured probes are archived in HISTORY.md.
-All 2,033 native unit tests passed; rerun hosted CI after the Parakeet
-metadata fixture optional-signature repair (see HISTORY.md).
-Continue the cross-language wrapper task; the bounded external agent tasks have
-ended. Start with the incremental
-[callable ledger](docs/wrapper-callable-coverage.md), then inspect actual code.
-The [initial audit](docs/binding-gaps-2026-10-18.md) is a historical snapshot.
-Do not reimplement rows merely because an older note says they are missing.
-
-The shared census covers **297 unique `crispasr_*` exports** across the two
-shared headers, plus **14 separate chat exports**. It does not include every
-upstream `whisper_*` declaration. Source declarations/mentions are not proof
-of a public operation. Full parity and real-model acceptance remain open.
-
-Recommended implementation order and concrete acceptance:
-
-1. **Complete the callable ledger.** For each export, identify the actual
-   public method/result in Python, C#, Java, Go, Rust, Dart, Ruby and WASM.
-   Record bulk/superset equivalents, retired refusing stubs and deliberate
-   platform exclusions separately. TitaNet and roster DB now have reviewed
-   public paths in all eight; extend the ledger beyond those families.
-2. **Legacy Whisper controls.** Rust legacy pointer-symbol routing and Java
-   context/parameter ownership and option forwarding now have operation probes;
-   completed repairs are in HISTORY.md. Validate actual Whisper models and
-   supported native platforms, including callback threads and failed reinitialization.
-   Java's legacy full-params struct is still 64-bit only: 32-bit decode refuses
-   explicitly until size_t/pointer layouts are repaired and exercised on a target
-   runtime. Preserve the existing Java long-valued public options when adding a
-   pointer-width-aware native layout. Continue auditing mutable parameter objects
-   and caller-owned pointer arrays/strings during callbacks and concurrent calls.
-   C#/Python/Dart have pointer-safe parameter, DTW and parallel probes; inspect Go's compiled parameter routes and finish
-   Java/Rust/Ruby/WASM callable gaps. Cover scalar setters, language detection,
-   native progress/parallel, token IDs/raw bytes/alternatives/DTW and disposal.
-   Use `tests/build_legacy_wrapper_probe.py`; a bare ABI declaration is not an
-   implementation. Direct Parakeet uses an integer centisecond offset.
-   Go's legacy parameter-string ownership and five scalar decode controls now
-   have compiled operation probes. Rust now has parallel decoding and PCM language
-   detection, and Go parallel decoding uses the progress-tracked pointer route
-   with optional per-call progress callbacks. Verify actual model behavior and
-   progress frequency. Continue DTW,
-   remaining token introspection and legacy context/callback lifecycle auditing.
-   Review higher-level APIs as well as the low-level bindings. Go's
-   higher-level `ProcessParallel` optional capability now reaches the native
-   pointer/progress adapter, with compiled operation tests. The bounded Go CPU
-   model acceptance is complete (see its audit above); other modes/devices remain
-   open. The built-in high-level
-   Model's ownership/close guards now have compiled race/pthread probes.
-   Rust/Go built-in DTW constructors, validated scalar DTW getters and Go's
-   high-level model constructor now have operation probes. The shared helper
-   disables incompatible flash attention. Owned Rust/Go token snapshots now expose
-   IDs/raw bytes, timing/probability, DTW and alternatives; Go has a compatible
-   high-level optional accessor without changing the older `Token` struct.
-   Validate actual model output and candidate quality, including greedy/beam
-   behavior, partial UTF-8 and alignment with the Python wrapper/reference.
-   Custom-head configuration remains pending: own the head storage for model
-   lifetime and validate model dimensions if exposing it. Audit the remaining
-   Java/Ruby/WASM token operations against actual public methods; do not infer
-   coverage from declarations. Preserve unavailable sentinels and split UTF-8.
-   Extend
-   `tests/fixtures/go-rust-wrapper-abi.c` and the actual Rust/Go public-method
-   probes, including invalid indices/counts, null/empty native output and cleanup.
-   Native declarations alone do not satisfy these rows. Go callback registries
-   now synchronize concurrent contexts without holding locks through user
-   callbacks, with a hosted race-detector gate. The built-in high-level Model
-   now rejects overlapping native operations/close, including foreign callback
-   threads. Raw low-level pointers still require caller serialization; audit an
-   owned adapter and the remaining other-language lifecycle separately.
-   Rust's 25 scalar-helper routes now have compiled controls/old-options probes;
-   validate language/prompt/thread/temperature and alternative behavior with
-   actual models, including native parallel chunk merging. Audit raw full-params
-   fields and legacy callback routes outside that helper family separately.
-   Reuse the owned controls in `crispasr/src/whisper_controls.rs`, common decode
-   path `crispasr/src/lib.rs::transcribe_pcm_impl` and the owned token reader in
-   `crispasr/src/whisper_tokens.rs`; do not reimplement completed setters. Go's owned
-   reader lives in `bindings/go/whisper_tokens.go`; higher-level detailed access
-   is in `bindings/go/pkg/whisper/token_snapshots.go`.
-
-### Native parallel follow-up: remaining timeline/model-platform scope
-
-CPU actual-model metadata acceptance is complete: run39211685024 passes all12
-native and six Python cases, independently audited against exact source/library/
-probe/audio identities and raw timestamps. See
-[the receipt](docs/whisper-wrapper-model-audit-2026-10-19.json) and HISTORY.md.
-The tiny suites (22 parallel,13 VAD/entry, six emission) remain CTest/CI gates.
-Do not rerun the same tiny.en/JFK matrix merely because an old note says failed.
-Extend coverage to beam candidates, partial UTF-8, actual VAD-model detections,
-foreign callback threads, GPU/supported platforms and model-specific behavior.
-The scoped CPU proof is not original-reference/WER/speed or whole-wrapper parity.
-
-Still audit these distinct semantics before claiming complete timeline parity:
-
-- Available token/DTW getter values now use the same original-time map as
-  segment getters, with copy-only mapping and sentinel preservation. Plain
-  sequential/parallel/direct-state decoding clears a previous VAD map; failed
-  VAD clears results. Nine literal native timeline/stitching cases cover these
-  repairs. Validate actual VAD detections, overlap/clipping boundaries and
-  VAD-on -> plain -> VAD-on model reuse through each public wrapper. Also test
-  bounded offsets with Tiron's fixed 75-centisecond onset pad before claiming
-  those model-specific window semantics; do not
-  assume the controlled detector fixture establishes real alignment quality.
-- Global parallel duration now clips PCM once before splitting, with exact
-  sample geometry and forwarding checked by seven additional regressions.
-  VAD offsets/duration still select in processed-audio units after the prepass;
-  establish whether a future original-time selection API is needed without
-  silently changing that existing contract.
-- The first chunk may have delivered callbacks before another worker fails;
-  failure clears the stored result but cannot retract callbacks. Exercise
-  foreign-thread encoder/abort callbacks and actual context/device allocation
-  failures. Same-context concurrent decode/close is unsupported.
-
-Source audit found no double filtering: `whisper_full_with_state` does not call
-VAD. Preserve the single prepass and parent mapping rather than disabling a flag
-based on the earlier hypothesis. The parallel worker fixture checks mapping retention;
-`tests/test_whisper_vad_timeline.py` additionally executes the real stitcher,
-interpolation, token getters and scalar adapters with controlled detections.
-The decoder body remains controlled, so model quality is still unmeasured. Use Kaggle for genuine GPU behavior
-when needed, after hosted CPU correctness; do not wait on hours of idle CI.
-
-3. **Ruby remaining resource/legacy audit.** Session/stream/chat borrows,
-   opaque tickets, child-close ordering and raw text processor ownership now
-   have compiled regressions; see HISTORY.md. Audit microphone ring/close and
-   the old Whisper object/parameter/result path, including all allocation-returning
-   audio/container/scoring helpers on Ruby allocation exceptions. Microphone
-   ticket/pump ownership now has compiled native-thread regressions, including
-   callback-close and interrupted/error cleanup; verify actual device drivers
-   on supported platforms. Extend the
-   callable ledger rather than treating 155 guarded operations as API coverage.
-4. **WASM remaining adapters and dispatch.** Registry/cache and v2 load-options adapters now have compiled Node
-   probes; validate their full-module size and browser filesystem/download behavior.
-   Generic diarization/turns, language-aware VAD and owned logits results now
-   have compiled operation probes; include them in real-model/browser acceptance.
-   Finish remaining legacy controls. Retained ASR callback setters and session
-   stream adapters now have public paths; validate actual native backend behavior.
-   Generic speaker/clustering/pyannote adapters now have operation probes;
-   include them in full-module/native/model validation. Finish compute/servicer scheduling. Chat remains opt-in/single-thread until
-   work and callback delivery are safely proxied. Measure complete default
-   and opt-in module sizes and instantiate actual models in a browser.
-   Concrete remaining WASM acceptance:
-   - Validate retained ASR segment/token/progress events with actual models and
-     streams, including which backends emit each native hook. Copied-event transport,
-     raw token bytes, generations, replacement/close, bounded backlog and JS/native
-     allocation cleanup have component probes; they do not establish event support
-     on every backend. Keep registration idle and before retained stream creation.
-   - Validate retained stream adapters with actual models: feed/flush/text/live
-     decode, backend stream-kind semantics, finalization and browser responsiveness.
-     The compiled probes cover native transport and child-before-parent ownership,
-     including async replacement/close. Threaded callers must use async stream
-     methods and async parent replacement/close while a child exists. Check actual
-     backend cleanup and module instantiation in hosted full builds.
-   - Dispatch now has real pthread Node/browser operation probes, including
-     native/encoder/callback errors, overlap guards and progress responsiveness.
-     Extend acceptance to full models and module variants. Audit remaining ASR/
-     synchronous result encoders for intermediate emval/scratch leaks when JS
-     constructors/getters throw; JS throws do not unwind default C++ EH frames.
-     Extend borrow guards through argument coercion: a JS getter can submit
-     async work or close an owner after an operation's initial guard.
-   - Async v2 ASR/TTS load options now have literal-POD and worker-thread probes;
-     validate real backend/model replacement and memory limits.
-   - Token polling copies before JS constructors run; count/drain calls now
-     reject during active async compute. Retained ASR delivery uses a separate copied
-     queue that can drain during compute. Audit coercion/lifetime guards across
-     remaining adapters.
-5. **Residual public options and polling ownership.** Go/Rust now have load
-   options, standalone truecase/PCS and owned segment polling; Rust text scoring
-   and Go capability queries have compiled probes. Review remaining ledger
-   rows rather than treating the old missing-family list as current. Rust's raw
-   token polling is explicitly unsafe: a future safe adapter needs ownership
-   beyond the borrowed buffer selected globally by the C ABI. Do not permit
-   another thread to close/free it while copying.
-   Ruby and WASM now expose v2 session-open options; verify them with actual models.
-   Finish per-call VAD settings in languages beyond the C#/Java/Dart/Python
-   paths already implemented; probe actual option fields and language.
-6. **Platform and model acceptance.** Run full-library/compiler checks and
-   representative real tasks on pinned source/models/inputs, including TTS→ASR
-   roundtrips. Exercise 32-bit Java/Dart diarization marshaling on actual target
-   runtimes; the new pointer-aware layouts and 64-bit probes are not that proof.
-   Review real CI logs before acceptance. No release from fixture success or
-   queued jobs.
-
-The ASR event checkpoint `6eda4a9da2c867fcbda2262f2cd867dd0c6e5915` passed all
-six hosted [binding contract jobs](https://github.com/CrispStrobe/CrispASR/actions/runs/39151650142).
-The [full WASM build](https://github.com/CrispStrobe/CrispASR/actions/runs/39151650113)
-and actual-model/platform gates still require review. Subsequent legacy
-Rust/Java changes require their own hosted results for the actual tip.
-Older source checkpoints establish only their recorded component contracts.
-Heavy CPU/native builds belong in GitHub CI; genuine GPU validation uses the
-maintainer's external Kaggle guide. Keep private paths/toolchains/handoff data
-only in ignored maintainer notes.
-
-## Python shared-header expansion — hosted/model acceptance pending
-
-Owner: maintainer coordinator. Source inventory and operation contracts are in
-[Python API coverage](docs/python-api-coverage.md); completed implementation is
-archived in HISTORY.md. The census now reads both shared public headers: 297 unique functions
-(292 bound, three equivalent/compiled adapters, two retired native stubs).
-The eight additional audio/container/channel functions were implemented and
-probed; completed work is in HISTORY.md. Separate chat, other-language callable
-coverage and real-model acceptance remain independent gates.
-
-New operation/metadata probes pass with GCC and Clang. They exercise compiled C
-ABI transport, actual native metadata functions, allocated-buffer ownership,
-strided inputs, successful empty music results, replay-noise dimensions,
-callback exceptions/re-entry, options layout, and compiled legacy adapters.
-The combined local selection reports 63 passed, 92 subtests and 166 skips:
-164 export-resolution cases await an explicitly supplied current library, and
-two optional native-library checks await that build. GCC/Clang focused operation
-and metadata suites each report 39 passed, 64 subtests and one native-library
-skip. These skips are not hosted acceptance. The real-header helper also compiles locally. No full local library/model build
-was attempted. Hosted CI checks the newly built library's exports/getters and
-loads a helper compiled against that build. A fixture library is never the
-native model acceptance gate.
-
-Frozen implementation source `c12707299c5dcbca7bafe60a073688250238cdd9`
-is on immutable `diag/python-api-20261018`. CI39120101432 finished with12
-successful jobs and a Linux metadata-fixture failure after all2,033 native
-unit tests passed; lint39120101602 passed all10 jobs. The failure was untyped
-optional Parakeet word-alternative getters truncating a pointer, repaired by
-ff3aeeefd; its observed failure/repair is in HISTORY.md. Do not rerun that old
-source as though it were queued. Refreshed PR521 headab6c92cae's Linux unit job
-39223238352 passes the full metadata/getter/export/helper step, including
-297-function inventory and189 pytest cases/34 subtests. That is PR-source
-integration evidence, not current-main release or real-model acceptance.
-
-Next acceptance work, in order:
-
-1. Check exact current-main full-library CI after subsequent wrapper changes,
-   including legacy helper link/load, export smoke and native metadata. Preserve
-   the corrected terminal outcomes above; do not repeat the old failed fixture. Do not accept a stale
-   build discovered from another checkout. Local symbol-resolution checks skip
-   when no current native library was explicitly supplied.
-2. Exercise representative real models through Python: piano (including empty
-   notes and MT3 programs), chords, beats at native/mismatched rates, tab
-   emissions/mapping, conversion with pinned ContentVec/F0 and supplied replay
-   noise, text processors, and TTS reference/streaming/disclosure. Compare
-   structured outputs against the same native C ABI/CLI where that surface
-   exists; TTS still requires ASR roundtrips and conversion its pinned reference
-   recipe. Retain model/revision/source/input pins. Use hosted CPU/GPU capacity
-   for heavy work; no performance/accuracy claim from transport fixtures.
-3. #549 real Japanese Metal multi-window metadata acceptance now passes; keep
-   other-platform/package/downstream validation open;
-   the separate #217 forced-alignment worker does not validate that route.
-4. Audit other language bindings independently, including the two new replay
-   dimension getters. Python's complete census does not establish Go/Rust/Dart/
-   Java/Ruby/C#/WASM parity. Do not ship a release from queued CI alone.
-
-## #217 — hosted character CTC synthetic benchmark accepted; full/model gates pending
-
-Owner: maintainer coordinator. Work is isolated on
-`perf/217-alignment-cleanroom`; no third-party source or fitted data is copied
-into this tree. The external review is pinned to Subtimer
-`4a894d0e166191d41ebc734b61d68f5c531fb55b`; project-wide licensing is absent
-from inspected metadata, while native/vendor notices have their own scope.
-Read [the full comparison and clean-room record](docs/alignment-cleanroom-2026-10-18.md).
-No matched Subtimer/current-CrispASR accuracy/runtime benchmark exists here.
-A research agent's unsupported DP-bottleneck and small-banding-quality-cost
-claims were rejected; do not promote them as measurements.
-
-A fresh implementation agent authored an independent opt-in character-CTC
-workspace candidate using only our source and sanitized requirements. The first
-T*S emission design was rejected on measured memory regression. Corrected
-source SHA256 `d089c141e03fa61970a5136d1c8f9b92a05e306ae36bab78d6b8b8597b68cfd5`
-uses unique-token emission columns, flat traceback storage and character-derived
-word bounds. Only `CRISPASR_CTC_ALIGN_OPT=1` enables it; default stays unchanged.
-Six acceptance tests pass: 240 randomized cases, 60 unique-optimum exhaustive
-path checks, ties/repeats/Unicode, invalid/nonfinite cases, and memory acceptance.
-Local synthetic measurements and their noisy timing ranges are retained in
-`docs/alignment-ctc-local-2026-10-18.json`; they do not measure encoder/model
-or Japanese Parakeet/Canary subword performance.
-
-Frozen character-performance source `567fc431e333d3cf1e2cb895f3d2895364e54328`
-is on `diag/217-ctc-workspace-20261018`. Heavy CPU `39112822169` passes
-all seven `alignment_ctc_bench.py --large` shapes on EPYC 7763/GCC13.3.
-Independent audit verifies terminal source/hash pins, artifact/log equality,
-all ratios/ranges and lower allocations/heap. Worker exact-output assertions
-pass; this aggregate receipt retains no raw per-call output/timing arrays.
-Gate-off/on median ratios are 1.124–1.215×; frozen-reference/on ratios are
-1.089–1.388×. Largest T4096/V16384/W256: gate-off339.608ms → on288.506ms,
-tracked heap275,986,668 → 7,556,460 bytes (36.52×). See
-`docs/alignment-ctc-hosted-2026-10-18.json`; this is synthetic DP, not encoder,
-model, RSS/VRAM or Japanese/subword acceptance. CI `39112823566`
-was also dispatched for that source and is retained while progressing.
-Queued lint `39112825190` was superseded/cancelled in favor of combined-source
-lint below. Audit terminal results and verify source pins before accepting any
-hosted result. It compiles only our model-free kernel
-and frozen own baseline; no external models/code are needed. Audit all receipt
-output parity, kernel-time distributions, actual allocation counts and tracked
-peak heap, source hashes, compiler/CPU/flags, and the independent test suite.
-Audit the retained character CI and later frozen integrated production
-CI/lint separately; this synthetic job is not full-library acceptance. Keep
-those branches immutable while documentation checkpoints advance. No default promotion until
-those gates and representative model alignment acceptance are satisfied.
-
-## #217 subword CTC failure contract — implemented; full CI pending
-
-The tiny production-tokenizer/DP test was first observed returning success with
-zero times for a two-label transcript and one frame. The independent CTC
-feasibility assertion failed before the fix. `canary_ctc_align_words` now rejects
-unreachable/nonfinite terminal states and invalid ABI/token-ID inputs. All four
-contract tests pass, including repeated-label minimum frames and known valid
-centisecond bounds. No encoder, tokenizer or valid-path DP arithmetic changes;
-this is a correctness fix, not a Japanese Parakeet speedup. CTest/ordinary CI
-run this suite. The independent character-kernel source remains unchanged.
-
-Frozen combined source `deaf9c010acce1410f470d6df421d0f77ff16be2` is on
-`diag/217-alignment-contract-20261018`: CI `39113844983` and lint
-`39113846749` are dispatched and queued. Audit this combined source separately
-from the immutable character-only performance source. Do not treat a synthetic token fixture as
-proof of long-form model accuracy. Character-path nonfinite-input policy still
-follows its frozen baseline; any future policy unification needs separate
-valid-output and error-contract acceptance, not a concealed speed change.
-
-## #217 subword workspace — implemented; hosted/model acceptance pending
-
-Independent own-code candidate uses `CRISPASR_SUBWORD_CTC_ALIGN_OPT=1`, default
-off. It normalizes one vocabulary row at a time and flattens traceback while
-retaining the frozen `deaf9c010` tokenizer/DP return/text/timestamp behavior.
-Five tests pass under GCC and Clang (240 seeded random, 60 unique-optimum
-exhaustive tiny paths plus edge/memory cases); four contracts exercise both
-gates and six character tests remain green. CTest/CI run all suites. The local
-receipt and scope are in the [comparison](docs/alignment-cleanroom-2026-10-18.md#independent-subword-workspace-experiment).
-Frozen source `a1434c9b2d2484e7af572b577cb1f53127662775` is on
-`diag/217-subword-workspace-20261018`. Heavy CPU `39115492999` runs
-`tools/ci-heavy/alignment_subword_bench.py --large` (NumPy; timeout30), CI is
-`39115494689`, lint is `39115496152`; all three are queued at dispatch audit.
-Audit source and baseline hashes, exact return/text/bounds, successful complete alignments,
-allocation/heap reductions and timing distributions. Never promote from these
-synthetic results alone. Keep input/encoder memory and model quality separate.
-
-## #217 Japanese alignment — CPU proof audited; long-form/hardware pending
-
-Completed CPU evidence is archived in HISTORY.md and the
-[verified audit](docs/alignment-japanese-audit-2026-10-19.json). Keep both workspace
-gates default-off. The measured DP saving is0.055ms beside4591ms encoder time;
-do not prioritize another DP micro-optimization as an end-to-end speed fix.
-Issue550 long-window CUDA worker is completed; do not repeat it. Next: inspect release bundles
-[run39212307554](https://github.com/CrispStrobe/CrispASR/actions/runs/39212307554)
-at source62e598ca0, then long-input CUDA memory, seams and labeled boundaries.
-Short-clip parity does not establish long-form acoustic accuracy, Japanese ASR
-multiwindow ownership (#549), original encoder parity or Subtimer superiority.
-
-## #217 clean-room accuracy follow-ups — bounded next tasks
-
-The actual Japanese model profile is audited (see HISTORY.md). Preserve the
-measured encoder/postprocessor split when choosing another optimization. Preserve native centisecond-output/tokenizer parity and
-keep original behavior available for A/B. The unchanged per-word path scans
-remain a separate candidate only if profiling justifies them; do not conflate
-invalid-path semantic repair with a speed change.
-
-Long-form accuracy requires audio/text anchors before changing the current
-proportional Qwen chunk assignment or extending the new bounded CTC encoder windows. Build a small
-licensed Japanese boundary-labeled corpus with long pauses, music, repeated
-phrases and subtitle omissions. Acceptance: no dropped/reordered lines, correct
-absolute offsets, reported median/p95 boundary error and coverage, and bounded
-RAM/VRAM on a long clip. Evaluate optional VAD/vocal signals and independently
-trained boundary refinement against a raw-audio baseline. No external fitted
-parameters, exact feature recipes or source may be reused. The comparison and
-licensing/provenance constraints are in
-[the audit](docs/alignment-cleanroom-2026-10-18.md).
-
-## #549 — token ownership and real Metal metadata accepted; packaging pending
-
-Frozen source `741141118335643adc7d29b61bc95e1d77c7f43a` passes all 13 CI jobs
-(`39104662258`) and all 10 lint jobs (`39104663518`). Independent audit checked
-terminal metadata, exact source and the complete Linux unit log: 2,033 CTest
-unit cases pass; the exported-C-ABI/Python metadata suite passes all 11 tests,
-including all 30 legacy/shared splitter fixture/window combinations. Later main
-commits through the initial #217 claim alter documentation only relative to
-this validated source. Preserve this frozen proof; do not repeat it merely
-because documentation tips differ. The API fixes remain unreleased in v0.8.43.
-
-The remaining native packaging gaps are now implemented: legacy overlap
-splice/dedup and Japanese slice/gap-fill carry owned token blocks with retained
-words. Shared non-JA gap repair uses native grouping indices instead of inclusive
-timestamp matching, which duplicated both words' tokens when frames were tied.
-The grouping rules live in `src/core/parakeet_word_ranges.h` and are used by
-native word construction, so no word-string/timestamp reconstruction is needed.
-No public POD layout, decoder, window decision or Python constructor changed.
-
-Six new tests pass under GCC and Clang, after first reproducing empty tokens
-on JA/legacy routes and tied-frame duplicate tokens in shared repair. They
-exercise production grouping/window/repair functions, opaque getters and the
-Python result reader: equal frames, UTF-8 fragments, exact F32 probabilities,
-BOS/empty ownership, offset slices and token-less native words. Grouping also
-matches frozen own `08aea3537` word text/times/probabilities on 2,000 cases.
-The expanded metadata suite now has 12 tests, including a native-grouped
-continuation token sharing the next output segment's first frame. Both legacy
-and shared output splitters keep it with its own word, without changing word
-segments; all 18 metadata/window tests pass under GCC and Clang. CTest registers the new suite;
-ordinary CI runs it with `CRISPASR_LIB` against actual exported getters.
-`docs/contributing.md` now requires explicit result-field and multi-route wrapper
-parity and corrects the claim that Dart symbol checks auto-discover new APIs.
-
-Keep the issue open for full-library/platform follow-up and reporter validation.
-The first window-only source `aaa5f21a9` has CI39117671481/lint39117673618
-pending. Final integrated source `ebf69c43721e56a43b7c8f637873902098f523ba`
-is frozen on `diag/549-token-boundaries-20261018`, CI `39117921894` and lint
-`39117923785` now both pass. The actual exported-getter step for both suites
-is independently audited. The real licensed Japanese Metal short/long/short
-Session matrix also passes 17/123/17 tokens, exact returning-short metadata and
-a distinct native short-token byte/time/probability comparison.
-[Live receipt](docs/ja-session-metadata-live-2026-10-20.json). The CTC-aligner profile for #217 is a different model
-route and cannot stand in for this transcription validation. Generic CLI
-postprocessing (`examples/cli/crispasr_gap_fill.h`) retains timestamp-based token
-filtering for multiple model families; audit that separately before claiming
-full long-form CLI/session token identity, without applying Parakeet-specific
-grouping to unrelated tokenizers. Record token-less native routes explicitly.
-
-See [session metadata](docs/python-session-metadata.md) for `None` timing,
-byte-fragment handling, cache-release lifetime and older-library compatibility.
-The process-wide aligner cache wrapper is tested, but no real VRAM-counter
-measurement has been made. No release/tag is implied by the CI acceptance.
-
-Updated 2026-10-18. This file contains current actions, dependencies and a
-legacy audit inventory. Completed work and experiment receipts live in
-[HISTORY.md](HISTORY.md#plan-reconciliation-archive--2026-10-15).
-The archived snapshot preserves detailed older requirements without treating
-its stale status labels as current facts.
-
-## Working protocol
-
-Read the sibling development guide and AGENTS.md. Work in a separate worktree;
-large models, builds and artifacts belong on the maintainer storage volume.
-Read ignored CLAUDE.md for actual local paths; never commit machine-specific
-operational details. Tracked receipts use portable location aliases. Before coding,
-add a dated CLAIMED block naming the owner, worktree, scope and acceptance
-criteria, and push that claim to main. Remove the claim when the work lands.
-Read complete issue/PR threads before acting. Audit old notes against code.
-
-Use pinned original Python → conversion/quantization → dump-reference → diff
-with cosine, norms and relative error → actual decoded-output acceptance.
-Only then profile or promote defaults. Preserve failures and source/input
-hashes; use distinct run directories so failed evidence cannot be overwritten.
-Follow docs/contributing.md for all affected surfaces, including the C ABI.
-
-Historical checkpointad2998ab passes all13 general CI jobs (38855803220), Ruby,
-secret scan and Pages. Native-fork worker5417ed6d passes all10 lint jobs
-(38855559850) and heavy38855559740; independent auditc0fac6c1 passes642
-payloads. These are exact-source checks. The diagnostic integration and future
-release tips require fresh CI; older documentation-tip queues are superseded.
-Last published release is v0.8.43; v0.8.44 remains untagged. Dia sampling controls are integrated from candidate7d0f68f3 (all13 CI and10
-lint jobs passed); all non-document source bytes are preserved. Main f9eef29e passes all13 CI38974250081 jobs. Later documentation tips
-require applicable fresh CI. Echo observer integration preserves the complete non-document
-tree of3a13e0c6 (all13 combined CI and10 lint jobs passed). Routing controls do
-not establish native speech acceptance.
-
-
-## Handoff and immediate priorities
-
-See [the maintainer handoff](docs/maintenance-handoff.md) for every active front's
-entry points, bounded next action, acceptance gates and external dependencies.
-No task remains assigned to a departed agent. Follow the approved ordered
-roadmap below:550 GPU completed, wrapper/package closure, PR521 license review,
-release, then bounded numerical
-work. Preserve accepted Echo audits and current-main547 fixes; research and
-hardware waits remain separate.
-
-Issue #547 now has the streaming utterance-open throttle fix on main in
-`dd14099c3`, including literal boundary tests and the dedicated
-`tools/ci-heavy/issue547_nemotron_multiturn.py` validation worker. Do not repeat
-the old stale-cache hypothesis or reimplement that fix. Audit the worker's
-existing runs/results and fresh/reused-session/multi-turn acceptance before
-claiming full hardware validation; this #549 task did not execute that worker.
-
-## Ordered roadmap — maintainer-approved execution order (2026-10-19)
-
-1. **Issue550 GPU acceptance is completed.** Preserve the audited T4 proof and
-   closed issue; no repeat dispatch is needed. Continue wrapper/package work.
-2. **Close wrapper acceptance and implementation gaps.** Audit green Arabic
-   CTC/Java39214206020 and binding contracts39215435420; bounded Go CPU model
-   lifetime/re-entry is also audited. Generic speaker operations in all eight
-   wrappers are reviewed. Continue owned low-level adapters, other model modes,
-   language lifecycle/platform checks and the remaining callable ledger. Validate
-   Japanese Metal multi-window metadata for549 is accepted separately from
-   CTC forced alignment; complete published-wheel/downstream validation next.
-3. **PR521 is held for bundle license review and speech acceptance.** NC main
-   weights are distinct from the bundled Boson tokenizer conditions. Do not
-   merge full runtime support merely because CI passes. Review the complete diff,
-   repair genuine CI failures and preserve contributor history. Merge only
-   accepted scope; keep original/native clone failures and quality gates intact.
-4. **Release accepted work.** Require exact-tip CI/lint and package/wheel
-   relocation/load checks, reconcile comprehensive notes, then use
-   scripts/bump-version.sh, publish and inspect assets. Do not hold accepted
-   release scope indefinitely for unrelated research; do not advertise failed
-   or hardware-unvalidated model paths.
-5. **Resume bounded numerical work.** Echo: one identical-input projection
-   precision counterfactual. MiMo: actual failing71-row Q/K/V, masks, scores,
-   probabilities and pre-output capture. Dia remains experimental until real
-   speech acceptance; do not repeat completed sweeps without a new hypothesis.
-6. **Maintain the handoff continuously.** Archive completed work in HISTORY.md;
-   give every PLAN.md item an entry point, exact next action and acceptance gate.
-   Separate reporter/hardware/gated-asset waits; keep machine details ignored.
-   Drama3 stays deferred outside active/release scope.
-
-Documentation-tip CI runs can be superseded by newer pushes. Inspect Actions
-for the actual main SHA; green component workflows or older cancelled runs do
-not replace exact-tip general CI. Hardware waits do not justify
-repeating accepted diagnostics. GH handles heavy CPU/builds; Kaggle handles
-actual supported GPU tests per the external guide. Neither supplies Ascend.
-
-## Dia correctness — current dependencies
-
-The completed reduction/cache/RNG, broader matrix and recognition investigations
-are in HISTORY.md and their pinned machine receipts. Current active claims carry
-the remaining source-quality counterfactuals.
-
-1. Direct-original CPU construction/recognition is audited and fails speech.
-   Original README F16 CUDA is independently audited: both fox seeds pass,
-   legacy and both hello seeds fail; both recognizer positives pass. Its81 payloads
-   and82 anonymous public downloads are verified. The subsequent trajectory
-   experiment is fully audited (201 payloads/202 anonymous checks): no invalid
-   codes were clamped, and all three quiet paths use one common nine-book vector
-   for over99% of frames. Both hello and fox cases pass exact observer identity;
-   first legacy OFF0 differs slightly, so the global observer gate remains failed.
-   The matched CUDA precision/recipe experiment is independently audited:261
-   payloads and262 anonymous file checks. Precision/recipe alone did not recover
-   the three quiet cases; see docs/dia-cuda-factorial-results-2026-10-16.json.
-   Categorical draw placement is isolated and independently audited: CUDA/CPU/
-   CUDA on the same model changes fox quality0/1/0 WER, with neural compute
-   fixed. First applied feedback differences follow byte-identical probability
-   inputs. All other cases still fail speech. The final-BOS source counterfactual is independently rejected for speech
-   recovery (260payloads/261anonymous downloads): same three failures, fox controls
-   pass. Preserve original behavior. No new full-model sweep is justified by
-   those hypotheses; advance independent Echo owned-input quantization attribution.
-   See HISTORY.md and both result receipts.
-   Existing full-F32 broader quality fails
-   on both recognizer architectures; numerical/code equality alone is insufficient.
-   Once bounded fixed cases pass unchanged speech gates, test the existing
-   heads-only-F32/F16 neural export with full-F32 positive controls before GPU/Q4
-   and profiling. Preserve source/physical audits and all earlier failures.
-   Do not add token overrides, change seeds or relax thresholds as a fix.
-2. Earlier module Q differs6.90e-7 from actual full-model Q despite exact keys
-   and normalized input. Preserve that qualification. A new intervention must
-   use the actual original tensors and native identity controls, with cosine,
-   magnitudes, relative errors and decision-margin effects. Do not repeat the
-   rejected qualified-Q, norm/head/late-layer/source-RoPE sweeps unchanged.
-3. Any production candidate must run current runtime without reference injection,
-   preserve controls, and pass real speech on bounded additional prompts/seeds,
-   then actual GPU/Q4 and performance. Single-seed diagnostic recovery is not
-   production acceptance. If no new operator hypothesis is justified, advance
-   independent CANN preparation instead of repeating accepted diagnostics.
-
-## CANN — hardware follow-ups after merged PR544
-
-Implementation and official SDK builds are integrated. The portable Moonshine
-validator and its original/CPU/CLI/Session proof are ready. Remaining actions:
-1. Run the fixed full-model fixture on physical310P/910B, preserving actual
-   placement/offload, original stage/magnitude metrics and decoded transcripts.
-2. Prove composed scheduler fallback: supported CANN work plus rejected BF16
-   CPU operations, with actual output checks; physical310P required.
-3. Prove actual ACL capture/replay, repeated calls and changing shapes on910B.
-4. After floating-point acceptance, validate quantization and then profile.
-
-Maintainer owns the preparation; contributor hardware help is optional. No
-further rerun of the already accepted rotary repair is requested. Details and
-commands: [CANN TODO](docs/cann-todo.md) and
-[portable validator](docs/cann-model-validator-preparation-2026-10-14.md).
-
-## Remaining PRs — scoped salvage and acceptance
-
-- **PR492 / MiMo:** author KokerZhou closed the PR unmerged on2026-10-15;
-  it is no longer an open merge candidate. Independent opt-in mel/cached-decode pieces are merged.
-  Dynamic Q8 activation amplification is measured; the existing F32 cache-read
-  hypothesis is independently rejected and archived in HISTORY.md.
-  [Four-arm result](docs/mimo-kvread-ab-2026-10-15.md): hidden/logit error remains
-  5.73%/5.13%, with a0.5% gate. The default Q4 original-stage gap also remains.
-  The completed64-cell tiny attention audit proves a scalar F16 value-accumulator
-  error (0.460% on constant V, exact repeated-half prediction). The old71-row
-  prefill takes the F32 tiled path, so this is not its repair. Diagnostic
-  source02bd2aee remains frozen on its branch. All10 lint39003053402 and13 general CI39003202215 jobs pass;
-  the unchanged diagnostic source is integrated on main. Actual matching Q/K/V,
-  mask, scores/probabilities and pre-output-projection capture with OFF/ON/OFF
-  identity is next under a fresh claim; the old full capture has no Q/K/V.
-  See docs/mimo-attention-operator-2026-10-17.md. Do not repeat old BLAS/cache-read sweeps.
-  CANN RVQ/F16 embedding and ggml NZ need physical Ascend and PR-only/NZ-only/composed attribution. The measured
-  full tokenizer path was7–10% slower; do not enable it by default. Review the
-  complete latest thread before proposing any further split or merge.
-- OmniVoice diagnostic data recovery is complete: the recorded HF pin returns
-  404, but exact original GH artifact11600052124 has been recovered, independently
-  array-audited and permanently republished with a verified anonymous download.
-  See HISTORY.md and docs/omnivoice-clone-diagnostic-2026-10-09.json. Remaining
-  work is runtime/input/precision/quality diagnosis, not another proof search.
-- **Issue518 / PR521 / OmniVoice:** audio/text utilities match upstream;
-  the fixed clone gate fails2/9 WER in both original Python and native output.
-  The standalone utilities are integrated with complete original/native array
-  replay and hosted checks; see HISTORY.md. The PR is ready-for-review; updated headab6c92cae incorporates main35df8d6d4
-  while preserving contributor history. The helper-test conflict is resolved;
-  main's newer ggml pin preserves two CANN fixes. A literal UBSan regression
-  reproduced and now guards the signed128-minimum formatter overflow.
-  Its body/discussion/review comments were re-read. The Linux failure is the
-  stale vibevoice architecture expectation already fixed on main; CLANG64 lacks
-  `<cstdlib>` in the deprecated executable (now fixed on main);
-  CUDA11.8 setup hit Chocolatey504 before compilation. Fresh head checks are
-  queued; inspect them rather than rerunning stale-source jobs.
-  Full diff/runtime review, original utility proof and unchanged cloning-quality
-  gates still govern merge scope. Do not call the onset repaired or relax the clone gate. Preserve controls and
-  contributor history.
-- **Breeze:** accepted guided/voice/server fixes are merged. Investigate canonical
-  BF16 grid equality (0/8 despite passing scoped speech controls) and unresolved
-  model-quality reports from merged contributor PR530 only with a new hypothesis.
-
-## Quantization — no unproven model promotion
-
-- **Index-Echo / issue485:** higher-precision accepted paths remain available.
-  All four plain recipes and three calibrated recipes fail complete acceptance.
-  Collection covers all96 FFN statistics and sensitive source F32 tensors are
-  preserved. Archived actual logs are now inventoried: plain first crosses the
-  global0.999 summary floor at block0; guarded at11/12/15 and middle at12/12/15
-  for JFK/JFK-tail/ZH. These differ from native per-stage quantized gates: JFK's
-  literal FAIL remains teacherforced_logits (.967303/.983031/.979347).
-  Block4 middle cosine0.999908 passes0.999. Completed owned-input attribution is
-  audited; see HISTORY.md and [the receipt](docs/index-echo-owned-ffn-audit-2026-10-19.json).
-  Next evaluate one bounded projection intervention on identical saved inputs
-  before a full decoder: isolate down-projection layer25 (worst owned-down-input
-  error,8.00% on Mandarin), then inspect gate/up error if MLP output remains
-  outside the existing gate. Cumulative first crossings are not causal layers.
-  Audit previous guarded Q8-down/F16 recipes before choosing another override;
-  avoid repeating an already rejected recipe. Use a fresh public prefix and
-  retain original/converted/physical-type/input pins and exact byte-size cost.
-  Only after component improvement run complete EN/ZH stages/magnitudes, cache,
-  CLI/subtitles/session and TTS-ASR plus actual GPU validation. No accepted Q4
-  recipe or runtime arithmetic repair follows from attribution.
-- **Echo performance:** scheduler opt-in has narrow T4 evidence; new CPU/Metal/
-  CUDA A/B must establish output and timing before any default change.
-- **Nemotron:** accepted experimental hybrid T4 controls are not compact-Q4
-  acceptance. Hybrid is1,179,413,408 bytes, only14,155,776 Q4 bytes and8.3%
-  smaller than F16. Audit promotion/package scope separately; seek meaningful
-  compression with preserved original stage/speech/session/streaming behavior.
-  No speed or production pin is established. Evidence:
-  docs/nemotron-position-q4-gpu-2026-10-10.json.
-
-## Reporter, hardware and asset dependencies
-
-- **Issue532 / Canary:** CPU/T4 reuse/allocation controls did not reproduce the
-  crash; await original recording/device details. Do not apply a speculative fix.
-- **Issue483:** matched CUDA/MMQ packages are prepared; actual GTX1660/MX150
-  correctness and timing remain external. No generic-GPU speed conclusion.
-- **Issue461 / VoxCPM2:** profile VAE setup and Vulkan LocDiT on relevant hardware.
-  Eight-step RTF1.019 and poorer reported quality do not justify changing the
-  ten-step quality default. Issue478 Windows/Khmer retest, Q4 batching and
-  other-ISA/GPU coverage remain separate; verify current issue state first.
-- **Issue456 / Nyra:** deferred for separate research/output-license review;
-  this is not an approved ordinary-NC integration. No port or conversion is
-  queued; espeak-ng cannot be assumed bundled.
-- **Dolphin:** merged original-reference fix does not prove reporter Kylin/GCC9,
-  private clips or GPU behavior. Obtain those inputs if further work is needed.
-
-## Release v0.8.44
-
-Comprehensive notes exist in RELEASE_NOTES_v0.8.44.md and
-[the next-release draft](docs/release-notes-next.md). Remaining work:
-- Freeze accepted source and scope; exclude rejected Dia/Q4/NPU experiments.
-- Run fresh immutable package/wheel dry-run and inspect artifacts, dependency
-  closure and relevant CLI/C-ABI/binding behavior on the frozen source.
-- Require applicable tip CI and acceptance evidence; use scripts/bump-version.sh
-  for propagated version and annotated tag, then publish and inspect assets.
-- Update final release notes to describe shipped behavior and known limitations.
-
-Passing current source CI does not prove new v0.8.44 assets have been built.
-Unrelated future research need not be advertised as accepted to release proven
-improvements. Existing failed gates must stay explicit.
-
-## Deferred outside active/release scope — Drama3 (issues545/546)
-
-Maintainer decision (2026-10-19): exclude this backend from the active roadmap
-and next release because its custom licence is unsuitable for the intended
-scope. Do not start conversion, download weights or claim support. Reconsider
-only after an explicit scope/licence decision; the technical notes below are
-retained for handoff, not an active task.
-
-Issue546 requests the same backend, explicitly including GGUF conversion and
-zero-shot voice cloning; track those requirements together with545. Cloning
-must cover the original reference-audio processing and actual CLI/C ABI paths,
-with closed-loop decoded-speech/voice validation before claiming support.
-
-Metadata/source/licence triage is complete; no weights or implementation started.
-Pin fishaudio/drama-3 e0a9218aa48888270f06ef1ed9ea67622c0e17d2 and read the
-actual inference/codec blueprint before defining a port. Scope includes40 hybrid
-layers,256-expert/8-selected MoE, shared experts, zero-centered norms, partial
-RoPE, a4-layer ten-codebook MTP decoder and codec, with FP8-block/BF16 weights.
-Fish Audio Community Licence is custom, not Apache2; establish redistribution
-terms before conversion/public artifacts. Audit ggml operation/backend coverage,
-then original conversion/dump/diff/decoded-speech pipeline on suitable hosted
-hardware, sensitive-tensor quantization and full contributing checklist. Keep
-behind correctness work and avoid an unbounded35B download on this VPS.
-
-## Research backlog — independently trained EmbeddingGemma speech reader
-
-User requested a concrete task for an independently trained reader, word bank
-and reproducible decoder. This is a research backlog task, not implemented
-support or a claim to reproduce the author's unpublished reader. Feasibility:
-`docs/embeddinggemma2-asr-feasibility-2026-10-13.md`.
-
-1. Pin and read the official encoder implementation and preprocessing. Compare
-   temporal audio-tower features with features after the shared backbone; do
-   not substitute pooled recording embeddings for time-resolved features.
-2. Freeze the encoder and train a small temporal CTC reader. Compare ordinary
-   subword CTC with embedding-matching word CTC on the same features/data so
-   the shared word space's contribution is measurable. CTC is our proposed
-   recipe, not an assertion about Shahir's implementation.
-3. Build a licensed, versioned word bank with normalization, stable IDs and
-   pinned text embeddings. Start around 30–50k words; define handling for
-   names/numbers/unseen words. Exclude held-out evaluation transcripts from
-   vocabulary construction. A 229k-by-768 FP16 bank alone is 351,744,000 bytes;
-   measure dense scoring cost before choosing compression or approximate search.
-4. Specify the exact decoding contract: sample rate, feature layer, chunking,
-   overlap, score normalization/temperature, blank score, CTC repeat/blank
-   handling, boundary merging and optional beam search. Begin with greedy CTC;
-   keep punctuation separate from the initial acoustic-quality experiment.
-5. Pilot on LibriSpeech train-clean-100 with separate development/evaluation
-   sets, then expand training only after measurable held-out progress. Report
-   WER on clean/other speech, silence and out-of-vocabulary behavior, memory
-   and feature-extraction/training throughput. Do not promise the author's
-   ~5% WER, 288x speed or eight-H100 training time on a Kaggle GPU.
-6. Use Kaggle for heavy encoder extraction/training and GH CI for conversion,
-   reproducibility and integration checks. Keep datasets/features/checkpoints
-   under `${CRISPASR_STORAGE}`; checkpoint produced artifacts before later risky work.
-7. After a useful Python prototype, port via convert → reference dump → stage
-   diff with cosine AND magnitudes → decoded transcripts. Establish F32/BF16
-   and Q8 baselines before lower quants; validate CPU/Metal/actual CUDA and all
-   `docs/contributing.md` integration points, including C ABI and bindings.
-   Reuse audited CrispEmbed components where applicable; its typed-decision
-   backend is not already a temporal audio encoder or speech reader.
-
-Planning estimate, not a delivery promise: 1–2 engineering weeks for a research
-prototype, then several more for training iterations and a validated ggml port.
-First decision gate: useful held-out transcripts from a small frozen-feature
-reader versus its subword baseline. Reader/checkpoint/bank provenance and
-redistribution terms must be documented. Matching advertised quality/speed is
-an experimental target, not a release acceptance assumption.
-Sources: https://arxiv.org/abs/2306.11473,
-https://huggingface.co/google/embeddinggemma-2/blob/main/config.json,
-https://www.openslr.org/12. Upstream ggml support and base Apache-2.0 weights
-already exist; the app's own reader assets were not located in our source check.
-
-
-## Older backlog — audit against current code before scheduling
-
-These are preserved requirements, not assertions that an old OPEN label still
-means missing implementation. None are active claims. Consult the complete
-[archived requirements](HISTORY.md#plan-reconciliation-archive--2026-10-15),
-search the heading below, audit code/tests and current issue state, then either
-schedule the remaining action here or record completion in HISTORY.md. Never
-repeat completed work solely because the archived note says OPEN.
-
-- Audit remaining scope: live transcribe + translate: follow-ups
-- Audit remaining scope: §247 shared scheduler profiler, then hidden-F16 audit
-- Audit remaining scope: (optional) — #416 Sidon quant: CUDA MMQ arm
-- Audit remaining scope: #387 Quds follow-up
-- Audit remaining scope: canary follow-ups (after #375, record in HISTORY)
-- Audit remaining scope: vibevoice-asr 7B answers "[Silence]" on time-stretched audio
-- Audit remaining scope: vibevoice-bitnet advertises caps its default output cannot support
-- Audit remaining scope: TQ2_0 has no Metal kernels: BitNet models are silent on GPU
-- Audit remaining scope: carried out of the #316 round-2 work
-- Audit remaining scope: follow-ups from #332 (Rust/Dart diarize ABI, landed 2026-08-05)
-- Audit remaining scope: #326 diarization: the count estimator is the last accuracy item
-- Audit remaining scope: stamp the kartoffel repos (needs ~15 GB free; this box has 11)
-- Audit remaining scope: Why not the hash-chained log the sibling projects built
-- Audit remaining scope: follow-ups from #300 / #308 (landed 2026-07-27, see HISTORY)
-- Audit remaining scope: #316 Kokoro G2P English residue
-- Audit remaining scope: VAD + mel front-end parallelization campaign (#305 → fleet-wide)
-- Audit remaining scope: #296 mel-band-roformer — follow-ups PROMISED on the issue (do not drop)
-- Audit remaining scope: #266 follow-up — hoist speaker orchestration into the library (PARKED, LOW)
-- Audit remaining scope: Untrusted-input parser hardening — follow-ups
-- Audit remaining scope: Diff-harness extensions (detail for "Ready to take" #5 and #6)
-- Audit remaining scope: CometBeat handoff — singing-voice-conversion vocoders (OPEN, NOT STARTED)
-- Audit remaining scope: Gemma-4 12B (gemma4_unified) ASR support (OPEN)
-- Audit remaining scope: crispasr-diff harness extensions — catch decode-policy / quality bugs (OPEN)
-- Audit remaining scope: #201 follow-up — generate a TADA voice ref from audio+transcript at query time (C-ABI + server DONE gated; roundtrip pending)
-- Audit remaining scope: §192 follow-up — native-Vulkan TADA garbled output FIXED (codec on CPU)
-- Audit remaining scope: moss-transcribe follow-ups (OPEN, LOW)
-- Audit remaining scope: #218 qwen3-asr long-audio root cause — quantized audio tower + prompt contract
-- Audit remaining scope: #218 glm-asr long-form blueprint parity — instruction + multi-window
-- Audit remaining scope: #218 qwen3-family rebake + CUDA validation — kernel results
-- Audit remaining scope: Priority ordering
-- Audit remaining scope: §214 follow-up — chatterbox T3 batched-CFG (B=2) — deliver the win (OPEN)
-- Audit remaining scope: §215 — batched-CFG (B=2) for the remaining TTS backends (OPEN)
-- Audit remaining scope: §210 follow-up — shape-stable bucketed decode for remaining LLM/AR backends (CUDA-graph capture) (OPEN, CONDITIONAL)
-- Audit remaining scope: §219 — more permissive audio input formats for crispasr_audio_load
-- Audit remaining scope: §166 follow-up — WASM `asr*` session surface needs a build-verify
-- Audit remaining scope: §175 Surgical DRY — share pure helpers across the CLI/library boundary
-- Audit remaining scope: §177 VibeVoice #171 — remaining layer: RDNA4/RADV quantized-matmul path (OPEN)
-- Audit remaining scope: 40. More Moonshine model variants
-- Audit remaining scope: 97. More Parakeet variants
-- Audit remaining scope: 98. Hotwords / contextual biasing (OPEN)
-- Audit remaining scope: funasr — perf follow-ups (LOW priority, not blocking)
-- Audit remaining scope: §187 Cross-runtime embed fast path sweep
-- Audit remaining scope: §201 Kaggle CUDA backend failures — full sweep 2026-06-20 (OPEN)
-- Audit remaining scope: 51c. MiMo-V2.5-ASR F16 step decode — open (validation only)
-- Audit remaining scope: 52. Qwen3-TTS
-- Audit remaining scope: 54-follow-up. granite-speech-4.1 plus speaker labels + word timestamps — open
-- Audit remaining scope: 56. Kokoro multilingual phonemizer (espeak-ng)
-- Audit remaining scope: 57. Commercial-friendly TTS backend expansion (OPEN — Phase 1 done)
-- Audit remaining scope: Ecosystem expansion (lower priority)
-- Audit remaining scope: 59. Cross-binding C-ABI parity
-- Audit remaining scope: 65-residual. JS / emscripten word-accessor surface — open
-- Audit remaining scope: 67. Deferred follow-ups carry-over (mid-May 2026 session)
-- Audit remaining scope: 70. Streaming TTS via chunked VAE decode (latency win, vibevoice / qwen3-tts)
-- Audit remaining scope: 75-followups. /v1/audio/speech OpenAI round 2 — open
-- Audit remaining scope: 168. GPU scheduler migration — gallocr-only backends
-- Audit remaining scope: 91. CrispASR CLI features missing from CrisperWeaver (OPEN — parity gaps)
-- Audit remaining scope: 92. All-backend regression suite (nightly CI)
-- Audit remaining scope: 95. IndexTTS-1.5 Chinese TN — binary alternative to the Python `wetext` hook (OPEN)
-- Audit remaining scope: 102. RapidTP-Aligns — dedicated NN timestamp predictor (survey)
-- Audit remaining scope: 104. Stateful frame-streaming TDT decode for parakeet long-form (issue #89)
-- Audit remaining scope: 105. WhisperX word alignment models — wav2vec2 CTC zoo
-- Audit remaining scope: 106. TEN-VAD — low-latency cross-platform VAD
-- Audit remaining scope: 125. Issue #125 — multi-backend bug sweep from montvid (mostly DONE — validation + longer-term threads open)
-- Audit remaining scope: 127. Coverage gaps from the 2026-05-26 overlap-save sweep close-out
-- Audit remaining scope: §136 — funasr CUDA !-loop fix (issue #125)
-- Audit remaining scope: §139 Beam search — remaining ASR backends (issue #136 follow-up)
-- Audit remaining scope: §TTS-PROV: TTS AI-provenance compliance (watermark, C2PA, consent, disclaimer)
-- Audit remaining scope: 156. Permissive G2P phonemizer
-- Audit remaining scope: §167 — Beam search, MAES, and KV caching expansion
-- Audit remaining scope: §176 Runtime optimization pass — 18/20 DONE, 2 open
-- Audit remaining scope: §ARK — ARK-ASR-3B support (⚠️ EXPERIMENTAL / WIP; branch feat/arkasr-3b)
-- Audit remaining scope: llama.cpp comparison — perf-tricks to adopt (ANALYSIS / OPEN)
-- Audit remaining scope: 221. Issue #89 hardening + v0.8.8 release
-- Audit remaining scope: §222 Aligner model expansion — permissive-license fleet (OPEN)
-- Audit remaining scope: §224 Issue #222 follow-ups — silero LID ggml graph (DONE) + diarize/firered CPU perf (OPEN)
-- Audit remaining scope: §226 irodori-tts GPU + codec GGUF fix
-- Audit remaining scope: §227 starling comparison — CUDA decode-loop optimization options (OPEN)
-- Audit remaining scope: §229 transcribe.cpp perf audit — vs handy-computer/transcribe.cpp (OPEN)
-- Audit remaining scope: §232 qwen3-tts code predictor perf — fuse 15 graph dispatches into 1 (#245, OPEN)
-- Audit remaining scope: §235 next perf targets — triage after the §232 qwen3-tts sweep (2026-07-11)
-- Audit remaining scope: §234 omnivoice — persistent step graphs + silence root cause
-- Audit remaining scope: §232 transcribe.cpp parity — close the RTF gap (mostly CLOSED; residual items OPEN)
-- Audit remaining scope: Runtime speedup roadmap (2026-07-11 cross-repo sweep)
-- Audit remaining scope: §247 roll #81 techniques out to the other runtimes (OPEN)
-- Audit remaining scope: §248 — audio.cpp competitive benchmark + gap analysis (IN PROGRESS)
-- Audit remaining scope: §249 WebRTC VAD — remaining follow-ups (backend DONE 2026-07-19, see HISTORY)
-- Audit remaining scope: §250 — Music transcription backends (piano_transcription + Basic Pitch)
-- Audit remaining scope: §251 — Music-analysis infrastructure + the remaining CometBeat roster
-- Audit remaining scope: §252 — CosyVoice3 native-Vulkan: fp32-accumulation lever (LOW priority, likely dead end)
-
-Legacy publishing/bootstrap claims require checking current registry/workflow
-state; do not assume the old404s or missing credentials remain true. Legacy
-MioTTS/Glint integration and completed native sample-rate/binding/UTF-8 fixes
-are historical, not work to reimplement. Consumer-requested binding expansion
-can be scheduled after checking actual exported and wrapped surfaces.
-
-
-## Echo9B owned-input FFN follow-up
-
-The completed v2 worker/source/payload/tensor/metric audit is archived in
-HISTORY.md. Do not dispatch it again to recreate accepted attribution. Next
-precision task and all quality gates are in the quantization section above.
-Keep all seven rejected recipes rejected and production defaults unchanged.
-Component proof does not reproduce a whole original model trajectory or
-validate speech, Q4 quality, GPU portability or speed.
+# CrispASR — Current work plan
+
+Updated 2026-10-30. Start with [the maintainer handoff](docs/maintenance-handoff.md).
+It contains the completed work, exact evidence, bounded next actions and blockers
+needed by a fresh agent; no earlier chat is required. Follow `AGENTS.md` and its
+mandatory maintainer-guide instructions before implementation.
+
+**v0.8.49 is tagged and pushed. ArkTTS (Audio8-TTS 0.6B) port, GGUFs, registry, and long-audio bounded vocoder are complete. #559 and #560 are integrated and shipped in v0.8.49. C is prepared for review; keep #557 open.** Claim work by adding owner,
+source SHA, missing behavior, acceptance gates and next action under "NOW"
+before starting. The full scope of each task (exact runs, inputs, commands and
+acceptance) is in [the handoff, "Open tasks"](docs/maintenance-handoff.md#open-tasks--fully-scoped).
+
+## NOW — release verification and nightly diagnosis (2026-10-30)
+
+### Current handoff — 2026-10-30 18:05 UTC
+
+Updated 2026-10-30 18:05 UTC: Haas-ja-v1.0 Japanese ASR and MeanVC2 streaming zero-shot voice conversion COMPLETE.
+- Haas-ja-v1.0: 600M param Japanese ASR (third-intelligence/Haas-ja-v1.0, Apache-2.0). Reused Parakeet runtime with 2-layer KDA predictor (linear RNN + rank-1 state update + gated RMSNorm). 1.000000 cosine parity on `crispasr-diff` (encoder, KDA predictor, joint network), 0 CER verbatim match on Japanese test audio, 11.3x realtime on Apple M1. GGUFs (Q8_0, Q4_K, F16) published to `cstr/Haas-ja-v1.0-GGUF`. Wired in model registry, backend maps, and feature matrix. Issue #561 CLOSED.
+- MeanVC2: 5/5 parity stages passed on `crispasr-diff` (>= 0.999998), 0.0% WER on Whisper ASR intelligibility verification, Q4_K/F16 quantizations verified, Catch2 unit tests + standalone convert harness integrated.
+
+| Priority | Open work | Current evidence / next gate |
+|---|---|---|
+| 0 | COMPLETE: Audio pipeline & model decoders acceleration across FBank, Resampling, Core Mel, Parakeet KDA, SenseVoice, Paraformer, CTC Beam Search, Wav2Vec2, CTC Forced Alignment, IBM Macaron Conformer Shaw Block Attention, CPU LayerNorm, ConvT Permutation, FireRed ASR, F5-TTS, VoxCPM2, and Mel-Band RoFormer | 1. `src/core/kaldi_fbank.cpp`: Precalculated single-pass power spectrum, sparse Mel filter triangular pruning, and multithreaded frame processing (fbank+lfr frontend dropped 9.1x from 20.4ms to 2.24ms on JFK audio). 2. `src/core/lfr.h`: Direct zero-copy output assembly eliminating intermediate padded buffer heap allocations. 3. `src/core/audio_resample.cpp`: FilterKey Kaiser-sinc caching, branch-free tap interval bounding, tap index striding, and parallel chunks (>2770x realtime, 10s audio resampled in 3.61ms). 4. `src/core/mel.cpp`: Direct pre-emphasis computation fused into center-padded buffer eliminating intermediate allocations; NEON/AVX SIMD vectorized frame windowing; multithreaded non-BLAS projection; chunk-parallel `apply_log`; multithreaded chunk-parallel `PerFeatureZ` normalization; and cache-friendly parallel transpose for `Layout::MelsTime` (92 unit test assertions passed across 3 test cases in `test-core-mel-features`, bit-identical output across 100% of floats). 5. `src/parakeet.cpp`: Reusable scratch buffer on `state.scratch` (zero heap allocations in KDA predictor) and `cblas_sgemv` BLAS acceleration. 6. `src/sensevoice.cpp`: Query embedding table pre-dequantization (query_embed time 0.00ms), chunked multithreaded CMVN & log-softmax, zero-alloc single-pass CTC greedy decode (SenseVoice Small: 19.0x-33.2x realtime on Apple M1 Metal GPU, verbatim JFK 0% WER). 7. `src/paraformer.cpp`: Load-time CMVN and CIF predictor weight caching, parallel chunked Conv1d and Linear alpha generation, precalculated PE inverse frequencies. 8. `src/core/ctc.h`: Replaced $O(N)$ linear scans in `prefix_beam_search` with an $O(1)$ custom-hashed prefix lookup map, speeding up large-vocabulary CTC beam search by >10,000x per frame. 9. `src/wav2vec2-ggml.cpp` & `src/core/cpu_attention.h`: Vectorized SIMD 4-way unrolled dot products (`cpu_attn::cpu_dot`) across Conv1d & GroupedConv1d; 4-way vector unrolled `cpu_online_softmax_accumulate` with zero memory allocation; multithreaded chunk-parallel channel and frame loops with `core_parallel::for_each_chunk` for Conv1d, GroupedConv1d, LayerNorm, InstanceNorm1D, LayerNormCF, and 24 layers of encoder self-attention ($n\_heads \times T$). Gated via `CRISPASR_WAV2VEC2_SERIAL=1` fallback. Live model JFK alignment verified bit-identical. 10. `src/align.cpp` & `src/canary_ctc.cpp`: Chunk-parallel log-softmax across CPU cores (`core_parallel::for_each_chunk`), precomputed skip-blank state invariant eliminating 750k DP branch conditions, inductive Viterbi state bounding ($j < \min(S, 2t + 2)$), and unique token log-softmax pruning in Canary CTC forced alignment. Gated via `CRISPASR_CTC_ALIGN_SERIAL=1` fallback. Paired A/B benchmark (`test-align-ab-bench`): 100% bit-identical timestamps across 22 words, Arm A (serial baseline) median 78.27ms vs Arm B (accelerated parallel) median 20.77ms -> 3.77x-4.13x speedup. 11. `src/core/conformer_ibm.h`: Conformer Shaw Block Attention CPU acceleration (used by Granite Speech and Granite NLE) with cache-friendly contiguous V-matrix streaming accumulation, zero per-block heap allocation with reusable scratch buffers, contiguous pointer dot product acceleration, and multithreaded `core_parallel::for_each_chunk` over $n\_blocks \times n\_heads$. Gated via `CRISPASR_CONFORMER_SERIAL=1` fallback. Paired A/B benchmark (`test-conformer-ab-bench`): 100% exact bit-identical output across 524,288 floats (max_diff = 0.0f), Arm A (serial baseline) median 44.00ms vs Arm B (accelerated parallel) median 5.90ms -> 7.46x speedup (38.10ms saved per block attention). 12. `src/core/cpu_ops.h` & `src/core/conv.h`: SIMD 4-way unrolled mean/var and affine projection with frame-parallel chunking in `core_cpu::layernorm` (5.50x faster, median 1.09ms -> 0.20ms, max_diff 2.62e-6), gated via `CRISPASR_CPU_OPS_SERIAL=1`; multithreaded tile chunking in `core_convt::permute_convt1d_host` (1.85x faster, median 6.00ms -> 3.24ms, 100% bit-identical across 4,194,304 floats, max_diff 0.0f), gated via `CRISPASR_CONV_SERIAL=1`. 13. `src/firered_asr.cpp` & `src/f5_tts.cpp`: Parallelized FireRed ASR CPU matmul over output dimension N (M=1 token decoding) and batch dimension M (beam search batch) using `core_parallel::for_each_chunk`, plus Conformer rel-shift self-attention across (nh x T) and decoder cross-attention (gated via `CRISPASR_FIRERED_SERIAL=1`, 1.85x speedup, max_diff = 0.0f). Replaced unsupported/silent Apple Clang `#pragma omp` with `core_parallel::for_each_chunk` over output channels C_out in F5-TTS `cpu_conv1d`, `cpu_conv1d_dil` (HiFi-GAN resblocks), and vocoder transpose conv upsamplers (gated via `CRISPASR_F5_SERIAL=1`, 2.98x speedup, max_diff = 0.0f). 14. `src/voxcpm2_tts.cpp` & `src/mel_band_roformer.cpp`: Accelerated VoxCPM2 VAE weight reconstruction across output channels via `core_parallel::for_each_chunk` (4.47x faster, median 1.41ms -> 0.32ms, max_diff = 7.45e-9), snake1d per-channel chunk parallelization (3.12x faster, median 1.90ms -> 0.61ms, max_diff = 0.0f), grouped & transposed causal conv1d chunking (gated via `CRISPASR_VOXCPM2_SERIAL=1`). Accelerated Mel-Band RoFormer with precalculated RoPE inv_freq caching (3.30x faster, median 1.61ms -> 0.49ms, max_diff = 0.0f) and `core_parallel::for_each_chunk` across time & frequency transformer bands (gated via `CRISPASR_MEL_BAND_SERIAL=1`). Tests: 1,028+ unit test assertions passed (`test-kaldi-fbank`, `test-audio-resample`, `test-torchaudio-resample`, `test-core-mel-parallel`, `test-mel-blas-parity`, `test-core-mel-features` [92 assertions], `test-sensevoice-params`, `test-parakeet-params`, `test-parakeet-strategy`, `test-parakeet-ja-detect`, `test-ctc-stitch`, `test-funasr-params`, `test-wav2vec2-params` [41 assertions], `test-align-characters` [41 assertions], `test-align-ab-bench` [343 assertions], `test-conformer-ab-bench` [3 assertions], `test-cpu-ops-ab-bench` [5 assertions], `test-firered-asr-params` [7 assertions], `test-f5tts-params` [12 assertions], `test-firered-ab-bench` [4 assertions], `test-voxcpm2-params` [5 assertions], `test-voxcpm2-vae-params` [6 assertions], `test-voxcpm2-ab-bench` [5 assertions], `test-granitespeech-params` [39 assertions], `test-granitenle-params` [5 assertions], `test-parakeet-longform` [live Metal GPU], `test-session-beam` [live Metal GPU on Qwen3-ASR]). Format 18 clean, wiring checks PASS, test_no_secrets PASS. |
+| 1 | COMPLETE: Haas-ja-v1.0 Japanese ASR backend port & KDA predictor integration (#561) | Clean-room KDA predictor in `src/parakeet.cpp`. FastConformer encoder + KDA predictor + TDT joint. GGUF converter `models/convert-haas-to-gguf.py`, reference dumper `tools/dump_haas_reference.py`. Parity: `crispasr-diff` encoder 1.000000, decoder_sos 1.000000, joint_sos_t0 1.000000. Accuracy: 0 CER on `samples/ja_test.wav`. Speed: 11.3x realtime on M1 GPU. Quantized Q8_0 (~626 MB) and Q4_K (~368 MB). GGUFs published to `cstr/Haas-ja-v1.0-GGUF`. Registered in `crispasr_model_registry.cpp` (`haas`, `haas-ja`). Tests: `test-arch-backend-map` (609/609 passed), `test-registry` (8/8 passed). Wiring: `check-backend-wiring.py` PASS, format 18 OK, `test_no_secrets.py` OK. Issue #561 closed. |
+| 1 | COMPLETE: MeanVC2 streaming zero-shot voice conversion backend port & performance acceleration (6.6x realtime, 4x faster than audio.cpp) | Clean-room C++ implementation in `src/meanvc2.{h,cpp}`. Unified GGUF converter in `models/convert-meanvc2-to-gguf.py`. Parity: `crispasr-diff` 5/5 PASS (`asr_bn` 1.000000, `gtm_k` 1.000000, `gtm_v` 1.000000, `dit_mel` 1.000000, `vocos_pcm` 0.999998). ASR intelligibility: 0.0% WER on Whisper transcription of converted audio. Speed: 242.9 ms for 1.6s audio (RTF 0.1518, 6.59x realtime vs audio.cpp RTF 0.633). Performance optimizations: dual-matrix GEMM ISTFT (114x faster, 4.19 ms), FP32 weight caching, AdaLN precomputation, RoPE inv_freq caching, zero-heap streaming buffers, and Accelerate BLAS ISTFT extended across `fireredtts3`, `lfm2_audio`, `miotts`, `miocodec`. Quantization: F16 (175 MB RAM) & Q4_K (77 MB RAM). Tests: Catch2 unit tests (`tests/test-meanvc2-params.cpp`) and convert harness (`tests/test-meanvc2-convert.cpp`). CLI: `crispasr_backend_meanvc2.cpp`. Wiring: `check-backend-wiring.py` PASS, format 18 OK, `test_no_secrets.py` 5/5 OK. |
+| 2 | COMPLETE: Audio8-TTS (ArkTTS 0.6B) backend port, Metal/GPU acceleration & HF release | Full Dual-AR + Snake vocoder architecture, 1.000000 cosine parity on `crispasr-diff` (7/7 PASS), GPU Metal prefix execution for fast AR + dual-transformer in-place KV caching (~55–80 ms/frame on M1 Metal, RTF ~0.67x; CPU ~190–215 ms/frame), chunked causal vocoder (<2.5 GB peak RAM for 3+ min audio), Q4_K/Q8_0/F16 GGUFs published to `cstr/Audio8-TTS-Realistic-0.6b-GGUF`, 0.0% WER on ASR roundtrips. |
+| 2 | COMPLETE: v0.8.49 release cut & tagged | `VERSION` bumped to 0.8.49 via `scripts/bump-version.sh`, synced across Python, Rust, Dart, JS. `RELEASE_NOTES_v0.8.49.md` and `HISTORY.md` committed; tag `v0.8.49` pushed. |
+| 3 | COMPLETE: Integrate #559, then #560 | `#559` merged at `777e8ff23`; `#560` merged at `641e9bfab` (CI **40900035576**, Lint **40900041428**, Heavy CPU **40900046409**). Both shipped in v0.8.49. |
+| 4 | COMPLETE: Kaggle Whisper loader A/B and same-toolchain v4 | Loader-cache A/B v1 passed (`576.68 -> 318.37 ms`, [receipt](docs/historical/whisper-loader-device-ab-t4-diagnostic-2026-10-29.json)). Same-toolchain v4 completed ([receipt](docs/historical/whisper-toolchain-paired-t4-diagnostic-2026-10-29.json)): `crisp` beats `upstream` (`1.142 s` vs `1.292 s`) but is `+12.3%` vs whisper-only `fork` (`1.017 s`, decode `3.23` vs `2.52 ms/call`); `d28102214` stays on `validate/whisper-integration-20261029`. |
+| 5 | Follow-up: Whisper per-step decode gap vs whisper-only fork | Per-call threadpool overhead was ruled out (`21–30 us` total across 27 calls); remaining gap vs `fork` is ~`0.70 ms/call` in decode (`3.226` vs `2.524 ms/call`). Isolate per-op CUDA graph/scheduler difference before merging `d28102214`. |
+| 6 | COMPLETE: Original and native step / paired measurements | Granite original steps ([receipt](docs/historical/granite5-original-steps-t4-2026-10-29.json)), CSM original steps ([receipt](docs/historical/csm-original-steps-t4-2026-10-29.json)), CSM native steps ([receipt](docs/historical/csm-native-steps-t4-2026-10-29.json)) and Melo paired v1–v3 ([receipt](docs/historical/melo-original-paired-t4-diagnostic-2026-10-29.json)) are archived. |
+| 7 | Qualify remaining upstream safety candidates | Short DTW (`d28102214`) passed CI **40903036393**, Lint **40903042314** and full inference **40903516297** ([receipt](docs/historical/whisper-dtw-short-2026-10-29.json)). VAD offset and vocab-bounds remain on validation branches pending rights-cleared model checks. |
+| Holds | #557, #558, #532, #483, #461, #456, MUSA | See the handoff for explicit approval, evidence, device and rights limits. Do not close #557 or publish private paths. |
+
+
+- OpenVoice stage diagnosis owner: current agent, starting from the accepted paired adapter `8a5bb390b`. The warm converter comparison shows a large CPU-flow versus CUDA-original gap but has no native phase breakdown. Prepare a hosted-only run on the same qualified inputs and application, retaining unchanged waveform gates and reporting stage timers without private audio or embeddings. Do not infer a cause or change neural math until measured.
+
+- Recent-model timing: [Nemotron T4 paired receipt](docs/historical/nemotron-original-t4-benchmark-2026-10-29.json) records one public clip, three measured calls per engine, GPU execution and zero WER. Native F16 and original F32 differ in precision; process medians include model load and do not establish a steady-state ranking. A separate native frame-count diagnostic is prepared. Granite's first paired run failed before inference on a truncated hash; the corrected run produced native warmup timings but failed before original inference because its snapshot omitted the chat template. The repaired third run completed with zero WER and GPU execution; see [the T4 receipt](docs/historical/granite5-original-t4-benchmark-2026-10-29.json) for precision and timing-boundary limits. The [CSM T4 receipt](docs/historical/csm-original-t4-benchmark-2026-10-29.json) records the private original-without-watermark comparison with different precision and load-inclusive timing. The [OpenVoice T4 receipt](docs/historical/openvoice-original-t4-benchmark-2026-10-29.json) records two accepted warm conversions: native CPU flows/CUDA vocoder are much slower than the original CUDA converter. Full original Melo synthesis and comparable step/fork measurements remain outstanding.
+
+- #560 full-recording LID owner: delegated implementation agent, starting source `4023a6080`. Missing behavior: standalone `--detect-language` and automatic CLI LID only inspect the first 15 seconds even when the recording is longer. Add an explicit opt-in that scores windows throughout the recording and reports one duration-aware result; preserve the existing 15-second default. Acceptance: model-free window/aggregation controls, actual CLI caller coverage, and hosted model execution when available. Use only light local tests; no local model build/inference, commit, push, or public issue response. Next: implement and hand off the uncommitted change for review.
+
+- Whisper timing diagnosis owner: root agent, starting source `4023a6080`. Missing evidence: paired process timing includes load and differs by build/CUDA libraries, so the stage responsible for the gap is unknown. Add opt-in stage instrumentation and hosted paired profiling with matched workload and explicit device/quality gates. Keep heavy builds and inference hosted; preserve current benchmark receipts.
+
+- Whisper T4 timing diagnostic COMPLETE: [receipt](docs/historical/whisper-timing-t4-diagnostic-2026-10-29.json). Same-output GPU controls passed; median single-token decode is 2.52 ms for source-built CrispASR versus 2.41 ms for the packaged fork, while model loading is 531 ms versus 293 ms. Builds differ; the cause and target performance remain unproven. A same-toolchain comparison including upstream is running on Kaggle.
+
+- Whisper safety repair owner: current agent, source `802cc6a04`. Port upstream MIT change `8631825d41a2712268813981a9550b04a3f225e5` for very short reflective padding; require before/after bounds control and unchanged normal-length reflection. Full build remains hosted.
+
+- Recent-model benchmark owner: current agent, source `c2bd6701a`. User priority is Granite Speech5 Q4_K, Nemotron F16, CSM and recently repaired Melo/OpenVoice, against their pinned original implementations and relevant ggml forks where available. Use matched inputs, model/quant and decode settings where possible, qualify outputs, measure individual stages/steps and warm steady-state separately from loading, and retain source/device/precision differences. All model builds/inference go to suitable hosted workers; check GPU slot availability before Kaggle submission. Preserve earlier accepted parity campaigns; benchmark measurements need new timed adapters rather than repeating parity jobs. The Whisper pilot was outside this requested model scope.
+
+- Whisper fork comparison COMPLETE, bounded process-level result: Kaggle `crispasr-whisper-fork-paired` version 2 passed all ten GPU-PID and JFK WER gates. Four alternating measured calls each: CrispASR v0.8.47 median 1.468 s, OpenWhispr fork v1.0.0 median 1.017 s. Both use identical pinned model/audio bytes; startup and GPU monitoring are included, builds and CUDA libraries differ. This is not per-step timing or broad model acceptance. Full terminal source/logs retained; [receipt](docs/historical/whisper-fork-t4-benchmark-2026-10-29.json). Version 1 failed before inference due to the wrong packaged executable name and is retained. Next: source-matched step timing and original-implementation comparisons need their own hosted adapters and quality controls.
+
+- Paired benchmark collector owner: current agent, source `df4786900`. Add hosted-only alternating process timing with resource checks, input hashing, warmups and retained failure logs; validate with mocked commands. Step-level adapters and real matched GPU/original comparisons remain separate.
+
+- Benchmark comparison owner: current agent, source `5bcb0bbb8`. Add a model-free comparison of retained paired timing records that rejects mismatched inputs, model identities and settings; report per-step timing only when counts exist. Actual GPU measurements remain hosted and require separately qualified workloads.
+
+- H model publication COMPLETE: the qualified converter, original MIT notice, model card and provenance were published at immutable revision `61741391da62c278148a2c75b6c0c5611d447149`. All four files pass anonymous full-byte SHA-256 readback; no validation audio, target embedding or reference capture was published. [Receipt](docs/historical/openvoice2-tcc-publication-2026-10-29.json).
+
+- I owner: current agent. Source/tag `cc114d2b4a5a9413738f390093e9131576743cb6` / v0.8.48 is on main and the remote tag; exact-target CI **40830218588** (13 jobs), Lint **40830221020** (10 jobs), Secret **40830201135**, Rust **40830201115** and Dart **40830201120** pass. Follow native Release **40833098926** and language wrappers **40833098923** without duplicate dispatches. After native completion, verify all 52 assets, run the native auditor, collect the automatic wheel publisher and Pages, then run the wheel auditor with the accepted native audit ID. Publication is not accepted yet. J waits until both audits and all producers pass.
+
+- #560 bounded routing error COMPLETE, owner current agent after Sol implementation/review. Full current CLI run **40807940665** accepts default/auto Whisper and dedicated Silero language detection without ASR model/HF resolution, multiple inputs, failure exits and ordinary automatic-language transcription. Three actual-caller/resolver controls pass after baseline failures; [accepted receipt](docs/historical/issue-560-lid-cli-accepted-2026-10-29.json). Code `bd1e299e1` has CI **40807943181** (all 13 jobs) and Lint **40807945520** accepted. The issue stays open for the separate full-recording feature after I/J; no public reply or closure.
+
+- H owner: current agent. Full declared F16 profile is accepted on CPU **40825101583** and real T4 CUDA kernel **version 5**. Both pass original inputs/activation/duration, 2 × 27 TCC stages, actual Session/C ABI and all six CLI automatic BERT load checks, repeats/rates and all four unchanged speech/speaker cases. Complete source/log/output/checkpoints are retained; both 120-file private envelopes and checkpoint hashes are verified. [CPU receipt](docs/historical/openvoice-full-f16-cpu-accepted-2026-10-29.json), [CUDA receipt](docs/historical/openvoice-full-f16-cuda-accepted-2026-10-29.json). Failed Q4 receipts stay failed.
+
+- H integration owner: current agent, starting source `2d388274b`. Managed Melo V2 now requests the qualified F16 BERT under the canonical discoverable filename, with both model URLs pinned to revision `35522347b1bed9a913d6894803c5cab929ae42a5`. The actual production resolver → CLI init fixture fails before this change and passes after; explicit codec selection is preserved. BERT Apache-2.0 attribution/full license is retained independently of Melo MIT. Melo V3 is outside this qualification. Candidate `500aaaf03` passes CI **40827487259** (13 jobs; 2,105 unit tests), Lint **40827489979** (10 jobs) and Secret scan **40827480637**. H is accepted. Task I has integrated main and published the immutable v0.8.48 tag at `cc114d2b4` after exact-source CI/Lint/secret and Rust/Dart tests passed. Native producer **40833098926** and wrapper producer **40833098923** are in flight; wheel production and both publication audits remain. Do not bump or tag v0.8.48 again. [Qualification receipt](docs/historical/release-v0848-qualification-2026-10-29.json).
+
+- Owner: current maintainer agent, starting source `42d787586`; collect A/B/D terminal receipts, repair actual failures, and preserve existing runs. Large work stays on suitable hosted workers; local load 0.26 and available memory about 4.4 GiB at resumption.
+- A complete: corrected auditor 40736324867 passed; all eight distributions and anonymous readbacks accepted. [Receipt](docs/historical/release-v0846-wheel-audit-2026-10-28.json).
+- B: native producer 40711745769 completed successfully (38/38 jobs including publish). Native audit 40751444564 PASSED with accepted full readbacks for all 52 assets. All 14 jobs in wheel producer 40751349609 passed, including PyPI and GPU-index publication. Pages 40776528499 deployed index commit `08ffbfaf1`; public HIP/Vulkan and ARM CUDA v0.8.47 links are verified. Final wheel audit **40789883589** is accepted: all 11 distributions and all anonymous readbacks pass ([receipt](docs/historical/release-v0847-wheel-audit-2026-10-29.json)). B is complete. Do not retag.
+- D: 40735433388 completed on EPYC 9V74 with all three actual CPU profiles. Repeated raw arrays independently confirm native/AVX512 Q4 drops `A`, AVX2 Q4 retains it, and every F16 control matches the unchanged original reference. Added a one-word Q4 allowance with mandatory zero-WER F16 transcript and unchanged stage gates in both drivers. Targeted production run 40750908085 at `2c733b9c3` PASSED on EPYC 9V74: Q4 WER 1/23, F16 WER zero, CTC-logit cosine 0.999138. [Accepted receipt](docs/historical/data2vec-production-regression-2026-10-28.json). Do not duplicate. No further capability probes.
+- Additional error repaired: normal nightly now fails missing explicitly required stages, matching Kaggle; negative caller controls cover partial/absent captures.
+- Resources: light local inspection only; large builds/readbacks/inference on suitable Actions workers.
+- Same-family repair owner: current agent; Java/Ruby integer speaker setters also swallow native out-of-range `-2`. Shared native range/public-method fixtures failed before the strict zero-success fixes and pass after: Java 95/9 current/older assertions, Ruby 343 assertions. No model changes.
+- Error repair owner: current agent, source `140c02f53`; C# `SetPuncModel`, `SetVoice` and `SetSpeakerId` swallow native `-2` failures. Repaired with public-method negative controls: failed before, 101/35 assertions pass after, using a single compiler process with available memory about 4.9 GiB and load 2.54. Strict zero-success for these explicit operations preserves optional tuning-knob compatibility.
+- OpenVoice numerical repair owner: current agent. The three original-recipe fixes pass **27/27 on CPU and T4 CUDA** on identical frozen model/reference bytes; raw waveform cosine 0.99999973, norm ratio 1.000042. The full three-case conditioning/shared-noise/cache and ASR/speaker gates also pass in version 4: [accepted receipt](docs/historical/openvoice-conditioning-accepted-2026-10-28.json). The Session composition also passes (G below). Next qualify a full rebuilt-current library, actual CLI and authorized model publication. No default promotion.
+- Current-runtime validation owner: current agent, starting source `24178da9d`. Separate frozen replay is accepted against the v0.8.47 SDK and matching `e2ae679a` ggml headers: resolved dependencies, four overlay symbol owners, 27/27 CPU and 27/27 T4 CUDA stages, raw waveform norm ratio 1.000042. [Receipt](docs/historical/openvoice-current-runtime-replay-2026-10-28.json). Full conditioning version 3 passed native checks but hit a PyAV decoder error; repaired version 4 passes quality. No local model inference or SDK rebuild. Both Kaggle jobs are terminal; no replacement is required.
+- C: user requests keeping #557 open and preparing a reply for review; do not post or close. E remains hardware-dependent.
+- OpenVoice Session integration COMPLETE: kernel version 2 passes architecture detection on a renamed model, codec/voice setters, native output rates, raw/marked synthesis, exact reseeded repeats, actual CUDA and unchanged content/speaker gates. Preset identity remains unknown; raw validation audio stays private. [Accepted receipt](docs/historical/openvoice-session-accepted-2026-10-28.json). This is the shipped-SDK/model-overlay composition; actual CLI and full rebuilt-current-library qualification remain separate.
+- Newly opened #558: reproduced and repaired standalone-marker grouping, with model-free regression controls. Reporter audio/NeMo/CUDA acceptance remains pending; see [repair scope](docs/historical/parakeet-word-boundary-558-2026-10-28.md).
+
+- v0.8.46 is **published**. Native and wheel audits pass (task A complete).
+- v0.8.47 (#557 Linux GPU wheels) has an **audited public release**, tagged at `5f87a5626`. Release run
+  40711745769 completed successfully with exactly 52 public asset names. Native byte audit 40751444564 is accepted; Python wheel producer 40751349609 passed all 14 jobs. Pages 40776528499 and live index links pass; final wheel audit 40789883589 is accepted (task B complete).
+- [Publication receipt](docs/historical/release-publication-2026-10-28.md).
+
+## Completed baseline
+
+- v0.8.45 and v0.8.46 are published. v0.8.46 carries the qualified Nemotron F16
+  default; its tag/assets and v0.8.45's must not be rewritten.
+- #557 code is merged: Linux x86_64 `+vulkan`/`+hip` and aarch64 SBSA `+cuda`
+  wheels and producers, and a `whl/hip` index.
+- Earlier completed work is unchanged: Qwen3-TTS #555 voice packs, Granite5
+  Q4_K, CSM RoPE, OmniVoice processing, the MMQ archive and the binding fixes.
+  See [HISTORY.md](HISTORY.md).
+
+## Open tasks — in order
+
+| # | Task | Depends on | Done when |
+|---|---|---|---|
+| A | COMPLETE: v0.8.46 wheel auditor 40736324867 passed. | — | Accepted receipt committed; do not repeat. |
+| B | COMPLETE: v0.8.47 publication verified: release jobs, 52 native assets, three new GPU wheel legs, `whl/hip` + aarch64 `whl/cuda` index entries, native and wheel audits. | v0.8.47 release run finished | Both verifier runs pass; IDs recorded. For transient failures rerun failed jobs in the original producer. Whole redispatch risks different CPU bytes colliding with immutable PyPI; see handoff. Never re-tag. |
+| C | COMPLETE: [final #557 reply prepared for review](docs/historical/issue-557-reply-review-2026-10-29.md); keep the issue open. | B | Both audits support the draft claims; reviewed wording is ready. No posting or closure authorized. |
+| D | COMPLETE: data2vec-base Q4_K nightly diagnosis and paired Q4/F16 production gate. | — | Cause retained in same-host arrays; model-free guards and actual production regression 40750908085 pass. |
+| F | COMPLETE: bounded OpenVoice2 conditioned-cloning CUDA proof; separate current-runtime structural replay accepted. | — | All three 27/28-stage cases, waveform/cache/clip-mean, WER <=0.2 and speaker improvement >0.01 pass. Publication and high-level integration remain separate. See handoff follow-up scope. |
+| G | COMPLETE: real OpenVoice Python Session/C ABI validation over the qualified SDK/model-overlay composition; kernel version 2 accepted. | F | Architecture detection, voice/codec/rates/repeatability, raw and marked synthesis, actual CUDA and unchanged ASR/speaker gates pass. Preset identity stays unknown; full rebuilt-current library and actual CLI remain separate. |
+| H | COMPLETE: full current library/CLI, original BERT conditioning repair and managed V2 default qualified. | F/G and hosted current candidate | Original input boundaries, TCC stages, Session/CLI, unchanged speech quality, CPU and CI/Lint gates all accepted on the final source. |
+| K | COMPLETE: #560 documented detect-and-exit CLI routing. Full-recording aggregation stays a later feature. | Before I | Three caller/resolver controls and actual hosted CLI 40807940665 accept bypass, providers, failures and ordinary transcription. CI/Lint pass at `bd1e299e1`. |
+| I | COMPLETE: v0.8.48 published and verified (native audit **40856997446**, wheel audit **40895402248**). | B, H and K | Accepted receipts committed ([qualification](docs/historical/release-v0848-qualification-2026-10-29.json), [wheel audit](docs/historical/release-v0848-wheel-audit-2026-10-29.json)). Never rewrite v0.8.47 or v0.8.48. |
+| J | COMPLETE: PR #559 and full-recording #560 validated and merged to `main` (`777e8ff23`, `641e9bfab`). | I; errors before features | Exact-tree CI/Lint/secret and hosted model checks accepted ([receipt](docs/historical/issue-560-exact-tree-integration-2026-10-29.json)). |
+| E | Real-hardware qualification of `+vulkan` (AMD/Intel), `+hip` (ROCm) and aarch64 `+cuda`. | Hardware access | Clean-venv install, Session JFK transcript matches, GPU backend selected and used, CPU/GPU compared. Recorded per class. |
+
+## External holds — do not schedule speculative repairs
+
+| Front | Missing input / condition | Resume only with |
+|---|---|---|
+| #532 Canary | Failing German recording, preceding assertion, startup device/build and selected model filenames. | An exact reproducible case; existing CPU/T4 probes did not reproduce it. |
+| #483 MMQ | GTX1660/MX150 device access. | Matched OFF/ON correctness and cold-PTX versus warm timing on each real target. Preserve the verified archive/draft. |
+| #461 B390 | Intel Arc B390 access. | Current ten-step timing, complete logs/WAVs and listening/original-reference acceptance. Eight-step quality is poorer; retain ten. |
+| MUSA | Authorized S5000 host and applicable terms/permissions. | Actual runtime packaging/dependency and speech checks; full redistribution review before image publication, and permission for benchmark disclosure where required. No ordinary hosted SDK execution absent an applicable exception. |
+| #456 Nyra | Appropriate model/output rights and distribution review. | Resolved production/hosted, derivative/recipient, output/training, WavLM-provenance and dependency obligations. No port/conversion behind a plain NC switch. |
+
+The user explicitly confirmed these inputs/devices/new permissions are unavailable.
+Refresh complete issue threads before resuming if new evidence arrives. Seven
+issues are open at the 2026-10-29 check: #456, #461, #483, #532, #557
+(implemented and publication accepted; reply held for review) and #558/#560. New PR #559 is reviewed
+in [a scoped checkpoint](docs/historical/qwen3-context-pr559-review-2026-10-28.md); CI and
+independent caller/runtime checks remain. Keep this feature after active error
+repairs. None was closed merely to finish this batch.
+
+## Parked work and historical detail
+
+The handoff contains a bounded research/API inventory. It is not an active
+assignment or a release blocker. Audit code and current evidence before
+activating anything from [PLAN-ARCHIVE.md](PLAN-ARCHIVE.md); its old NOW/OPEN and
+queued labels are historical. `HISTORY.md` records completed work, not a new queue.
+All actual machine paths, credentials/account details, storage and job recovery
+instructions remain in gitignored local Markdown.

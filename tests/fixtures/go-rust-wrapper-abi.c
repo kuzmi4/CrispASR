@@ -577,6 +577,10 @@ float* crispasr_session_synthesize(crispasr_session* s, const char* text, int* n
     return crispasr_session_get_disclaimer_pcm(s, n);
 }
 float* crispasr_session_synthesize_raw(crispasr_session* s, const char* text, int* n) {
+    if (probe_mode == 35 || probe_mode == 36) {
+        *n = 0;
+        return NULL;
+    }
     return crispasr_session_get_disclaimer_pcm(s, n);
 }
 int crispasr_session_synthesize_streaming(crispasr_session* s, const char* text, crispasr_pcm_stream_cb cb, void* ud) {
@@ -597,6 +601,8 @@ int crispasr_session_accept_marking_responsibility(crispasr_session* s, const ch
     return probe_mode == 2 ? -1 : 0;
 }
 const char* crispasr_session_last_synth_error(crispasr_session* s) {
+    if (probe_mode == 36)
+        return NULL;
     return "probe synthesis failure";
 }
 int crispasr_session_set_source_language(crispasr_session* s, const char* lang) {
@@ -606,6 +612,12 @@ int crispasr_session_set_pcm_sample_rate(crispasr_session* s, int rate) {
     return 0;
 }
 int crispasr_session_set_parakeet_att_context(crispasr_session* s, int l, int r) {
+    return 0;
+}
+int crispasr_session_set_audio_ctx(crispasr_session* s, int audio_ctx) {
+    return 0;
+}
+int crispasr_session_set_hikari_refresh_stride(crispasr_session* s, int stride) {
     return 0;
 }
 int crispasr_session_set_grammar_strict(crispasr_session* s, int v) {

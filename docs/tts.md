@@ -50,11 +50,12 @@ can reduce speech quality.
 
 | Backend | Why pick it | Voice cloning | First-run download |
 |---|---|---|---|
-| **`melotts`** | Multilingual VITS2 (MeloTTS). 4 English speakers (US/BR/India/AU). 44.1 kHz output, ~102 MB GGUF. Neural G2P + CMU dict. BERT companion (Q4_K 52 MB) auto-downloads with `-m auto`; also via `--codec-model` or `CRISPASR_MELOTTS_BERT` env. | No (per-speaker ID) | ~154 MB via `-m auto` |
+| **`melotts`** | Multilingual VITS2 (MeloTTS). 4 English speakers (US/BR/India/AU). 44.1 kHz output, ~102 MB GGUF. Neural G2P + CMU dict. Qualified F16 BERT companion (238 MB, Apache-2.0) auto-downloads with `-m auto`; explicit companions via `--codec-model` or `CRISPASR_MELOTTS_BERT` env. | With an OpenVoice2 TCC companion and an authorized reference WAV | ~340 MB via `-m auto` (Melo + BERT; converter separate) |
 | [`piper`](#piper--community-voices) | Tiniest footprint (30 MB). rhasspy/piper VITS; 250+ community voices across 30+ languages. Built-in G2P (CMUdict + LTS rules) for English — no espeak-ng needed. Optional espeak-ng for other langs (loaded via dlopen). 22 kHz output. Use `--g2p-dict` to select dictionary source. | No (per-voice GGUF) | ~30 MB default via `-m auto`; other voices are manual downloads |
 | [`kokoro`](#kokoro--multilingual-smallest) | Smallest + fastest. 82 M-param StyleTTS2-derived model. Multilingual via built-in G2P or espeak-ng (dlopen/popen fallback). | No (preset voice packs) | Manual `wget` (no `-m auto`) |
 | [`qwen3-tts`](#qwen3-tts--voice-cloning-highest-fidelity) | Highest fidelity / strongest cloning. Speech-LLM (talker + code predictor + 12 Hz codec). Default voice auto-downloaded with `-m auto`; or supply your own WAV + ref-text. | Optional (auto default voice; or WAV + ref-text or baked voice GGUF) | ~1.3 GB via `-m auto` |
 | **`miotts`** | MioTTS-0.6B (Qwen3 LLM + MioCodec-v2). EN/JA. Single GGUF, model-derived output rate (44.1 kHz for MioCodec-v2; 24 kHz for legacy codecs). Codec-aware mixed quantization (LLM Q4_K + codec F16). | Preset embeddings via `--voice preset.emb.gguf` (required for intelligible speech) | ~793 MB Q8_0 + tokenizer via `-m auto`; 502 MB Q4_K also available |
+| **`arktts`** | Audio8-TTS-Realistic-0.6b (Edge0/Audio8-TTS). 28-layer Dual-AR backbone + 8-layer fast subnetwork predicting 10 acoustic codebooks, causal Snake + ConvNeXt vocoder producing 44.1 kHz audio. Chunked causal decoding bounds memory (<2.5 GB) for arbitrary durations. | Reference audio WAV (`--prompt ref.wav --context "ref text"`) | ~1.28 GB Q4_K / ~1.49 GB Q8_0 / ~1.88 GB F16 via `-m auto` |
 | **`moss-tts`** | MOSS-TTS-v1.5 (MossTTSDelay): Qwen3-8B backbone emitting 32 RVQ audio codebooks under a delay pattern, decoded by a 1.6B transformer codec. Needs the codec companion (`--codec-model`, or auto-downloaded/sibling). | Yes — `--voice ref.wav` (the codec encoder clones the reference speaker) | ~5 GB Q4_K backbone + ~3.5 GB F16 codec via `-m auto` |
 | **`moss-tts-local`** | MOSS-TTS-Local-Transformer-v1.5 (MossTTSLocal, 4B): Qwen3-4B backbone + a 1-layer local/depth transformer that autoregressively emits 12 RVQ codebooks per frame (RQ-Transformer; no delay pattern), decoded to 48 kHz stereo by MOSS-Audio-Tokenizer-v2 (downmixed to mono). Needs the codec companion (`--codec-model`, or auto-downloaded/sibling). | `--voice ref.wav --i-have-rights` (needs the encoder-carrying codec, `--codec-model moss-tts-local-v1.5-codec-enc.gguf`; the plain `-codec.gguf` is decode-only and falls back to the default voice) | ~9.1 GB F16 backbone + ~2.1 GB codec via `-m auto` (F16 is the reliable target; Q4_K long-form runs away) |
 | **`omnivoice`** | 600+ languages, selected with `-l` / `-tl` (or `"language"` on `/v1/audio/speech`) — see the language note below. Qwen3-0.6B backbone with masked iterative 8-codebook TTS (SoundStorm-style). Zero-shot voice cloning from reference audio. Supports finetunes (omnivoice-singing). | Yes (`--voice <wav> --ref-text "..."`) | ~1.2 GB F16 + ~400 MB tokenizer |
@@ -167,9 +168,9 @@ input rows/1210 code frames and WER0 through native DAC, original DAC and CLI.
 The other cache/sampler combinations fail this same control. These controls
 are not an accepted general recipe for the published model or `-m auto`.
 Additional texts/seeds are in validation; GPU/Q4 and performance are separate.
-[Results, complete public proofs and first-fork diagnosis](dia-cache-sampler-results-2026-10-16.md).
+[Results, complete public proofs and first-fork diagnosis](historical/dia-cache-sampler-results-2026-10-16.md).
 The public original dumper and text-only `crispasr-diff` route now cover the
-complete neural/codec stage map; [wiring proof](dia-reference-wire-composed-2026-10-16.json).
+complete neural/codec stage map; [wiring proof](historical/dia-reference-wire-composed-2026-10-16.json).
 
 ## dots.tts — voice cloning and performance
 
@@ -633,6 +634,102 @@ Passing `-sl` resolves it. Before #329, detection covered only Hangul / Kana /
 Han / Cyrillic, so **every Latin-script pair** — en↔de, en↔fr, es↔it, the ones a
 subtitle-dubbing workflow actually asks for — landed in that unknown case, with
 no message and no way to override it.
+
+### OmniVoice: reproducible parameters and M1 performance switches
+
+For repeatable comparisons, pass the model and tokenizer paths explicitly and
+set language, seed, steps and duration. The tested recipe is Q8_0 main + F16
+Higgs tokenizer, English, seed **42**, **32** MaskGIT steps, guidance **2.0**,
+class temperature **0**, position temperature **5.0**, layer penalty **5.0**,
+time shift **0.1**, eight codebooks and four CPU threads. Cleanup stays enabled,
+with 0.1-second pad/fade defaults. Six seconds requests 150 codec frames at
+25 Hz; eighteen requests 450. Silence cleanup means emitted audio can be shorter.
+Duration is an allocation/length target, not a quality or runtime guarantee.
+
+The OmniVoice backend defaults to 32 steps when no override is supplied; the
+CLI's generic `--tts-steps` help line is shared with other engines. Explicit
+`--tts-steps 32` removes that ambiguity. Lowering steps changes refinement and
+needs its own quality test. `--tts-speed` affects estimated lengths when no
+explicit duration is set. `--tts-duration 0` restores the environment's
+`CRISPASR_OMNIVOICE_TARGET_DURATION`, or estimation if that variable is unset.
+Positive duration is capped at 600 seconds; this is not an M1 capacity claim.
+
+Use portable aliases for local files, with the normal license/marking policy:
+
+```sh
+# Set OV_MAIN, OV_CODEC, BUILD and TEXT to your local model files/build/text.
+CRISPASR_OMNIVOICE_CODEC_GPU=0 \
+CRISPASR_OMNIVOICE_CODEC_SPLIT=1 \
+CRISPASR_OMNIVOICE_CODEC_RESIDENT=1 \
+CRISPASR_OMNIVOICE_CODEC_DECOMP=1 \
+CRISPASR_OMNIVOICE_ATTN_VIEWS=1 \
+CRISPASR_OMNIVOICE_PACKED_PROJ=0 \
+CRISPASR_OMNIVOICE_UNIFIED_CFG=0 \
+CRISPASR_OMNIVOICE_CFG_INTERVAL=1 \
+CRISPASR_OMNIVOICE_GUIDANCE=2 \
+CRISPASR_OMNIVOICE_CLASS_TEMP=0 \
+CRISPASR_OMNIVOICE_POS_TEMP=5 \
+CRISPASR_OMNIVOICE_PERSISTENT_GRAPH=1 \
+CRISPASR_OMNIVOICE_FUSED_STEP=1 \
+CRISPASR_OMNIVOICE_CODEC_FASTCONV=1 \
+"$BUILD/bin/crispasr" -m "$OV_MAIN" --codec-model "$OV_CODEC" \
+  --gpu-backend metal -fa -t 4 -l en --seed 42 --tts-steps 32 \
+  --tts-duration 6 --tts "$TEXT" --tts-output output.wav \
+  --accept-license omnivoice-terms
+```
+
+`omnivoice-terms` affirms eligibility/compliance with the main weights' NC terms
+and the companion's custom terms; it grants no additional rights. Voice cloning
+also requires a permitted reference and, on the CLI, `--i-have-rights`. Normal
+watermark/C2PA marking remains enabled in this example. The weights are not
+permissively licensed merely because the runtime code is.
+
+| Environment variable | Unset behavior | Effect / interaction |
+|---|---|---|
+| `CRISPASR_OMNIVOICE_CODEC_GPU` | CUDA GPU codec; CPU on Metal/CPU | With split off, `1` requests the full GPU codec; Metal encoder parity remains unresolved. Split mode retains CPU encoding even if this is `1`. |
+| `CRISPASR_OMNIVOICE_CODEC_SPLIT` | Off | CPU encode / GPU decode when GPU use is enabled. Without resident mode, placement changes reload the complete tokenizer. |
+| `CRISPASR_OMNIVOICE_CODEC_RESIDENT` | Off | With split mode, retain a decoder-only GPU copy alongside the CPU tokenizer. About **124 MB** extra weight/cache buffers on the tested F16 codec; graph scratch is additional. |
+| `CRISPASR_OMNIVOICE_CODEC_DECOMP` | Off | Decomposed transposed-convolution decoder; enable explicitly for the measured fast Metal path. Split/resident do not enable it implicitly. |
+| `CRISPASR_OMNIVOICE_CODEC_FASTCONV` | On | Existing baked F32 convolution/k=1 matmul path. `0` restores the legacy path for bisection. |
+| `CRISPASR_OMNIVOICE_ATTN_VIEWS` | Off | Pass strided Q/K/V views to attention, removing 84 copies per forward. No extra model-weight allocation. |
+| `CRISPASR_OMNIVOICE_PACKED_PROJ` | Off | Cache concatenated Q/K/V and gate/up matrices, preserving quantized bytes. About **312 MB** extra Q8 weights, lazy first-request cost; incompatible pairs retain separate projections. Short-case gain was inconclusive. |
+| `CRISPASR_OMNIVOICE_UNIFIED_CFG` | On for CUDA; off for Metal/CPU | Combine conditional/unconditional forwards with independent attention blocks. Slower on the tested M1 short request. |
+| `CRISPASR_OMNIVOICE_CFG_INTERVAL` | `1` | `K>1` reuses stale unconditional logits and forces separate forwards. Approximate: changes output, even with the same seed. |
+| `CRISPASR_OMNIVOICE_PERSISTENT_GRAPH` | On | Reuse step graphs rather than rebuilding every iteration. |
+| `CRISPASR_OMNIVOICE_FUSED_STEP` | On with persistent graphs | In-graph embedding lookup/sum and target-logit readback. `0` restores the older host path. |
+| `CRISPASR_OMNIVOICE_ENCODER_CACHE` | On | Exact cached encoder F32 arrays, norms and folded positional weights; about29.4 MB on the tested tokenizer. `0` restores rereading/recomputation. |
+| `CRISPASR_OMNIVOICE_ENCODER_FASTCONV` | `1` on Apple ARM CPU and eligible macOS Metal encoding; off elsewhere | `1`: pointwise-only F32 cache/matrix formulation, about26.2 MB; `2`: all encoder convolution weights, about280.9 MB. Independent of decoder FASTCONV. |
+| `CRISPASR_OMNIVOICE_ENCODER_SEMANTIC_F32` | On for eligible Metal semantic encoding; off elsewhere | Request precise F32 matrix multiplication in semantic encoder graphs. With HYBRID=1, removes station code drift on the tested M1; all seven tested references preserve CPU codes/audio. Independent of GRAPH/FUSED and cache identity. See the precision report. |
+| `CRISPASR_OMNIVOICE_ENCODER_GRAPH` | On with eligible default hybrid encoding; off elsewhere | Graph FC and residual quantizers with first-index ties. Extra cached projection weights; Use semantic F32 precision for measured complete-encoder parity; coverage is scoped to the tested profile. |
+| `CRISPASR_OMNIVOICE_ENCODER_FUSED` | On with eligible default hybrid encoding; off elsewhere | Combine HuBERT frontend/transformer without feature readback. No convincing standalone CPU win. |
+| `CRISPASR_OMNIVOICE_ENCODER_HYBRID` | On for the eligible F16/F32 Higgs profile on Apple Silicon macOS/Metal; off elsewhere | CPU acoustic encoder plus filtered GPU semantics; adds223.8 MB weights before scratch/caches. Use precise semantic encoding for tested code parity; reduced-precision control remains available. |
+| `CRISPASR_TTS_REF_CACHE` | On | Shared content-addressed reference-code cache. Use `0` to prove fresh encoding; legacy `CRISPASR_OMNIVOICE_VOICE_CACHE=0` also disables it. |
+| `CRISPASR_OMNIVOICE_TARGET_DURATION` | Estimate | Default duration in seconds; positive explicit setter/CLI duration wins. |
+| `CRISPASR_OMNIVOICE_NUM_STEPS` | Backend/parameter default | Initialization override; later CLI/Session setters can replace it. Explicitly set steps for a benchmark. |
+| `CRISPASR_OMNIVOICE_GUIDANCE`, `CRISPASR_OMNIVOICE_CLASS_TEMP`, `CRISPASR_OMNIVOICE_POS_TEMP` | `2`, `0`, `5` | Diagnostic sampling overrides at initialization, including exact zero. Changing them changes the recipe. |
+| `CRISPASR_OMNIVOICE_AUDIO_LEGACY` | Off | Restore the older raw audio utility path for bisection; changes waveform processing. |
+| `CRISPASR_OMNIVOICE_PREPROCESS_PROMPT`, `CRISPASR_OMNIVOICE_POSTPROCESS_OUTPUT` | On unless legacy mode | Independently override reference preprocessing / output cleanup. Keep identical for a codec A/B. |
+| `CRISPASR_OMNIVOICE_PAD_DURATION`, `CRISPASR_OMNIVOICE_FADE_DURATION` | `0.1` seconds; `0` in legacy mode | Accepted range `0..10` seconds. These affect PCM and emitted duration, not the codebook count. |
+| `CRISPASR_OMNIVOICE_BENCH` | Off | Per-stage diagnostics. Keep profiler overhead separate from request timings. |
+| `CRISPASR_OMNIVOICE_DUMP_CODES` | Unset | Diagnostic output file for raw codebook-major int32 codes; compare these before blaming codec placement. |
+
+Use literal `0` and `1` for boolean switches; a nonempty string such as `false`
+is not a reliable way to disable them. These are independent experiments. The M1 recipe above enables split, resident,
+decomposition and views, while leaving packing/unified CFG off and CFG exact.
+`--no-gpu` prevents GPU execution regardless of these placement switches. Raw
+native callers must explicitly set `use_gpu`; zero-initialized native parameters
+select CPU. The transformer currently builds flash-attention nodes directly;
+the generic flash flag is not a validated alternate-kernel benchmark control.
+
+The controlled model pins, complete build flags, per-run times and ASR receipts
+are in [the engine comparison](historical/omnivoice-m1-comparison-2026-10-23.md) and
+[the generation/startup report](historical/omnivoice-m1-startup-generation-2026-10-23.md).
+Warm model loads on the internal SSD settle near 0.5 seconds. Retain a Session
+for repeated calls. Precompiled Metal libraries use
+`-DGGML_METAL_EMBED_LIBRARY=OFF` with `ggml-metal-lib` built and the metallib
+resources beside the CLI; this does not establish SDK resource discovery or a
+large warm-start win. Full-model F16/Q4 and CUDA acceptance remain separate from
+the M1 Q8 measurements; the new performance switches remain off by default.
 
 ### OmniVoice: ISO 639-3 ids, and what the tag can and cannot do
 
@@ -1151,10 +1248,20 @@ codec by default).
 ```
 
 Notes:
-- **No `--voice` needed**: `-m auto` downloads a baked default voice pack
-  (`qwen3-tts-voice-default.gguf`) alongside the talker and codec so the
-  Base model works out of the box. The default voice is auto-selected when
-  no `--voice` flag is given and the GGUF sits next to the talker.
+- **Both Base sizes have model-matched defaults**: `-m auto` downloads
+  `qwen3-tts-voice-0.6b-designed.gguf` for `--backend qwen3-tts`, or
+  `qwen3-tts-voice-1.7b-designed.gguf` for `--backend qwen3-tts-1.7b-base`,
+  alongside the talker, codec, readable Apache/MIT notices and provenance ZIP.
+  With no `--voice`, the CLI reads the model metadata and chooses the matching
+  sibling pack, including for renamed models. The 1.7B embedding has 2,048
+  values; the 0.6B embedding has 1,024 and cannot be reused or padded.
+  Incompatible packs are rejected at load time. Explicit compatible packs
+  and reference WAVs remain supported.
+  The default uses a freshly AI-generated VoiceDesign reference and separately
+  extracted original Base encoder arrays. [Provenance, license scope and
+  CPU/CUDA acceptance](qwen3-designed-voices.md). Voice assets are Apache-2.0
+  to the extent licensable rights are held; reproduction code is MIT. Identity
+  and upstream training rights are not independently verified.
 - When `--voice` points to a `.wav`, `--ref-text` is required. When it
   points to a `.gguf`, it is treated as a baked voice pack and
   `--ref-text` is ignored.
@@ -1233,6 +1340,37 @@ embedding publisher's license and personality-rights terms.
 | `CRISPASR_POCKET_MANUAL_MIMI` | unset | Force the CPU Mimi decoder path (bypass the ggml/GPU decode). |
 | `CRISPASR_POCKET_MANUAL_BACKBONE` | unset | Force the CPU FlowLM backbone path. |
 | `CRISPASR_POCKET_VULKAN_MIMI_MAX_FRAMES` | `120` | Vulkan-only guard (issue #256): fall back to the CPU Mimi decoder when a generation exceeds this many frames, avoiding the `maxComputeWorkGroupCount` abort on constrained iGPUs (e.g. AMD 780M / gfx1103). Set `<=0` to disable the guard and always attempt the GPU decode. No effect on non-Vulkan backends. |
+
+## Audio8-TTS (ArkTTS) — Dual-AR Multilingual TTS
+
+`arktts` ports the 600M parameter **Audio8-TTS-Realistic-0.6b** model (`Edge0/Audio8-TTS-Realistic-0.6b`).
+It pairs a 28-layer slow semantic transformer with an 8-layer fast acoustic subnetwork generating 10 codebooks per frame at 44.1 kHz, decoded through a causal neural vocoder (Snake activations + ConvNeXt blocks).
+
+```bash
+# Auto-downloads arktts-q4_k.gguf from registry:
+crispasr --backend arktts -m auto --tts "The quick brown fox jumps over the lazy dog." --tts-output speech.wav
+
+# Optional zero-shot voice cloning with prompt audio:
+crispasr --backend arktts -m auto --prompt reference.wav --context "transcript of reference" \
+  --tts "Synthesize speech in the cloned voice." --tts-output cloned.wav
+```
+
+### Quantization & Precision Details
+
+To avoid high-frequency acoustic noise and degradation:
+- Linear attention and FFN projection matrices are quantized to `Q4_K` or `Q8_0`.
+- 1D causal convolution kernels ($K \le 16$) and discrete acoustic centroids ($k=1024$) are preserved at `FP16`.
+- Verified at 1.000000 cosine parity on `crispasr-diff` across all 7 stages against PyTorch.
+
+### Long Audio & Memory Bounding
+
+Audio8-TTS outputs audio at 21.5 frames per second ($2048\times$ hop factor at 44.1 kHz).
+Monolithic vocoder evaluation expands activations by $2048\times$, requiring $>160$ GB for 3 minutes of audio.
+CrispASR implements **chunked causal vocoder decoding** with 4 frames of causal receptive field warm-up:
+- Decodes 8-frame blocks and overlaps 4 frames to preserve causal convolution context.
+- Peak RAM usage is strictly bounded under **2.5 GB** regardless of whether synthesizing 5 seconds or 2 hours.
+- Combined with the **FASTCONV $K=1$ bypass**, end-to-end CPU synthesis runs at ~190–215 ms per acoustic frame (~2× faster than PyTorch).
+
 
 ## VibeVoice — realtime streaming TTS
 
@@ -2324,7 +2462,7 @@ crispasr --backend supertonic -m auto --tts "Guten Tag, wie geht es dir?" \
 Dia cache precision checkpoint (2026-10-13): full F32 weights and F32 cross
 caches still reject the unchanged short seed-42 control through CLI and C ABI
 (empty transcript/WER 1), despite 40/40 canonical stage passes. No default or
-model pin was promoted; see [the complete OFF/ON/OFF receipt](dia-cross-cache-hosted-2026-10-13.json).
+model pin was promoted; see [the complete OFF/ON/OFF receipt](historical/dia-cross-cache-hosted-2026-10-13.json).
 
 
 Actual T4 CUDA cache controls (2026-10-13) are complete: all 120 canonical
@@ -2333,7 +2471,7 @@ replay stages pass with real scheduler splits and sampled process GPU memory
 transcripts/WER 1. F16 cache shares 353 original input steps; F32 shares 979
 and reaches the same step-978/head-2 divergence as CPU. OFF/repeat full arrays
 match exactly. These are correctness diagnostics, not accepted native speech
-or performance measurements. [Complete physical CUDA proof](dia-cuda-cache-physical-2026-10-13.json).
+or performance measurements. [Complete physical CUDA proof](historical/dia-cuda-cache-physical-2026-10-13.json).
 
 
 Actual T4 original-timescale OFF/ON/OFF control (2026-10-13) is complete
@@ -2347,7 +2485,7 @@ matches the CPU auxiliary model; complete physical audits and downloaded source
 files match their immutable controls. Nine TTS executions show actual CUDA
 splits and sampled allocation 8,528–8,734 MiB. This rejects the numerical
 candidate; it establishes no native speech, Q4 or speed acceptance.
-[Complete physical rotary proof](dia-original-rope-cuda-physical-2026-10-13.json).
+[Complete physical rotary proof](historical/dia-original-rope-cuda-physical-2026-10-13.json).
 
 
 The exact-shape output-head probe reproduces every retained native step-978
@@ -2357,7 +2495,7 @@ original-filter controls choose token 877 with original hidden states and 904
 with native hidden states. The cause at this boundary precedes the output
 head. This is isolated numerical evidence, not accepted speech or speed; the
 local original projection is not byte-identical to the hosted original one.
-[Projection audit](dia-head-projection-isolation-2026-10-13.json).
+[Projection audit](historical/dia-head-projection-isolation-2026-10-13.json).
 
 
 The learned final norm is byte-identical on retained original/native layer-17
@@ -2366,8 +2504,26 @@ captures also match exactly at four checkpoints, including step 978. Repeats
 and changed-feedback/scaled-output negatives pass. The remaining hidden
 variation is inside the decoder blocks or their attention inputs; these
 isolated controls do not accept native speech, Q4 or speed.
-[Norm/input audit](dia-norm-embedding-isolation-2026-10-13.json).
+[Norm/input audit](historical/dia-norm-embedding-isolation-2026-10-13.json).
 
 OpenVoice2 cloning reference/quality scope and reproducible per-stage validation
 are documented in [OpenVoice2 baking](openvoice2-baking.md). Native conversion
 uses a raw reference clip; automatic upstream VAD/clip averaging is not implied.
+
+Fresh-reference encoder measurements, all five A/B modes, raw timings, memory
+costs and exact default code/PCM evidence are in the
+[encoder report](historical/omnivoice-encoder-2026-10-23.md). On the measured M1, the
+low-memory CPU default cuts uncached encoding5–8%; cached reference requests
+already skip this stage. Explicitly set all five `ENCODER_*` switches to `0`
+for the pre-experiment encoder path. Full baking uses literal `2`; the remaining
+switches use literal `0`/`1`. License acceptance and marking remain required.
+
+For explicit reproducible selection of the corrected GPU encoder, set both
+`CRISPASR_OMNIVOICE_ENCODER_HYBRID=1` and
+`CRISPASR_OMNIVOICE_ENCODER_SEMANTIC_F32=1`. The
+[semantic precision audit](historical/omnivoice-semantic-precision-2026-10-23.md) records
+boundary isolation, seven reference clips, exact-code/PCM checks and
+paired timings. Following listening approval, the eligible macOS Metal profile now selects
+this path by default; explicit precision `0` retains the original numerical
+A/B control. See the [default promotion](historical/omnivoice-metal-defaults-2026-10-23.md)
+for eligibility, rollback, startup/memory measurements and CPU recovery.

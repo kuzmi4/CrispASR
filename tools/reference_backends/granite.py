@@ -1,4 +1,4 @@
-"""Granite Speech 4.0-1B reference dump backend.
+"""Granite Speech reference dump backend.
 
 Port of `models/granite-speech-kaggle-groundtruth.py` into the modular
 tools/dump_reference.py interface. That legacy script was a one-off
@@ -45,6 +45,9 @@ DEFAULT_STAGES = [
     "enc_after_layer_last",
     "encoder_out",
     "projector_out",
+    "prompt_ids",
+    "llm_inputs_embeds",
+    "llm_prefill_logits",
     "llm_argmax",
     "generated_text",
 ]
@@ -52,7 +55,7 @@ DEFAULT_STAGES = [
 
 def dump(*, model_dir: Path, audio: np.ndarray, stages: Set[str],
          max_new_tokens: int) -> Dict[str, np.ndarray]:
-    """Run Granite Speech 1B reference forward and return stage captures."""
+    """Run the original Granite Speech F32 forward and return stage captures."""
     import torch
     try:
         from transformers import GraniteSpeechForConditionalGeneration, AutoProcessor
@@ -62,7 +65,7 @@ def dump(*, model_dir: Path, audio: np.ndarray, stages: Set[str],
             "Install: pip install 'transformers>=4.52.1'\n"
             f"(import error: {e})")
 
-    print(f"  loading Granite Speech 1B from {model_dir}")
+    print(f"  loading original Granite Speech F32 from {model_dir}")
     processor = AutoProcessor.from_pretrained(str(model_dir))
     # PLUS detection: granite-speech-4.1-2b-plus's config.json declares
     # `model_type: granite_speech_plus` (not in transformers <=5.7), so
@@ -96,18 +99,29 @@ def dump(*, model_dir: Path, audio: np.ndarray, stages: Set[str],
             str(model_dir), torch_dtype=torch.float32, device_map="cpu",
         ).eval()
 
+    wrong_dtype = [(name, str(p.dtype), str(p.device))
+                   for name, p in model.named_parameters()
+                   if p.is_floating_point() and (p.dtype != torch.float32 or p.device.type != "cpu")]
+    if wrong_dtype:
+        raise RuntimeError(f"Original reference requires CPU F32 parameters: {wrong_dtype[:8]}")
+    print("  verified every floating model parameter is CPU F32")
+
     # Granite expects the audio as a torch tensor shape (1, N) via torchaudio,
     # but a float32 numpy array of shape (N,) works with .unsqueeze(0) too.
     wav = torch.from_numpy(audio.astype(np.float32)).unsqueeze(0)
 
+    import os
     tokenizer = processor.tokenizer
     chat = [{"role": "user",
-             "content": "<|audio|>can you transcribe the speech into a written format?"}]
+             "content": os.environ.get("GRANITE_REFERENCE_PROMPT",
+                                       "<|audio|>can you transcribe the speech into a written format?")}]
     prompt = tokenizer.apply_chat_template(chat, tokenize=False,
                                             add_generation_prompt=True)
     inputs = processor(prompt, wav, device="cpu", return_tensors="pt")
 
     out: Dict[str, np.ndarray] = {}
+    if "prompt_ids" in stages:
+        out["prompt_ids"] = inputs["input_ids"][0].detach().cpu().int().numpy().astype(np.int32)
     if "mel_spectrogram" in stages and "input_features" in inputs:
         feats = inputs["input_features"][0]   # drop batch dim
         out["mel_spectrogram"] = feats.detach().cpu().float().numpy()
@@ -220,12 +234,32 @@ def dump(*, model_dir: Path, audio: np.ndarray, stages: Set[str],
     # Diff parity only needs mel/encoder_out/projector_out anyway, so skip.
     want_argmax = "llm_argmax" in stages and not is_plus
     want_text   = "generated_text" in stages and not is_plus
-    if want_argmax or want_text:
-        with torch.no_grad():
-            gen = model.generate(
-                **inputs, max_new_tokens=max_new_tokens,
-                do_sample=False, num_beams=1,
-            )
+    want_llm = bool(stages & {"llm_inputs_embeds", "llm_prefill_logits"}) and not is_plus
+    if want_argmax or want_text or want_llm:
+        def capture_embeds(_module, _args, kwargs):
+            if "llm_inputs_embeds" in stages and "llm_inputs_embeds" not in out:
+                out["llm_inputs_embeds"] = kwargs["inputs_embeds"][0].detach().cpu().float().numpy().copy()
+
+        def capture_logits(_module, _args, result):
+            if "llm_prefill_logits" in stages and "llm_prefill_logits" not in out:
+                # The actual GraniteForCausalLM.forward divides this head output
+                # by logits_scaling. Store the same final last-position logits.
+                out["llm_prefill_logits"] = (
+                    result[0, -1].detach().cpu().float().numpy().copy() / model.config.text_config.logits_scaling)
+
+        handles = []
+        if want_llm:
+            handles.append(model.language_model.model.register_forward_pre_hook(capture_embeds, with_kwargs=True))
+            handles.append(model.language_model.lm_head.register_forward_hook(capture_logits))
+        try:
+            with torch.no_grad():
+                gen = model.generate(
+                    **inputs, max_new_tokens=max_new_tokens,
+                    do_sample=False, num_beams=1,
+                )
+        finally:
+            for handle in handles:
+                handle.remove()
         if want_argmax:
             out["llm_argmax"] = gen[0].detach().cpu().int().numpy().astype(np.int32)
         if want_text:

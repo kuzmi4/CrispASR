@@ -13,9 +13,10 @@
 #include "crispasr_stream_punc.h"      // streaming punctuation mode helpers (#112)
 #include "crispasr_cache.h"            // crispasr_cache::ensure_cached_file (for --hf-repo, #128)
 #include "core/asr_sensitivity.h"      // --sensitivity presets (PLAN.md §W7)
-#include "core/ggml_cpu_backend.h"     // CPU-backend probe — fail fast when no module loads (#405)
-#include "core/gpu_backend_pref.h"     // crispasr_set_gpu_backend_pref (#214)
-#include "core/win_compat.h"           // setenv/unsetenv shims for MSVC
+#include "core/parakeet_gguf.h"
+#include "core/ggml_cpu_backend.h" // CPU-backend probe — fail fast when no module loads (#405)
+#include "core/gpu_backend_pref.h" // crispasr_set_gpu_backend_pref (#214)
+#include "core/win_compat.h"       // setenv/unsetenv shims for MSVC
 #include "crispasr_model_mgr_cli.h"
 #include "crispasr_model_registry.h"
 #include "crispasr_output.h"   // crispasr_make_disp_segments — split-on-punct (#29)
@@ -362,6 +363,8 @@ static bool whisper_params_parse_arg_backend_vad(int argc, char** argv, int& i, 
         params.language = whisper_param_turn_lowercase(ARGV_NEXT);
     } else if (arg == "-dl" || arg == "--detect-language") {
         params.detect_language = true;
+    } else if (arg == "--lid-full-recording") {
+        params.lid_full_recording = true;
     } else if (arg == "--prompt") {
         params.prompt = ARGV_NEXT;
     } else if (arg == "--ask") {
@@ -493,6 +496,8 @@ static bool whisper_params_parse_arg_backend_vad(int argc, char** argv, int& i, 
         } else {
             fprintf(stderr, "crispasr: --att-context expects \"L,R\" (e.g. 128,128 or -1,-1), got '%s'\n", v.c_str());
         }
+    } else if (arg == "--hikari-stride" || arg == "--hikari-refresh-stride") {
+        params.hikari_refresh_stride = std::stoi(ARGV_NEXT);
     } else if (arg == "--lid-backend") {
         params.lid_backend = ARGV_NEXT;
     } else if (arg == "--lid-model") {
@@ -1111,7 +1116,7 @@ static void whisper_print_usage(int /*argc*/, char** argv, const whisper_params&
             params.hotwords.empty() ? "" : params.hotwords.c_str());
     fprintf(out,
             "             --context TEXT        [%-7s] hotword/context text injected into the prompt "
-            "(vibevoice-asr only)\n",
+            "(qwen3, vibevoice-asr)\n",
             params.context.empty() ? "" : "set");
     fprintf(out,
             "             --prefix-text TEXT    [%-7s] granite incremental decoding: seed the transcript so "
@@ -1265,6 +1270,10 @@ static void whisper_print_usage(int /*argc*/, char** argv, const whisper_params&
         params.lid_backend.c_str());
     fprintf(out, "  --lid-model FNAME                 [%-7s] optional LID model path (default ggml-tiny.bin)\n",
             params.lid_model.c_str());
+    fprintf(out,
+            "  --lid-full-recording              [%-7s] opt in to language detection across all 15 s windows; "
+            "duration-weighted vote (default: first 15 s)\n",
+            params.lid_full_recording ? "true" : "false");
     fprintf(out,
             "  --lid-on-transcript FNAME         [%-7s] post-ASR text LID. Path or "
             "'auto[:cld3|glotlid|lid-fasttext176]' (default cld3, auto-downloaded). "
@@ -1483,6 +1492,9 @@ static void whisper_print_usage(int /*argc*/, char** argv, const whisper_params&
             "frames (~80ms ea) — true windowed attn (O(T*window) mem, NeMo rel_pos_local_attn); "
             "-1,-1 = full. CRISPASR_FC_WINDOWED_ATTN=0 forces legacy masked-full\n",
             "model");
+    fprintf(out,
+            "             --hikari-stride N      [%-7d] hikari strided encoder refresh interval (0 = exact, K>0)\n",
+            params.hikari_refresh_stride);
     fprintf(out, "             --lcs-dedup VAL        [%-7s] sub-word LCS dedup across chunk boundaries: auto|on|off\n",
             params.lcs_dedup.c_str());
     fprintf(out,
@@ -2662,6 +2674,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    // #560: --detect-language is an exit action, including when -m names an
+    // invalid or absent ASR model. Route before --hf-repo and model dispatch so
+    // only the selected LID provider may resolve/load a model.
+    if (params.detect_language && !params.server && !params.dry_run_resolve)
+        return crispasr_run_lid_only(params);
+
     // Issue #128 — resolve --hf-repo / --hf-file early, before any
     // model-path interpretation downstream. Synthesise the HF resolve
     // URL, fetch via the existing cache, then rewrite params.model
@@ -2843,6 +2861,11 @@ int main(int argc, char** argv) {
     {
         const bool explicit_backend = !params.backend.empty();
         const bool model_is_auto = is_auto_model_arg(params.model);
+
+        // #551: do not fall through to legacy Whisper or a forced incompatible
+        // loader when a known unsupported GGUF yields an empty detector result.
+        if (!model_is_auto && core_parakeet_gguf::reject_external_file(params.model.c_str()))
+            return 11;
 
         bool auto_detected_non_whisper = false;
         if (!explicit_backend && !model_is_auto) {

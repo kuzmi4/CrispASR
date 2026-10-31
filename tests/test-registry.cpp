@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 
 TEST_CASE("registry: lookup known backend returns valid entry", "[unit][registry]") {
     CrispasrRegistryEntry e;
@@ -24,6 +25,74 @@ TEST_CASE("registry: lookup unknown backend returns false", "[unit][registry]") 
     CrispasrRegistryEntry e;
     bool found = crispasr_registry_lookup("nonexistent-backend-xyz", e);
     REQUIRE_FALSE(found);
+}
+
+TEST_CASE("registry: Nemotron defaults only to the pinned qualified F16", "[unit][registry][nemotron]") {
+    CrispasrRegistryEntry entry;
+    REQUIRE(crispasr_registry_lookup("nemotron", entry));
+    REQUIRE(entry.filename == "nemotron-3.5-asr-streaming-0.6b-f16.gguf");
+    REQUIRE(entry.url == "https://huggingface.co/cstr/nemotron-3.5-asr-streaming-GGUF/resolve/"
+                         "bbd95a9ca5fa0dfca3312a122dfc45a2b578b9c2/nemotron-3.5-asr-streaming-0.6b-f16.gguf");
+    REQUIRE(entry.approx_size == "~1.3 GB");
+    REQUIRE(entry.license == "OpenMDW-1.1");
+    REQUIRE(crispasr_registry_lookup("nemotron", entry, "f16"));
+    REQUIRE(entry.filename == "nemotron-3.5-asr-streaming-0.6b-f16.gguf");
+    for (const char* quant : {"q4_k", "q8_0", "q6_k", "bf16", "f32"}) {
+        REQUIRE_FALSE(crispasr_registry_lookup("nemotron", entry, quant));
+        REQUIRE_FALSE(crispasr_registry_lookup_by_filename("nemotron-3.5-asr-streaming-0.6b-f16.gguf", entry, quant));
+        REQUIRE_FALSE(crispasr_registry_lookup_by_filename(
+            std::string("nemotron-3.5-asr-streaming-0.6b-") + quant + ".gguf", entry));
+    }
+}
+
+TEST_CASE("registry: Nemotron default retains full OpenMDW terms and origin", "[unit][registry][nemotron]") {
+    CrispasrRegistryBundle bundle;
+    REQUIRE(crispasr_registry_default_bundle("nemotron", bundle));
+    REQUIRE(bundle.license == "OpenMDW-1.1");
+    REQUIRE_FALSE(bundle.requires_license_acceptance);
+    REQUIRE(bundle.artifacts.size() == 3);
+    REQUIRE(bundle.artifacts[0].filename == "nemotron-3.5-asr-streaming-0.6b-f16.gguf");
+    REQUIRE(bundle.artifacts[0].kind == CrispasrRegistryArtifactKind::Primary);
+    const char* names[] = {"LICENSE-OpenMDW-1.1.txt", "NOTICE.txt"};
+    for (size_t i = 1; i < bundle.artifacts.size(); ++i) {
+        REQUIRE(bundle.artifacts[i].kind == CrispasrRegistryArtifactKind::Extra);
+        REQUIRE(bundle.artifacts[i].filename == std::string("nemotron-3.5-asr-streaming-0.6b/") + names[i - 1]);
+        REQUIRE(bundle.artifacts[i].url ==
+                std::string("https://raw.githubusercontent.com/CrispStrobe/CrispASR/"
+                            "102cd6bfc233c3d5d211966718d3de0e4401f836/docs/nemotron-model-notices/") +
+                    names[i - 1]);
+    }
+}
+
+TEST_CASE("resolver: Nemotron Q4 cache and filenames cannot substitute for the F16 default",
+          "[unit][registry][nemotron]") {
+    const std::filesystem::path cache = "test-registry-nemotron-cache";
+    const std::string prefix = "nemotron-3.5-asr-streaming-0.6b-";
+    const std::string f16 = prefix + "f16.gguf", q4 = prefix + "q4_k.gguf";
+    std::filesystem::create_directories(cache);
+    {
+        std::ofstream fixture(cache / q4, std::ios::binary);
+        fixture << "existing explicitly selected diagnostic model fixture";
+    }
+    CrispasrRegistryEntry entry;
+    REQUIRE(crispasr_registry_lookup("nemotron", entry));
+    REQUIRE(entry.filename == f16);
+    CHECK_FALSE(crispasr_find_cached_model(entry, cache.string()));
+    CHECK(crispasr_resolve_model(q4, "nemotron", true, cache.string(), false) == (cache / q4).string());
+    std::filesystem::remove(cache / q4);
+    {
+        std::ofstream fixture(cache / f16, std::ios::binary);
+        fixture << "qualified default identity fixture";
+    }
+    REQUIRE(crispasr_find_cached_model(entry, cache.string()));
+    CHECK(entry.filename == f16);
+    for (const char* quant : {"q4_k", "q8_0", "q6_k"}) {
+        const std::string requested = prefix + quant + ".gguf";
+        CHECK(crispasr_resolve_model(requested, "nemotron", true, cache.string(), false) == requested);
+        CHECK_FALSE(crispasr_find_cached_model(entry, cache.string(), quant));
+    }
+    CHECK(crispasr_resolve_model(f16, "nemotron", true, cache.string(), false) == (cache / f16).string());
+    std::filesystem::remove_all(cache);
 }
 
 TEST_CASE("registry: Phonon-2 selects Q8 and resolves alternate GGUF quants", "[unit][registry]") {
@@ -118,6 +187,21 @@ TEST_CASE("registry: NC acceptance does not accept a custom bundle license", "[u
     REQUIRE_FALSE(crispasr_license_requires_acceptance("MIT"));
 }
 
+TEST_CASE("registry: NVIDIA and OmniVoice acceptance affirm distinct full terms", "[unit][registry][license]") {
+    REQUIRE(crispasr_license_requires_acceptance("NVIDIA-Open-Model-License"));
+    REQUIRE(crispasr_license_accepted("NVIDIA-Open-Model-License", "nvidia-open-model-license"));
+    REQUIRE_FALSE(crispasr_license_accepted("NVIDIA-Open-Model-License", "cc-by-nc-4.0"));
+    REQUIRE_FALSE(crispasr_license_accepted("NVIDIA-Open-Model-License", "apache-2.0"));
+    REQUIRE(crispasr_license_requires_acceptance("omnivoice-terms"));
+    REQUIRE(crispasr_license_accepted("omnivoice-terms", "omnivoice-terms"));
+    REQUIRE_FALSE(crispasr_license_accepted("omnivoice-terms", "nvidia-open-model-license"));
+    REQUIRE_FALSE(crispasr_license_accepted("NVIDIA-Open-Model-License", "omnivoice-terms"));
+    CrispasrRegistryEntry e;
+    REQUIRE(crispasr_registry_lookup("omnivoice", e));
+    REQUIRE(e.license.find("100,000") != std::string::npos);
+    REQUIRE(e.license.find("materials/outputs") != std::string::npos);
+}
+
 TEST_CASE("registry: the Breeze TTS 2 non-commercial gate actually blocks", "[unit][registry][license]") {
     // #412. The weights are non-commercial and this is the only thing standing
     // between `-m auto` and downloading them without acceptance, so it gets its
@@ -162,6 +246,19 @@ TEST_CASE("registry: default bundle rejects unknown backends", "[unit][registry]
     REQUIRE_FALSE(crispasr_registry_default_bundle("nonexistent-backend-xyz", bundle));
 }
 
+TEST_CASE("registry: Melo V2 bundle uses the qualified discoverable BERT companion", "[unit][registry]") {
+    CrispasrRegistryBundle bundle;
+    REQUIRE(crispasr_registry_default_bundle("melotts", bundle));
+    REQUIRE_FALSE(bundle.requires_license_acceptance);
+    REQUIRE(bundle.license.find("Apache-2.0") != std::string::npos);
+    REQUIRE(bundle.artifacts.size() == 2);
+    REQUIRE(bundle.artifacts[0].filename == "melotts-en-v2-f16.gguf");
+    REQUIRE(bundle.artifacts[1].filename == "bert-base-uncased.gguf");
+    for (const auto& artifact : bundle.artifacts) {
+        REQUIRE(artifact.url.find("/resolve/35522347b1bed9a913d6894803c5cab929ae42a5/") != std::string::npos);
+    }
+}
+
 TEST_CASE("registry: every default bundle starts with its lookup result", "[unit][registry]") {
     for (int i = 0; i < crispasr_registry_count(); ++i) {
         CrispasrRegistryEntry entry;
@@ -194,6 +291,18 @@ TEST_CASE("registry: parakeet entry has correct filename", "[unit][registry]") {
     bool found = crispasr_registry_lookup("parakeet", e);
     REQUIRE(found);
     REQUIRE(std::string(e.filename).find("parakeet") != std::string::npos);
+}
+
+TEST_CASE("registry: haas-ja has entry (#561)", "[unit][registry]") {
+    CrispasrRegistryEntry e;
+    REQUIRE(crispasr_registry_lookup("haas", e));
+    REQUIRE(std::string(e.filename) == "haas-ja-v1.0-q8_0.gguf");
+    REQUIRE(crispasr_registry_lookup("haas-ja", e));
+    REQUIRE(std::string(e.filename) == "haas-ja-v1.0-q8_0.gguf");
+    REQUIRE(crispasr_registry_lookup("haas-ja", e, "q4_k"));
+    REQUIRE(std::string(e.filename) == "haas-ja-v1.0-q4_k.gguf");
+    REQUIRE(crispasr_registry_lookup("haas-ja", e, "f16"));
+    REQUIRE(std::string(e.filename) == "haas-ja-v1.0-f16.gguf");
 }
 
 TEST_CASE("registry: mimo-asr has entry (added in #63)", "[unit][registry]") {
@@ -234,6 +343,111 @@ TEST_CASE("registry: granite-4.1 has entry", "[unit][registry]") {
     bool found = crispasr_registry_lookup("granite-4.1", e);
     REQUIRE(found);
     REQUIRE(std::string(e.filename).find("granite") != std::string::npos);
+}
+
+TEST_CASE("registry: Granite5 defaults to qualified Q4 and preserves explicit F16", "[unit][registry][granite5]") {
+    CrispasrRegistryEntry entry;
+    REQUIRE(crispasr_registry_lookup("granite", entry));
+    REQUIRE(entry.filename == "granite-speech-5.0-2b-q4_k.gguf");
+    REQUIRE(entry.license == "Apache-2.0");
+    REQUIRE(entry.url.find("/granite-speech-5.0-2b-GGUF/resolve/") != std::string::npos);
+    REQUIRE(entry.url.find("/resolve/main/") == std::string::npos);
+    REQUIRE_FALSE(entry.approx_size.empty());
+    const std::string default_url = entry.url;
+    for (const char* quant : {"q4_k", "f16"}) {
+        REQUIRE(crispasr_registry_lookup("granite", entry, quant));
+        REQUIRE(entry.filename == std::string("granite-speech-5.0-2b-") + quant + ".gguf");
+        REQUIRE_FALSE(entry.approx_size.empty());
+        REQUIRE(crispasr_registry_lookup_by_filename(entry.filename, entry));
+        REQUIRE(entry.backend == "granite");
+        if (std::string(quant) == "f16")
+            REQUIRE(entry.url.find("/resolve/701f5529d8459412cc1b6053b5880c630125b138/") != std::string::npos);
+        else
+            REQUIRE(entry.url == default_url);
+    }
+    for (const char* quant : {"q8_0", "q6_k", "q5_k", "q2_k", "bf16", "f32"}) {
+        REQUIRE_FALSE(crispasr_registry_lookup("granite", entry, quant));
+        REQUIRE_FALSE(crispasr_registry_lookup_by_filename("granite-speech-5.0-2b-f16.gguf", entry, quant));
+        REQUIRE_FALSE(
+            crispasr_registry_lookup_by_filename(std::string("granite-speech-5.0-2b-") + quant + ".gguf", entry));
+    }
+    REQUIRE(crispasr_registry_lookup("granite-4.1", entry, "q4_k"));
+    REQUIRE(entry.filename == "granite-speech-4.1-2b-q4_k.gguf");
+    REQUIRE(crispasr_registry_lookup_by_filename("granite-speech-4.0-1b-q4_k.gguf", entry));
+    REQUIRE(entry.url.find("/granite-speech-4.0-1b-GGUF/") != std::string::npos);
+    int profiles = 0;
+    for (int i = 0; i < crispasr_registry_count(); ++i) {
+        REQUIRE(crispasr_registry_get_at(i, entry));
+        if (entry.filename.find("granite-speech-5.0-2b-") != 0)
+            continue;
+        ++profiles;
+        REQUIRE(crispasr_registry_get_at(i, entry, "q4_k"));
+        REQUIRE(entry.filename == "granite-speech-5.0-2b-q4_k.gguf");
+        REQUIRE(crispasr_registry_get_at(i, entry, "f16"));
+        REQUIRE(entry.filename == "granite-speech-5.0-2b-f16.gguf");
+        REQUIRE_FALSE(crispasr_registry_get_at(i, entry, "q8_0"));
+        REQUIRE_FALSE(crispasr_registry_get_at(i, entry, "q6_k"));
+    }
+    REQUIRE(profiles == 2);
+}
+
+TEST_CASE("registry: Granite5 downloads the complete pinned legal bundle", "[unit][registry][granite5]") {
+    CrispasrRegistryBundle bundle;
+    REQUIRE(crispasr_registry_default_bundle("granite", bundle));
+    REQUIRE(bundle.license == "Apache-2.0");
+    REQUIRE_FALSE(bundle.requires_license_acceptance);
+    REQUIRE(bundle.artifacts.size() == 6);
+    REQUIRE(bundle.artifacts.front().filename == "granite-speech-5.0-2b-q4_k.gguf");
+    REQUIRE(bundle.artifacts.front().kind == CrispasrRegistryArtifactKind::Primary);
+    const std::string primary_url = bundle.artifacts.front().url;
+    const std::string release_prefix = primary_url.substr(0, primary_url.rfind('/') + 1);
+    const char* names[] = {"LICENSE", "LICENSE-RECIPE.txt", "NOTICE", "original-publisher-README.md",
+                           "validation-evidence.json"};
+    for (size_t i = 1; i < bundle.artifacts.size(); ++i) {
+        const auto& artifact = bundle.artifacts[i];
+        REQUIRE(artifact.kind == CrispasrRegistryArtifactKind::Extra);
+        REQUIRE(artifact.filename == std::string("granite-speech-5.0-2b/") + names[i - 1]);
+        REQUIRE(artifact.url.find("/granite-speech-5.0-2b-GGUF/resolve/") != std::string::npos);
+        REQUIRE(artifact.url.find("/resolve/main/") == std::string::npos);
+        REQUIRE(artifact.url == release_prefix + names[i - 1]);
+    }
+}
+
+TEST_CASE("resolver: cached F16 cannot satisfy the Granite5 Q4 default", "[unit][registry][granite5]") {
+    const std::filesystem::path cache = "test-registry-granite5-cache";
+    const std::string f16 = "granite-speech-5.0-2b-f16.gguf";
+    const std::string q4 = "granite-speech-5.0-2b-q4_k.gguf";
+    std::filesystem::create_directories(cache);
+    {
+        std::ofstream fixture(cache / f16, std::ios::binary);
+        fixture << "fixture";
+    }
+    CHECK(crispasr_resolve_model(q4, "granite", true, cache.string(), false) == q4);
+    CrispasrRegistryEntry entry;
+    REQUIRE(crispasr_registry_lookup("granite", entry));
+    CHECK(entry.filename == q4);
+    CHECK_FALSE(std::filesystem::exists(cache / entry.filename));
+    // Inspect the cache with the default's exact quant; auto-resolution can
+    // fetch model/notice files and does not belong in a model-free unit test.
+    CHECK_FALSE(crispasr_find_cached_model(entry, cache.string(), "q4_k"));
+    CHECK(crispasr_find_cached_model(entry, cache.string(), "f16"));
+    CHECK(entry.filename == f16);
+    CHECK(crispasr_resolve_model(f16, "granite", true, cache.string(), false) == (cache / f16).string());
+    for (const char* rejected : {"q8_0", "q6_k"}) {
+        CHECK_FALSE(crispasr_find_cached_model(entry, cache.string(), rejected));
+        CHECK(crispasr_resolve_model("auto", "granite", true, cache.string(), false, rejected).empty());
+    }
+    {
+        std::ofstream fixture(cache / q4, std::ios::binary);
+        fixture << "qualified Q4 cache fixture";
+    }
+    CHECK(crispasr_find_cached_model(entry, cache.string(), "q4_k"));
+    CHECK(entry.filename == q4);
+    CHECK(crispasr_find_cached_model(entry, cache.string(), "f16"));
+    CHECK(entry.filename == f16);
+    std::filesystem::remove(cache / q4);
+    std::filesystem::remove(cache / f16);
+    std::filesystem::remove(cache);
 }
 
 TEST_CASE("registry: gemma4-e2b has entry", "[unit][registry]") {
@@ -441,7 +655,13 @@ TEST_CASE("registry: fill with preferred quant does not crash on any entry (#152
         // Exercise the quant-rewriting path for every entry
         crispasr_registry_get_at(i, e);
         CrispasrRegistryEntry eq;
-        crispasr_registry_lookup(e.backend, eq, "q4_k");
+        const bool found = crispasr_registry_lookup(e.backend, eq, "q4_k");
+        if (e.backend == "nemotron") {
+            // Only F16 is qualified; manufacturing a Q4 download is rejected.
+            REQUIRE_FALSE(found);
+            continue;
+        }
+        REQUIRE(found);
         REQUIRE(!eq.backend.empty());
         REQUIRE(!eq.filename.empty());
     }
@@ -643,5 +863,30 @@ TEST_CASE("registry: German Moonshine bundles own every companion", "[unit][regi
         }
         const bool f32 = std::string(key).find("-f32") != std::string::npos;
         REQUIRE(bundle.artifacts.front().filename == std::string(key) + (f32 ? "/encoder.onnx" : "/encoder_int8.onnx"));
+    }
+}
+
+TEST_CASE("registry: Base bundles download model-sized voices with notices (#555)", "[unit][registry]") {
+    for (const auto& pair : {std::make_pair("qwen3-tts", "0.6b"), std::make_pair("qwen3-tts-1.7b-base", "1.7b")}) {
+        CrispasrRegistryBundle bundle;
+        REQUIRE(crispasr_registry_default_bundle(pair.first, bundle));
+        CrispasrRegistryEntry entry;
+        REQUIRE(crispasr_registry_lookup(pair.first, entry));
+        REQUIRE(entry.license == "Apache-2.0");
+        const std::string voice = std::string("qwen3-tts-voice-") + pair.second + "-designed.gguf";
+        int companions = 0;
+        for (const auto& item : bundle.artifacts) {
+            REQUIRE(item.filename != "qwen3-tts-voice-default.gguf");
+            if (item.filename.find("qwen3-tts-voice-") == 0) {
+                REQUIRE(item.filename == voice);
+                ++companions;
+            }
+            if (item.url.find("qwen3-tts-voices-GGUF/") != std::string::npos) {
+                REQUIRE(item.url.find("/resolve/9ab96c5ba3022bd2ed46306ded0489a24096f8b5/") != std::string::npos);
+                if (item.filename != voice)
+                    ++companions;
+            }
+        }
+        REQUIRE(companions == 5); // Matching pack, Apache/MIT/NOTICE and full provenance.
     }
 }

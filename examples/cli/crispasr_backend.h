@@ -456,9 +456,8 @@ std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name
 // an empty string if detection fails.
 std::string crispasr_detect_backend_from_gguf(const std::string& model_path);
 
-// True if the GGUF at model_path is a pure-CTC FastConformer model (no RNN-T
-// decoder/joint tensors) — i.e. a parakeet-ctc / stt_*_fastconformer_ctc that must
-// run on the fastconformer-ctc backend, not the parakeet (transducer) backend.
+// True only for a compatible FastConformer encoder + CTC head without a native
+// predictor. Missing native predictor names alone does not identify CTC (#551).
 // Cheap: reads tensor infos only (no weights). Returns false on any read failure.
 bool crispasr_gguf_is_pure_ctc(const std::string& model_path);
 
@@ -489,3 +488,5 @@ void crispasr_print_backend_matrix_json();
 // Invoked from cli.cpp main() when params.backend is set to a non-whisper
 // backend. The whisper path in cli.cpp is left completely untouched.
 int crispasr_run_backend(const whisper_params& params);
+// Standalone --detect-language: audio LID without resolving or loading an ASR backend.
+int crispasr_run_lid_only(const whisper_params& params);

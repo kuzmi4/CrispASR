@@ -3423,7 +3423,13 @@ class CrispasrSession {
     final out = <SessionSegment>[];
     for (var i = 0; i < nSegs; i++) {
       final tp = segText(res, i);
-      final text = tp == nullptr ? '' : _decodeCString(tp);
+      // Byte-level BPE models (Qwen3-ASR) can stop inside a multibyte
+      // character when generation is capped, and a word is a run of token
+      // pieces, so segment, word and alt text are not always valid UTF-8.
+      // Strict decoding threw FormatException and lost the whole result;
+      // the bad bytes become U+FFFD, as for whisper token text.
+      final text =
+          tp == nullptr ? '' : _decodeCString(tp, allowMalformed: true);
       final t0raw = segT0(res, i);
       final t1raw = segT1(res, i);
       // Segments always have timestamps, but preserve -1 sentinel if ever missing
@@ -3436,7 +3442,8 @@ class CrispasrSession {
       final words = <Word>[];
       for (var k = 0; k < wc; k++) {
         final wp = wordText(res, i, k);
-        final wt = wp == nullptr ? '' : _decodeCString(wp);
+        final wt =
+            wp == nullptr ? '' : _decodeCString(wp, allowMalformed: true);
         // Preserve -1 absent timing instead of -0.01: native returns -1 cs for
         // missing token/word timing; dividing would give -0.01 sec. Return -1.0 sec sentinel.
         final wt0raw = wordT0(res, i, k);
@@ -3457,7 +3464,9 @@ class CrispasrSession {
             final list = <AltToken>[];
             for (var a = 0; a < nA; a++) {
               final tp2 = wordAltTextFn(res, i, k, a);
-              final atext = tp2 == nullptr ? '' : _decodeCString(tp2);
+              final atext = tp2 == nullptr
+                  ? ''
+                  : _decodeCString(tp2, allowMalformed: true);
               if (atext.isEmpty) continue;
               list.add(AltToken(text: atext, p: wordAltPFn(res, i, k, a)));
             }
@@ -5645,6 +5654,32 @@ class CrispasrSession {
             int)>('crispasr_session_set_parakeet_att_context');
     final rc = fn(_handle, left, right);
     if (rc != 0) throw Exception('setParakeetAttContext failed (rc=$rc)');
+  }
+
+  /// Whisper encoder audio context size (0 = all/1500, >0 = explicit frames).
+  void setAudioCtx(int audioCtx) {
+    if (_closed) throw StateError('CrispasrSession is closed');
+    if (!_lib.providesSymbol('crispasr_session_set_audio_ctx')) {
+      return;
+    }
+    final fn = _lib.lookupFunction<Int32 Function(Pointer<Void>, Int32),
+        int Function(Pointer<Void>, int)>('crispasr_session_set_audio_ctx');
+    final rc = fn(_handle, audioCtx);
+    if (rc != 0) throw Exception('setAudioCtx failed (rc=$rc)');
+  }
+
+  /// Hikari streaming strided window refresh interval (0 = exact, K > 0 = strided).
+  void setHikariRefreshStride(int stride) {
+    if (_closed) throw StateError('CrispasrSession is closed');
+    if (!_lib.providesSymbol('crispasr_session_set_hikari_refresh_stride')) {
+      return;
+    }
+    final fn = _lib.lookupFunction<
+        Int32 Function(Pointer<Void>, Int32),
+        int Function(
+            Pointer<Void>, int)>('crispasr_session_set_hikari_refresh_stride');
+    final rc = fn(_handle, stride);
+    if (rc != 0) throw Exception('setHikariRefreshStride failed (rc=$rc)');
   }
 
   /// Pad N ms of silence at the beginning of TTS output.

@@ -248,11 +248,12 @@ struct whisper_params {
     // negative = full attention. Set via --att-context "L,R".
     int att_context_left = INT_MIN;
     int att_context_right = INT_MIN;
+    // Hikari streaming strided encoder refresh interval (0 = exact, K > 0 = strided, -1 = default).
+    int hikari_refresh_stride = -1;
     std::string hotwords;        // comma-separated hotword list (PLAN #98)
     float hotwords_boost = 2.0f; // per-token log-prob boost for hotword prefix matches
-    // Free-form hotword/context text injected into the vibevoice-asr prompt
-    // (only backend that reads this so far). Matches the `context_info` param
-    // in microsoft/VibeVoice's vibevoice_asr_processor.py.
+    // Free-form context injected verbatim into Qwen3-ASR's system turn or
+    // VibeVoice-ASR's instruction prompt.
     std::string context;
     // #205: granite-speech incremental decoding — seed the assistant turn with a
     // previously-decoded transcript so the model continues from it instead of
@@ -260,6 +261,7 @@ struct whisper_params {
     std::string prefix_text;
     std::string lid_backend;
     std::string lid_model;
+    bool lid_full_recording = false; // score successive 15 s LID windows across the recording
     // Post-ASR text LID: when set, after transcription completes, run
     // a fastText-supervised classifier (GlotLID / LID-176) on the
     // assembled transcript and emit `lang=<code>\tconf=<score>` to

@@ -18,9 +18,16 @@ of the frozen CTC logits, sample and pinned upstream vocabulary, then decodes
 CTC with repeat collapse followed by blank removal. The expected transcript
 must match that independent decode before native inference is checked.
 `data2vec-base` uses this guard: its original Python model also inserts `A`
-after `AND SO`. The zero-WER gate therefore measures upstream parity; the
-separate human reference remains in the manifest and reports 4.55% WER as an
-accuracy advisory. The model weights, decoder and stage thresholds are unchanged.
+after `AND SO`. Its Q4 fixture allows at most one word error over the original
+23-word reference (WER <= 1/23). Controlled same-host CPU-profile tests show Q4
+retains this `A` on AVX2 and drops it on AVX-512; F16 retains it under both.
+`require_exact_diff_transcript: true` requires the existing F16 `diff_gguf` to
+pass a separate zero-WER transcript check against that same independent target,
+in addition to the unchanged stage thresholds. Both normal and Kaggle drivers
+apply these controls; F16 diagnostics have their own `transcript-f16` label.
+Missing model/reference controls fail before downloads. The separate human
+reference still reports 4.55% WER as an accuracy advisory. Weights and decoder
+are unchanged. [Retained controls](../../docs/historical/data2vec-avx512-controls-2026-10-28.json).
 The previous target was a native Q4 capture from July, not the Python reference.
 
 ## Why pin everything
@@ -54,6 +61,23 @@ tests/regression/
 ```
 
 Sample WAVs live in `samples/` (already in-repo).
+
+Granite Speech5 uses a separate hosted CPU job in `regression.yml`, with release
+and reference content pins in `granite5.json`. Its adapter,
+`tools/ci-heavy/granite5_regression.py`, reuses the full acceptance checks:
+frontend stages, teacher/pipeline logit cosine and magnitude, exact prompt and
+both decoder token sequences, repeated renamed-file C ABI Sessions and CLI text
+for the original punctuation/capitalization instruction. It also checks the
+legacy raw-task words. Only the explicitly qualified published profiles run;
+the initial release included F16, with a separately qualified mixed Q4_K recipe
+added after full CPU and actual CUDA acceptance. Q8_0 remains excluded after
+failing the CUDA magnitude gate.
+The retained original F32 reference is verified by SHA-256; it is not rebaked.
+The generic Granite frontend diff does not exercise these decoder gates.
+Changes to the runtime, binding, quantizer, converter or Granite5 validators
+select this job; scheduled/manual regression runs always include it. Its CPU
+receipt does not establish CUDA acceptance. Real GPU validation remains a
+separate Kaggle run using the prebuilt, source-matched validation capsule.
 
 The reference-dump archives (`ref.gguf` containing encoder_output +
 mel_spectrogram + per-layer captures) live in the HuggingFace repo
@@ -125,7 +149,9 @@ check immediately; once the Kaggle rebake produces a `ref.gguf`, remove
 
 ## Gating every captured stage (`stage_threshold_default`)
 
-`diff_thresholds` gates the stages it names. crispasr-diff also captures
+`diff_thresholds` gates the stages it names; a declared stage missing from the
+harness output fails the regression. Unlisted optional stages do not become
+mandatory. crispasr-diff also captures
 per-layer and conv-snapshot stages (`encoder_layer_*`, `pre_enc_c*`, …);
 without a default these only print `INFO` and can drift arbitrarily.
 Set `"stage_threshold_default": 0.998` to gate every captured stage that

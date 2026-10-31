@@ -9,6 +9,7 @@
 
 #include "core/align_json.h"
 #include "core/lid_probe.h"
+#include "core/parakeet_gguf.h"
 #include "crispasr_backend.h"
 #include "crispasr_cache.h"
 #include "crispasr_gap_fill.h"
@@ -2526,6 +2527,39 @@ static std::string crispasr_stream_common_speaker(const std::vector<crispasr_seg
     return spk;
 }
 
+int crispasr_run_lid_only(const whisper_params& params) {
+    if (params.fname_inp.empty()) {
+        fprintf(stderr, "crispasr: error: --detect-language requires audio input\n");
+        return 2;
+    }
+    if (params.lid_backend == "off" || params.lid_backend == "none" || params.lid_backend == "probe" ||
+        params.lid_backend == "self") {
+        fprintf(stderr, "crispasr: error: standalone --detect-language requires an external LID backend\n");
+        return 2;
+    }
+
+    int rc = 0;
+    for (const std::string& path : params.fname_inp) {
+        std::vector<float> samples;
+        std::vector<std::vector<float>> stereo;
+        if (!read_audio_data(path, samples, stereo, false) || samples.empty()) {
+            fprintf(stderr, "crispasr: error: failed to read audio '%s'\n", path.c_str());
+            rc = 20;
+            continue;
+        }
+        crispasr_lid_result lid;
+        if (!crispasr_detect_language_cli(samples.data(), (int)samples.size(), params, lid) || lid.lang_code.empty()) {
+            fprintf(stderr, "crispasr: error: language detection failed for '%s'\n", path.c_str());
+            rc = 21;
+            continue;
+        }
+        fprintf(stdout, "lang=%s\tconfidence=%.6f\tsource=%s\tfile=%s\n", lid.lang_code.c_str(), lid.confidence,
+                lid.source.c_str(), path.c_str());
+    }
+    crispasr_lid_free_cache();
+    return rc;
+}
+
 int crispasr_run_backend(const whisper_params& params_in) {
     whisper_params params = params_in;
 
@@ -3114,6 +3148,8 @@ int crispasr_run_backend(const whisper_params& params_in) {
         } else {
             backend_name = crispasr_detect_backend_from_gguf(params.model);
             if (backend_name.empty()) {
+                if (core_parakeet_gguf::reject_external_file(params.model.c_str()))
+                    return 11;
                 fprintf(stderr,
                         "crispasr: error: could not auto-detect backend from '%s'. "
                         "Use --backend NAME to force one.\n",
@@ -3279,6 +3315,12 @@ int crispasr_run_backend(const whisper_params& params_in) {
         return 11;
     }
     params.model = resolved;
+
+    // Reject the foreign Parakeet schema even if a filename or explicit backend
+    // bypassed metadata auto-detection. Do this before loading weights/processing.
+    if (core_parakeet_gguf::family_backend(backend_name.c_str()) &&
+        core_parakeet_gguf::reject_external_file(params.model.c_str()))
+        return 11;
 
     // A pure-CTC FastConformer model (parakeet-ctc-*, stt_*_fastconformer_ctc:
     // encoder + CTC head, no RNN-T decoder/joint) cannot run on the parakeet

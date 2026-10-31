@@ -24,6 +24,8 @@ struct BackendCaps {
 
 static const BackendCaps k_backend_caps[] = {
     {"ark-asr", 1582592u, "beam-search,flash-attn,auto-download,unbounded-input,internal-chunking"},
+    {"arktts", 73984u, "temperature,auto-download,tts"},
+    {"audio8-tts", 73984u, "temperature,auto-download,tts"},
     {"bananamind-tts", 65536u, "tts"},
     {"bark", 205056u, "temperature,auto-download,tts,voice-cloning"},
     {"bark-tts", 205056u, "temperature,auto-download,tts,voice-cloning"},
@@ -110,6 +112,7 @@ static const BackendCaps k_backend_caps[] = {
     {"m2m100-wmt21", 12832u, "translate,beam-search,src-tgt-language,auto-download"},
     {"madlad", 12832u, "translate,beam-search,src-tgt-language,auto-download"},
     {"marian", 4640u, "translate,beam-search,src-tgt-language"},
+    {"meanvc2", 3153920u, "auto-download,s2s"},
     {"mega-asr", 32618u,
      "timestamps-ctc,token-confidence,translate,diarize,temperature,beam-search,flash-attn,punctuation-toggle,src-tgt-"
      "language,auto-download,parallel-processors"},

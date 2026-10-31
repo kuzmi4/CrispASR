@@ -12,6 +12,7 @@
 #include "core/nemotron_text.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {

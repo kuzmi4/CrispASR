@@ -418,7 +418,7 @@ all 32 encoder and 32 decoder layers, 48 cached greedy predictions and complete
 direct decoded cues. All five complete F32-source file cases match at the
 existing 5.1 ms timestamp bound, including target selection and previous-window
 context; three real Piper roundtrips produce WER 0 with CLI/C ABI agreement.
-The [9B receipt](index-echo-9b-acceptance-2026-10-02.json) preserves each stage
+The [9B receipt](historical/index-echo-9b-acceptance-2026-10-02.json) preserves each stage
 cosine/magnitude metric and the original failed BF16 timing diagnostics.
 No mixed-source cue alternatives or wider timestamp bound are used. The released
 source itself fails a separately retained repeated-English context stress;
@@ -480,6 +480,41 @@ runtime, and the APK has been exercised on a real Android device.
 
 **granite** (`granite-speech-{3.2-8b, 3.3-2b, 3.3-8b}`, `granite-4.0-1b-speech`):
 Conformer encoder + BLIP-2 Q-Former + Granite LLM (μP scaling).
+
+**Granite Speech 5.0 2B** uses the same `granite` runtime with explicit YaRN
+metadata: factor 4, original context 4096, NEOX pairing and the original
+attention-magnitude correction. Conversion validates these fields instead of
+silently dropping an unknown scaling scheme. Prefill, bucketed decode and
+dynamic decode share the same rotary parameters; older models without YaRN
+metadata retain their original parameters. The native context limit remains
+4096. Component agreement through position 16383 does not qualify full 16k
+inference.
+
+F16 and the selected mixed Q4_K recipe pass the independent original F32
+stage, magnitude, prompt-token, decoded-token, C ABI and CLI checks on CPU and
+actual Tesla T4 CUDA. The Q4_K file is4.07 GB: encoder/projector, token embeddings,
+output head, attention value and FFN down projections retain their source
+precision; query/key/output and FFN gate/up matrices use Q4_K. Earlier Q4
+recipes and Q6_K failed fixed magnitude gates. Q8_0 with F16 token embeddings
+passes CPU but fails the CUDA pipeline-logit magnitude gate; retaining its
+output head at F16 does not fix that failure.
+
+The default Granite5 quantizer command reproduces the selected recipe:
+
+```sh
+crispasr-quantize granite-speech-5.0-2b-f16.gguf granite-speech-5.0-2b-q4_k.gguf q4_k
+```
+
+`CRISPASR_GRANITE_Q4_LEGACY=1` restores the previous Q4 recipe for diagnosis.
+Explicit `--tensor-type` rules still override the precision policy. Older
+Granite models without YaRN retain their existing quantizer behavior.
+The original F16 qualification remains available. Use
+`--ask "transcribe the speech with proper punctuation and capitalization."`
+for the publisher's punctuated/capitalized task; the legacy default request
+uses its raw transcription task. Both CLI and C ABI format the same prompt.
+The dedicated Granite5 regression adapter repeats all frontend and decoder
+checks, repeated renamed-model Session calls and the actual CLI; the generic
+Granite frontend diff alone does not cover these requirements.
 
 **granite-4.1** (`granite-speech-4.1-2b`): Same architecture as 4.0
 (16-layer Conformer + Q-Former + Granite LLM); "2B" = full system.
@@ -1804,11 +1839,21 @@ vocoder (5 upsample stages) @ 44.1 kHz. Built-in English G2P via embedded
 CMU dictionary (129k entries) + rule-based LTS fallback for OOV words.
 4 English speakers (US, BR, India, AU).
 
-Optional BERT conditioning: loads a companion bert-base-uncased GGUF (238 MB)
-via `melotts_load_bert()`. Runs 10-layer BERT forward pass → hidden_states[-3]
-→ word2ph expansion → `ja_bert_proj` (768→192) → added to text encoder
-embeddings. Improves contextual phoneme disambiguation (4/6 → 4/6 ASR
-roundtrip but fixes previously-broken sentences like "I enjoy reading").
+BERT conditioning loads a companion bert-base-uncased GGUF via
+`melotts_load_bert()`. It runs the first 10 layers, matching the original full
+BERT's `hidden_states[-3]`, then expands features using the original word/phone
+alignment and projects 768→192 features into the text encoder. Managed Melo V2
+downloads select the qualified F16 companion (238 MB) under the canonical
+`bert-base-uncased.gguf` filename, pinned to the same immutable revision as the
+Melo checkpoint. BERT is Apache-2.0 independently of Melo's MIT license; see
+THIRD_PARTY_NOTICES.txt. Explicit companion paths remain supported.
+
+The full current application passes the unchanged four-case speech/speaker
+matrix on CPU and T4 CUDA with actual Session/C ABI and CLI companion discovery.
+[CPU evidence](historical/openvoice-full-f16-cpu-accepted-2026-10-29.json) and
+[CUDA evidence](historical/openvoice-full-f16-cuda-accepted-2026-10-29.json) retain exact model
+hashes and scope. The older Q4 BERT profile fails the fixed content controls and
+is not the managed default. This qualification does not cover Melo V3.
 
 ### piper
 

@@ -32,14 +32,17 @@ def block(source: str, signature: str) -> str:
     return source[start:end]
 
 PREAMBLE = r'''
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <chrono>
 #include <iostream>
+#include "core/omnivoice_audio.h"
 static bool ov_bench_enabled(){ return false; }
 struct ov_bench_stage{
     const char* name; std::chrono::steady_clock::time_point t0;
@@ -47,13 +50,28 @@ struct ov_bench_stage{
     ~ov_bench_stage(){}
 };
 struct ov_hp{ uint32_t n_codebooks=8; };
-struct ov_higgs_tokenizer{ bool loaded=false; };
+struct ov_higgs_tokenizer{ bool loaded=false; std::string path; };
 struct omnivoice_context{
     ov_hp hp;
-    ov_higgs_tokenizer tokenizer;
+    ov_higgs_tokenizer tokenizer, resident_decoder;
     int verbosity=0;
     float ref_rms=0.0f;
+    // #518 audio post-processing controls. Default to the legacy/raw
+    // configuration so the normal/quiet assertions below keep their
+    // original meaning (no silence cleanup, no fade/pad, no peak
+    // normalization); the allocation guards are configuration-independent.
+    int ref_T=0;
+    bool legacy_audio=true;
+    bool preprocess_prompt=false;
+    bool postprocess_output=false;
+    float pad_duration=0.f;
+    float fade_duration=0.f;
 };
+static bool codec_split_enabled(){ return false; }
+static bool codec_resident_enabled(){ return false; }
+static bool tok_prepare_resident_decoder(omnivoice_context*){ return true; }
+static bool codec_decode_on_gpu(const omnivoice_context*){ return false; }
+static bool tok_rebind(omnivoice_context*, bool){ return true; }
 struct ov_gen_result{ std::vector<int32_t> codes; int T=0; int n_codebooks=0; };
 static std::vector<int32_t> STUB_CODES = {1,2,3,4,5,6,7,8,  10,20,30,40,50,60,70,80};
 static std::vector<float>   STUB_PCM   = []{
@@ -63,7 +81,7 @@ static ov_gen_result generate_iterative(omnivoice_context* ctx, const std::strin
     (void)ctx; (void)text;
     ov_gen_result r; r.codes = STUB_CODES; r.T = 2; r.n_codebooks=8; return r;
 }
-static std::vector<float> higgs_decode(omnivoice_context* ctx, const int32_t* codes, int n_cb, int T_frames){
+static std::vector<float> higgs_decode(omnivoice_context* ctx, const int32_t* codes, int n_cb, int T_frames, ov_higgs_tokenizer* = nullptr){
     (void)ctx; (void)codes; (void)n_cb; (void)T_frames;
     std::vector<float> pcm = STUB_PCM;
     if(pcm.empty()) pcm.push_back(0.0f);
@@ -119,7 +137,10 @@ int main(int argc,char**argv){
         std::cout<<"PASS oom-pcm null+0\n"; return 0;
     }
     if(mode=="quiet-gain"){
-        omnivoice_context ctx2=ctx; ctx2.ref_rms=0.05f;
+        // ref_T>0 selects the reference-loudness restoration branch (gain =
+        // ref_rms/0.1 = 0.5); the raw legacy defaults keep the output at the
+        // original length so the *0.5 expectation below still holds.
+        omnivoice_context ctx2=ctx; ctx2.ref_rms=0.05f; ctx2.ref_T=1;
         int32_t dummy[16]={0};
         int m=-1;
         float* q = omnivoice_decode_codes(&ctx2, dummy, 16, &m);
@@ -149,7 +170,7 @@ def make_executable(source_text: str, directory: Path, label: str, mutated=False
     cpp = directory / f'{label}.cpp'
     exe = directory / label
     cpp.write_text(harness)
-    cmd = [compiler, '-std=c++17', '-O2', str(cpp), '-o', str(exe)]
+    cmd = [compiler, '-std=c++17', '-O2', f'-I{ROOT}/src', str(cpp), '-o', str(exe)]
     build = subprocess.run(cmd, capture_output=True, text=True)
     if build.returncode != 0:
         raise RuntimeError(f"compile {label} failed: {build.stderr}\n{cmd}")

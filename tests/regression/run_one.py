@@ -48,6 +48,10 @@ Env:
   KEEP_WORK       If set to 1, don't delete WORK_DIR on exit.
   REGRESSION_MANIFEST  Path to manifest.json (default:
                   tests/regression/manifest.json).
+  REGRESSION_DIAGNOSTICS_DIR  Optional directory outside WORK_DIR for bounded
+                  command logs and a failed TTS roundtrip's generated WAV.
+  REGRESSION_KEEP_TTS_WAV  Set to 1 with the diagnostics directory to retain
+                  a successful roundtrip's WAV as an explicit manual control.
 """
 
 from __future__ import annotations
@@ -63,6 +67,74 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_LOG_LIMIT = 512 * 1024
+_WAV_LIMIT = 32 * 1024 * 1024
+
+
+def _diagnostics_dir() -> Path | None:
+    value = os.environ.get("REGRESSION_DIAGNOSTICS_DIR")
+    if not value:
+        return None
+    path = Path(value).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _bounded_output(value: str | bytes | None) -> dict:
+    data = value.encode("utf-8", errors="replace") if isinstance(value, str) else value or b""
+    text = data[-_LOG_LIMIT:].decode("utf-8", errors="replace")
+    encoded = text.encode("utf-8")
+    if len(encoded) > _LOG_LIMIT:
+        # Replacing malformed bytes can expand the tail by up to 3x. Trim the
+        # encoded suffix and drop only a partial codepoint at its new start.
+        text = encoded[-_LOG_LIMIT:].decode("utf-8", errors="ignore")
+    return {
+        "bytes": len(data),
+        "truncated": len(data) > _LOG_LIMIT or len(encoded) > _LOG_LIMIT,
+        "text": text,
+    }
+
+
+def _run_captured(argv: list[str], *, check: bool, timeout: int, label: str) -> subprocess.CompletedProcess:
+    """Run an unchanged CLI argv; persist bounded output when requested."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, check=check, timeout=timeout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        diag = _diagnostics_dir()
+        if diag is not None:
+            (diag / f"{label}.json").write_text(json.dumps({
+                "argv": argv,
+                "returncode": exc.returncode if isinstance(exc, subprocess.CalledProcessError) else None,
+                "timed_out": isinstance(exc, subprocess.TimeoutExpired),
+                "stdout": _bounded_output(exc.stdout),
+                "stderr": _bounded_output(exc.stderr),
+            }, indent=2) + "\n")
+        raise
+    diag = _diagnostics_dir()
+    if diag is not None:
+        (diag / f"{label}.json").write_text(json.dumps({
+            "argv": argv,
+            "returncode": proc.returncode,
+            "timed_out": False,
+            "stdout": _bounded_output(proc.stdout),
+            "stderr": _bounded_output(proc.stderr),
+        }, indent=2) + "\n")
+    return proc
+
+
+def _preserve_tts_wav(name: str, wav: Path) -> None:
+    """Keep only a small generated WAV, never model or downloaded input files."""
+    diag = _diagnostics_dir()
+    if diag is None or not wav.is_file():
+        return
+    size = wav.stat().st_size
+    if size > _WAV_LIMIT:
+        (diag / "wav-skipped.json").write_text(json.dumps({
+            "reason": "generated WAV exceeds diagnostics cap", "bytes": size,
+            "limit": _WAV_LIMIT,
+        }, indent=2) + "\n")
+        return
+    shutil.copyfile(wav, diag / f"tts_{name}.wav")
 
 
 def die(msg: str, code: int = 1) -> "NoReturn":
@@ -190,7 +262,8 @@ def strip_ai_disclaimer(transcript: str) -> str:
     return transcript
 
 
-def run_transcript(crispasr_bin: Path, gguf: Path, sample: Path, *, srt: bool = False) -> str:
+def run_transcript(crispasr_bin: Path, gguf: Path, sample: Path, *, srt: bool = False,
+                   label: str = "transcript") -> str:
     """Run `crispasr -m gguf -f sample`, return the transcript line.
 
     The CLI prints the transcript on its own line near the end, after
@@ -203,18 +276,17 @@ def run_transcript(crispasr_bin: Path, gguf: Path, sample: Path, *, srt: bool = 
         import tempfile
         with tempfile.TemporaryDirectory(prefix="regression-srt-", dir=gguf.parent) as temp:
             prefix = Path(temp) / "decoded"
-            subprocess.run([str(crispasr_bin), "-m", str(gguf), "-f", str(sample),
-                            "-osrt", "-of", str(prefix)], capture_output=True,
-                           text=True, check=True, timeout=600)
+            _run_captured([str(crispasr_bin), "-m", str(gguf), "-f", str(sample),
+                           "-osrt", "-of", str(prefix)],
+                          check=True, timeout=600, label=label)
             cues = prefix.with_suffix(".srt").read_text()
             return " ".join(line.strip() for line in cues.splitlines()
                             if line.strip() and not line.strip().isdigit() and "-->" not in line)
-    proc = subprocess.run(
+    proc = _run_captured(
         [str(crispasr_bin), "-m", str(gguf), "-f", str(sample)],
-        capture_output=True,
-        text=True,
         check=True,
         timeout=600,
+        label=label,
     )
     # The transcript is on stdout; status lines go to stderr. Take stdout's
     # last non-empty line as the transcript (the CLI prints a single text
@@ -306,12 +378,11 @@ def run_diff(diff_bin: Path, backend_id: str, gguf: Path, ref: Path, sample: Pat
     the harness's verdict and only fail if a stage is missing or the
     process crashed outright.
     """
-    proc = subprocess.run(
+    proc = _run_captured(
         [str(diff_bin), backend_id, str(gguf), str(ref), str(sample)],
-        capture_output=True,
-        text=True,
         check=False,
         timeout=600,
+        label="diff",
     )
     if proc.returncode < 0:
         die(f"crispasr-diff died from signal {-proc.returncode}\n"
@@ -368,6 +439,21 @@ def transcript_gate(entry: dict, actual: str) -> tuple[bool, list[str]]:
     return ok, [f"{verdict}  {gate}{suffix}", f"    expected: {expected!r}", f"    actual:   {actual!r}"]
 
 
+def validate_exact_diff_transcript(entry: dict) -> None:
+    """Reject incomplete full-precision controls before downloading models."""
+    required = entry.get("require_exact_diff_transcript", False)
+    if not isinstance(required, bool):
+        raise ValueError("require_exact_diff_transcript must be boolean")
+    if required and (not entry.get("diff_gguf") or entry.get("skip_diff", False)
+                     or not entry.get("transcript_reference")):
+        raise ValueError("Exact diff transcript requires diff_gguf, stage diff and independent transcript_reference")
+
+
+def exact_diff_transcript_gate(entry: dict, actual: str) -> tuple[bool, list[str]]:
+    """The F16 control always requires zero error against the original target."""
+    return transcript_gate({**entry, "transcript_tolerance": {"cer_max": 0.0, "wer_max": 0.0}}, actual)
+
+
 def verify_transcript_reference(entry: dict, reference: Path, sample: Path,
                                 work_dir: Path) -> str:
     """Verify a transcript target against pinned, independent CTC logits.
@@ -417,6 +503,8 @@ def regression_for(name: str, manifest: dict, work_dir: Path,
     entry = next((b for b in manifest["backends"] if b["name"] == name), None)
     if entry is None:
         die(f"backend '{name}' not in manifest")
+
+    validate_exact_diff_transcript(entry)
 
     gguf_local = hf_download(
         entry["gguf"]["repo"],
@@ -501,17 +589,25 @@ def regression_for(name: str, manifest: dict, work_dir: Path,
         dg = entry["diff_gguf"]
         diff_gguf = hf_download(dg.get("repo", entry["gguf"]["repo"]), dg["file"],
                                 dg.get("revision", entry["gguf"]["revision"]), work_dir)
+    if entry.get("require_exact_diff_transcript", False):
+        print(f"\n[transcript-f16] {name}")
+        control = run_transcript(crispasr_bin, diff_gguf, sample,
+                                 srt=entry.get("transcript_format") == "srt", label="transcript-f16")
+        control_ok, control_lines = exact_diff_transcript_gate(entry, control)
+        for line in control_lines:
+            print(line)
+        failures += int(not control_ok)
     print(f"\n[diff-harness] {name}  ({diff_gguf.name})")
     stages = run_diff(diff_bin, entry["backend_id"], diff_gguf, ref_local, sample)
     thresholds = entry["diff_thresholds"]
     passes, fails, missing, extras = evaluate_stage_thresholds(stages, thresholds, **stage_gate_kwargs(entry))
     for stage in missing:
-        print(f"\033[33m  SKIP\033[0m {stage}  (not captured by diff harness)")
+        print(f"\033[31m  FAIL\033[0m {stage}  (required stage not captured by diff harness)")
     for stage, cos_min, threshold in passes:
         print(f"\033[32m  PASS\033[0m {stage:24s} cos_min={cos_min:.6f}  threshold={threshold}")
     for stage, cos_min, threshold in fails:
         print(f"\033[31m  FAIL\033[0m {stage:24s} cos_min={cos_min:.6f}  threshold={threshold}")
-    failures += len(fails)
+    failures += len(fails) + len(missing)
     # Captured but ungated: no stage_threshold_default, or listed in
     # advisory_stages. Add a threshold (or a default) if the stage is meant to hold.
     for stage, cos_min in extras:
@@ -654,19 +750,21 @@ def tts_roundtrip_for(name: str, manifest: dict, work_dir: Path,
         syn_cmd += ["--codec-model", str(codec_local)]
     syn_cmd += list(entry.get("tts_extra_args", []))
     try:
-        proc = subprocess.run(syn_cmd, capture_output=True, text=True,
-                              timeout=300)
+        proc = _run_captured(syn_cmd, check=False, timeout=300, label="tts-synth")
     except subprocess.TimeoutExpired:
+        _preserve_tts_wav(name, out_wav)
         if advisory:
             return advisory_skip("TTS synth timed out after 300 s")
         die(f"{name}: TTS synth timed out after 300 s")
     if proc.returncode != 0:
+        _preserve_tts_wav(name, out_wav)
         if advisory:
             return advisory_skip(f"TTS synth crashed (rc={proc.returncode})")
         print(f"\033[31m  FAIL\033[0m  TTS synth crashed (rc={proc.returncode})")
         print(f"    stderr tail: ...{(proc.stderr or '')[-300:]}")
         return 1
     if not out_wav.is_file() or out_wav.stat().st_size < 1000:
+        _preserve_tts_wav(name, out_wav)
         if advisory:
             return advisory_skip(f"TTS produced no usable output: {out_wav}")
         print(f"\033[31m  FAIL\033[0m  TTS produced no usable output: {out_wav}")
@@ -679,13 +777,14 @@ def tts_roundtrip_for(name: str, manifest: dict, work_dir: Path,
                "-f", str(out_wav),
                "--no-prints"]
     try:
-        proc = subprocess.run(asr_cmd, capture_output=True, text=True,
-                              timeout=180)
+        proc = _run_captured(asr_cmd, check=False, timeout=180, label="roundtrip-asr")
     except subprocess.TimeoutExpired:
+        _preserve_tts_wav(name, out_wav)
         if advisory:
             return advisory_skip("ASR roundtrip timed out after 180 s")
         die(f"{name}: ASR roundtrip timed out after 180 s")
     if proc.returncode != 0:
+        _preserve_tts_wav(name, out_wav)
         if advisory:
             return advisory_skip(f"ASR roundtrip crashed (rc={proc.returncode})")
         print(f"\033[31m  FAIL\033[0m  ASR roundtrip crashed (rc={proc.returncode})")
@@ -701,6 +800,8 @@ def tts_roundtrip_for(name: str, manifest: dict, work_dir: Path,
     wer_max = float(entry["wer_max"])
     _, wer = compute_transcript_metrics(tts_phrase, transcript)
     ok = wer <= wer_max
+    if not ok or os.environ.get("REGRESSION_KEEP_TTS_WAV") == "1":
+        _preserve_tts_wav(name, out_wav)
     # `advisory: true` entries report their WER but never fail the run — for
     # legitimately weak / high-variance TTS models (e.g. bark-small) whose
     # roundtrip can't clear a tight cross-platform bar. NOT for masking a real
@@ -802,6 +903,7 @@ def dry_run(manifest: dict, backend_filter: str | None = None) -> int:
     print(f"dry-run: checking {len(backends)} ASR + {len(tts_backends)} TTS backend(s)")
 
     for entry in backends:
+        validate_exact_diff_transcript(entry)
         name = entry["name"]
         # skip_preflight: true — GGUF repo temporarily inaccessible (e.g. HF
         # private-repo storage limit). Dry-run skips the artifact check so CI
@@ -1014,6 +1116,9 @@ def main() -> int:
     keep_work = os.environ.get("KEEP_WORK") == "1"
 
     try:
+        diagnostics = os.environ.get("REGRESSION_DIAGNOSTICS_DIR")
+        if diagnostics and Path(diagnostics).resolve().is_relative_to(work_root.resolve()):
+            die("REGRESSION_DIAGNOSTICS_DIR must be outside WORK_DIR so cleanup preserves evidence")
         if tts_entry is not None:
             failures = tts_roundtrip_for(
                 backend_name, manifest, work_root, crispasr_bin)

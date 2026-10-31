@@ -54,12 +54,13 @@ std::string crispasr_license_tag(const std::string& license);
 
 /// True when the licence designates a RESTRICTED model the user must
 /// explicitly accept before download: cc-by-nc-*, gemma, llama*,
-/// qwen-research, mistral-ai-research, lfm1.0, other.
-/// Same list as CrispEmbed's crispembed_mgr::license_requires_acceptance.
+/// qwen-research, mistral-ai-research, lfm1.0, omnivoice-terms,
+/// nvidia-open-model-license, other.
 bool crispasr_license_requires_acceptance(const std::string& license);
 
 /// True when `accepted` attests this licence: the exact tag, or "all" / "*".
 /// Falls back to the CRISPASR_ACCEPT_LICENSE env var.
+/// Acceptance affirms eligibility and compliance; it grants no extra rights.
 bool crispasr_license_accepted(const std::string& license, const std::string& accepted);
 
 /// Download a CrispASR-managed auxiliary artifact after applying the same
@@ -90,7 +91,8 @@ bool crispasr_registry_default_bundle(const std::string& backend, CrispasrRegist
 /// Number of entries in the static registry.
 int crispasr_registry_count();
 
-/// Get the i-th entry (0..count-1). Returns false on out-of-range.
+/// Get the i-th entry (0..count-1). Returns false on out-of-range or when
+/// preferred_quant is not one of that model's explicitly qualified profiles.
 /// Iterating from 0 to count-1 visits every entry in declaration order.
 bool crispasr_registry_get_at(int i, CrispasrRegistryEntry& out, const std::string& preferred_quant = "");
 

@@ -1,0 +1,43 @@
+name: Preserve original issue 483 MMQ pair
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: preserve-original-mmq-483
+  cancel-in-progress: false
+
+jobs:
+  preserve:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install portable resource reader from a binary wheel
+        run: 'python3 -m pip install --only-binary=:all: psutil==5.9.8'
+      - name: Check archive and draft ownership guards
+        run: python3 -B tests/test_mmq_preservation.py -v
+      - name: Preserve originals and verify draft asset readback
+        env:
+          PRESERVE_OUT: ${{ runner.temp }}/mmq-receipt
+          PRESERVE_SCRATCH: ${{ runner.temp }}/mmq-scratch
+        run: python3 -B tools/ci-heavy/preserve_cuda126_mmq.py
+      - name: Retain small audit receipt and notice inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmq-preservation-${{ github.run_id }}
+          path: ${{ runner.temp }}/mmq-receipt
+          if-no-files-found: error
+          retention-days: 90
