@@ -63,8 +63,8 @@ Two habits that repeatedly cost time here:
 
 This checkout is the fork that ships the STT engine for Recheo. Upstream is
 `CrispStrobe/CrispASR`; the fork adds the Context-Assist patches (F1–F12) and publishes
-static arm64 + Metal archives that the app pins. This section wins over the generic maintainer routine above
-when the two disagree about this line's branches, tags or scope.
+static arm64 + Metal archives that the app pins. This section wins over the generic
+maintainer routine above when the two disagree about this line's branches, tags or scope.
 
 **Where the work happens.** Fork work — merging a new upstream release, keeping the
 patches, cutting `ca-*` tags — runs in an agent session whose working directory is *this
