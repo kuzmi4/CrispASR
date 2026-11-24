@@ -27,6 +27,16 @@ TEST_CASE("registry: lookup unknown backend returns false", "[unit][registry]") 
     REQUIRE_FALSE(found);
 }
 
+TEST_CASE("registry: Qwen3 Ultra aligner resolves the pinned F16 and keeps the aligner filename", "[unit][registry]") {
+    CrispasrRegistryEntry entry;
+    REQUIRE(crispasr_registry_lookup("qwen3-forced-aligner-ultra", entry));
+    REQUIRE(entry.filename == "qwen3-forced-aligner-ultra-f16.gguf");
+    REQUIRE(entry.url == "https://huggingface.co/cstr/qwen3-forced-aligner-ultra-GGUF/resolve/"
+                         "992f8360e1e99cc5dae6bb162c530cd927e14a30/qwen3-forced-aligner-ultra-f16.gguf");
+    // The aligner dispatch keys on "forced-aligner" in the filename.
+    REQUIRE(entry.filename.find("forced-aligner") != std::string::npos);
+}
+
 TEST_CASE("registry: Nemotron defaults only to the pinned qualified F16", "[unit][registry][nemotron]") {
     CrispasrRegistryEntry entry;
     REQUIRE(crispasr_registry_lookup("nemotron", entry));
@@ -110,6 +120,43 @@ TEST_CASE("registry: Phonon-2 selects Q8 and resolves alternate GGUF quants", "[
     REQUIRE(e.filename == "phonon2-q4_k.gguf");
     REQUIRE(crispasr_registry_lookup_by_filename("phonon2-q8_0.gguf", e));
     REQUIRE(e.backend == "phonon2");
+}
+
+TEST_CASE("registry: voice-isolator offline and realtime resolve their own files", "[unit][registry]") {
+    CrispasrRegistryEntry e;
+    REQUIRE(crispasr_registry_lookup("voice-isolator", e));
+    REQUIRE(e.filename == "voice-isolator-q8_0.gguf");
+    REQUIRE(e.license == "Apache-2.0");
+    REQUIRE(crispasr_registry_lookup("voice-isolator", e, "f16"));
+    REQUIRE(e.filename == "voice-isolator-f16.gguf");
+    REQUIRE(crispasr_registry_lookup("voice-isolator", e, "q4_k"));
+    REQUIRE(e.filename == "voice-isolator-q4_k.gguf");
+    REQUIRE(crispasr_registry_lookup("voice-isolator-realtime", e));
+    REQUIRE(e.filename == "voice-isolator-realtime-q8_0.gguf");
+    REQUIRE_FALSE(crispasr_registry_lookup("voice-isolator-realtime", e, "q4_k"));
+    REQUIRE(crispasr_registry_lookup_by_filename("voice-isolator-realtime-f16.gguf", e));
+    REQUIRE(e.backend == "voice-isolator-realtime");
+}
+
+TEST_CASE("registry: mini-bs-roformer defaults to Q8_0 and resolves qualified quants", "[unit][registry]") {
+    CrispasrRegistryEntry e;
+    REQUIRE(crispasr_registry_lookup("mini-bs-roformer", e));
+    REQUIRE(e.filename == "mini-bs-roformer-q8_0.gguf");
+    REQUIRE(e.approx_size == "~50 MB");
+    REQUIRE(e.license == "MIT");
+    REQUIRE(crispasr_registry_lookup("mini-bs-roformer", e, "q4_k"));
+    REQUIRE(e.filename == "mini-bs-roformer-q4_k.gguf");
+    REQUIRE(e.approx_size == "~37 MB");
+    REQUIRE(crispasr_registry_lookup("mini-bs-roformer", e, "f16"));
+    REQUIRE(e.filename == "mini-bs-roformer-f16.gguf");
+    REQUIRE(e.approx_size == "~88 MB");
+    REQUIRE_FALSE(crispasr_registry_lookup("mini-bs-roformer", e, "q5_0"));
+    REQUIRE(crispasr_registry_lookup_by_filename("mini-bs-roformer-q8_0.gguf", e));
+    REQUIRE(e.backend == "mini-bs-roformer");
+    REQUIRE(crispasr_registry_lookup_by_filename("mini-bs-roformer-q4_k.gguf", e));
+    REQUIRE(e.backend == "mini-bs-roformer");
+    REQUIRE(crispasr_registry_lookup_by_filename("mini-bs-roformer-f16.gguf", e));
+    REQUIRE(e.backend == "mini-bs-roformer");
 }
 
 TEST_CASE("registry: default bundle reports the exact canonical artifacts", "[unit][registry]") {
@@ -303,6 +350,13 @@ TEST_CASE("registry: haas-ja has entry (#561)", "[unit][registry]") {
     REQUIRE(std::string(e.filename) == "haas-ja-v1.0-q4_k.gguf");
     REQUIRE(crispasr_registry_lookup("haas-ja", e, "f16"));
     REQUIRE(std::string(e.filename) == "haas-ja-v1.0-f16.gguf");
+    for (const char* alias : {"haas-asr", "haas_asr", "haas_ja"}) {
+        INFO(alias);
+        REQUIRE(crispasr_registry_lookup(alias, e));
+        REQUIRE(e.filename == "haas-ja-v1.0-q8_0.gguf");
+        REQUIRE(crispasr_registry_lookup(alias, e, "q4_k"));
+        REQUIRE(e.filename == "haas-ja-v1.0-q4_k.gguf");
+    }
 }
 
 TEST_CASE("registry: mimo-asr has entry (added in #63)", "[unit][registry]") {
@@ -656,8 +710,9 @@ TEST_CASE("registry: fill with preferred quant does not crash on any entry (#152
         crispasr_registry_get_at(i, e);
         CrispasrRegistryEntry eq;
         const bool found = crispasr_registry_lookup(e.backend, eq, "q4_k");
-        if (e.backend == "nemotron") {
-            // Only F16 is qualified; manufacturing a Q4 download is rejected.
+        if (e.backend == "nemotron" || e.backend == "voice-isolator-realtime") {
+            // Only F16 (nemotron) / F16+Q8_0 (realtime voice isolator) are
+            // qualified; manufacturing a Q4 download is rejected.
             REQUIRE_FALSE(found);
             continue;
         }

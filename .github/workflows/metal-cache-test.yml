@@ -3,6 +3,7 @@ name: Metal cache test
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - ggml
       - tests/test-metal-pipeline-cache.mm
@@ -19,12 +20,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: metal-cache-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   compile-and-test:
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false

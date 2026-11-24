@@ -17,7 +17,8 @@ The GitHub releases carry several Linux x86-64 tarballs.
 | `crispasr-linux-x86_64-avx512.tar.gz` | none (AVX-512 CPU) | n/a |
 | `crispasr-linux-x86_64-cuda.tar.gz` | NVIDIA GPU (CUDA 12) | **yes** — runs on CPU if CUDA libs are absent |
 | `crispasr-linux-x86_64-cuda13.tar.gz` | NVIDIA GPU (CUDA 13) | **yes** — runs on CPU if CUDA libs are absent |
-| `crispasr-linux-x86_64-hip.tar.gz` | AMD GPU (ROCm) | **no** |
+| `crispasr-linux-x86_64-hip.tar.gz` | AMD GPU (ROCm 6.3+ with hipBLAS) | **yes** — runs on CPU if ROCm libs are absent (since #586) |
+| `crispasr-linux-x86_64-hip7.tar.gz` | AMD GPU (**ROCm 7.x** with hipBLAS; Arch and other rolling distros) | **yes** — same as above (since v0.8.53) |
 | `crispasr-linux-x86_64-vulkan.tar.gz` | Vulkan GPU | **no** |
 
 Since v0.8.30 the CUDA tarballs use dynamic backend loading
@@ -38,8 +39,23 @@ model load with `GGML_ASSERT(backend)` / `GGML_ASSERT(device)`. If no CPU
 module can load, crispasr now exits with a clear "no CPU ggml backend" error
 pointing at the `-cpu-legacy` artifact instead of aborting.
 
-For GPU acceleration, the NVIDIA driver and CUDA toolkit must be installed on
-the host (or injected into the container via `--gpus` / `runtime: nvidia`).
+For GPU acceleration the host needs the NVIDIA driver **and the CUDA runtime
+libraries of the package's major version**: `libcudart` and `libcublas`
+(`.so.12` for `crispasr-linux-x86_64-cuda`, `.so.13` for `-cuda13`). The driver
+alone does not ship them, and the distro's `nvidia-cuda-toolkit` package is
+usually an older CUDA (11.5 on Ubuntu 22.04, 12.0 on 24.04), so installing it
+does not help the CUDA 13 package (#606). Add NVIDIA's CUDA repository
+(developer.nvidia.com/cuda-downloads, "deb (network)") and install only the two
+runtime libraries, e.g. for CUDA 13:
+
+```bash
+sudo apt install cuda-cudart-13-0 libcublas-13-0
+```
+
+(`cuda-cudart-12-8 libcublas-12-8` for the CUDA 12 package). A container gets
+the driver through `--gpus all` / `runtime: nvidia`. `crispasr --diag` names the
+exact library that is missing when the CUDA backend does not load, and a normal
+run prints a one-line warning instead of switching to the CPU silently.
 
 > **Installing via `mise` (or another GitHub-release installer)?** Those tools
 > pick ONE asset per OS/arch — for Linux that is the plain
@@ -50,9 +66,19 @@ the host (or injected into the container via `--gpus` / `runtime: nvidia`).
 > about — download the tarball you need from the releases page directly, or
 > configure your installer's asset selection if it supports one.
 
-The HIP and Vulkan tarballs still require their respective runtimes at
-link time (no CPU fallback). Use the plain CPU tarball if you need a
-GPU-less fallback for those.
+The HIP tarball is built the same way since #586: `ggml-hip.so` is a
+`dlopen`-ed module, so the binary always starts. GPU use needs ROCm 6.x
+with hipBLAS and rocBLAS installed (`libhipblas.so.2`, e.g. the `hipblas`
+package next to the ROCm runtime). **On ROCm 7 (hipBLAS `libhipblas.so.3`) use
+`crispasr-linux-x86_64-hip7.tar.gz`** instead: ROCm 7 renamed its library
+sonames, so the ROCm 6 module cannot load there. If `ggml-hip.so` cannot load —
+no ROCm, no hipBLAS, or the wrong ROCm major for the tarball — crispasr runs on
+the CPU; `ldd ggml-hip.so` (or `libggml-hip.so`) in the extracted folder shows
+which library is missing. Before #586 the same situation aborted at startup
+with `error while loading shared libraries: libhipblas.so.2`.
+
+The Vulkan tarball still requires the Vulkan loader at link time (no CPU
+fallback). Use the plain CPU tarball if you need a GPU-less fallback there.
 
 Verify what a given tarball actually requires before deploying it:
 
@@ -66,8 +92,8 @@ readelf -d crispasr | grep NEEDED
 > unregistered instead of killing the process. This works and is verified on
 > Metal and CPU — see [the #355 section](#graceful-degradation-via-ggml_backend_dl-355)
 > for the measured transcripts and the two throughput caveats. The two CUDA
-> tarballs above are already built this way; the HIP and Vulkan tarballs are
-> still statically linked, because flipping those release legs needs an A/B on
+> tarballs and (since #586) the HIP tarball are already built this way; the
+> Vulkan tarball is still statically linked, because flipping those release legs needs an A/B on
 > real AMD and Vulkan hardware first.
 
 ## Windows CPU: which zip? (#380)

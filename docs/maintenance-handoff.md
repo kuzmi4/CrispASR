@@ -1,4 +1,4 @@
-# Fresh-agent maintainer handoff — 2026-10-29
+# Fresh-agent maintainer handoff — updated 2026-11-03
 
 This is the current handoff. No previous chat is needed to understand the work,
 what is complete, or what to do next. Read `AGENTS.md` and the full maintainer
@@ -13,7 +13,77 @@ PR, job-queue and ownership claims are not current instructions. Do not resume
 them automatically. Public path aliases describe roles; actual bindings stay
 in ignored local notes.
 
-## Continuation snapshot — 2026-10-30 18:05 UTC
+## Current state — 2026-11-03 (read this first)
+
+**The live, fully scoped task list is [PLAN.md → "NOW — open lanes"](../PLAN.md#now--open-lanes-fully-scoped-2026-11-03).** **v0.8.50 is published and both audits are accepted** (R1–R3 complete; receipts in `docs/historical/release-v0850-*`). The remaining lanes: M1 is the #568 Metal bug, S1 the SCNet review follow-ups, V1 optional hosted checks. Older sections below are evidence, not instructions.
+
+What happened 2026-11-02/03, so you don't redo it:
+
+- **Shipped to main, then tagged v0.8.50 (`5c96e5521`):**
+  - Lint Deep repairs.
+  - #564 MOSS-Diarize beam and sampling (`src/core/logit_sampler.h`, hosted acceptance 41417217786).
+  - #567 parakeet-unified tokenizer: the converter is fixed, and the HF GGUFs were rewritten in place and verified.
+  - #568 Metal→CPU fallback.
+  - #569 moss-audio real-length encoding.
+  - #570 LID download consent.
+  - SCNet (squash of qualified `7b6a88360`), with the #571 is_metal "MTL" restore.
+- **Integration lessons:**
+  - **Squash-merging a long branch onto main can silently combine two independent fixes of the same line.** It happened twice here: duplicated `setenv` guards in `src/mini_bs_roformer.cpp`, which broke every build, and a lost `"MTL"` match in `core_cpu_backend::is_metal` (#571). After any squash, grep the diff against both parents for touched preprocessor guards and name checks before pushing.
+  - **Several Python tests compile extracted C++ against their own stub structs:** `tests/test_session_metadata.py`, `test_dia_sampling_controls.py` and `test_issue560_lid_only.py` (more: `grep -l "struct crispasr_session {" tests/*.py`). If you add a session field, a setter dependency or a helper called from an extracted function, update those stubs. Run them with a local (non-CIFS) `TMPDIR`.
+  - **Lint Deep runs cppcheck 2.7.** Patterns it rejects here:
+    - a virtual call inside a destructor;
+    - a lambda returning bool through `std::isfinite`;
+    - a redundant null check after dereference;
+    - index-then-check comparators;
+    - `char*`→`float*` `reinterpret_cast` (route it through `const void*`).
+
+    A local cppcheck 2.17 does not reproduce every 2.7 finding.
+  - **`src/core/backend_caps_table.h` is generated from the CLI's adapter caps.** Changing a backend's `capabilities()` needs the row updated, and CI's `gen-backend-caps-table.py --check` enforces it.
+  - **Wheel runs:** a Release rerun that turns a failed run green fires a second `Release Python wheels` run. PyPI keeps the first run's bytes, so audit with the run whose `publish-pypi` uploaded (see PLAN lane R2).
+  - **Runner labels:** a job cancelled at 0 s with no steps means a rejected runner label (`macos-14`, Nov 2026). Change the label on main and redispatch; a rerun keeps the old workflow file.
+  - **Release queue:** a tag push starts about 15 workflows. Cancelling the non-release ones speeds up Release, but **do not cancel "Publish Docker image"**, which is part of the release. Poll `gh` at most every 5 min; a 2-min multi-run loop hit the 5000/h API limit.
+- **Private details** (local paths, backups, credentials, storage) are in the gitignored local notes, never in this file.
+
+## Main integration follow-up — 2026-10-31
+
+GitHub main `d71788aa` contains the exact delivered repair tree. The bounded
+follow-up fixes two omissions in that original batch: three Omnivoice test
+calls lacked the required thread budget, and two tests lacked an explicit
+CPU-backend header include. The complete configured Linux CPU build now passes,
+as do 133 performance-parity CTests and the expanded 49-case discovery guard.
+The broader unit run is limited by local OS facilities. A separate hosted
+Moonshine gate already failed before integration and still needs its inner
+failure artifact. See [the integration report](post-release-audit-integration.md)
+for exact evidence, scope and next actions. The follow-up is delivered as a
+patch/source bundle; no upstream publication or external dispatch is included.
+
+## Audit repair continuation — 2026-10-31
+
+This bounded update supersedes the older completeness claims below for the
+audited post-v0.8.49 optimization changes. Starting from `26945b34`, local branch
+`fix/post-v0849-audit` repairs confirmed ArkTTS cache lifetime, worker scheduling,
+VoxCPM2 mono convolution, iSTFT memory, RVQ near ties, cosine diagonals, Haas
+aliases, MeanVC2 conditioning/interpolation, and test-discovery failures.
+Implementation and test sources are in `1b5a16c40118a3b15d53c7dd6bbc66c7458bc203`.
+See [the repair report](post-release-audit-repairs.md) and
+[external qualification instructions](post-release-audit-validation.md).
+
+The final Linux CPU shared library and actual CLI build pass, as do 131 selected
+CTest cases, the 47-case discovery guard, actual Haas CLI/C ABI dispatch, all 73
+registry cases, and 738 exact release-to-candidate core comparisons. The
+downloadable source/patch bundle retains the raw receipts. Nothing was pushed
+upstream and no external workflow was dispatched.
+
+MeanVC2's reference-audio speaker encoder is **not implemented**. The native API
+requires an explicitly supplied finite 256-float embedding; the unsupported
+audio setter now returns `-2` instead of substituting a unit vector. The generic
+Session still has no MeanVC2 embedding setter. Earlier stage-parity and
+intelligibility claims therefore do not establish complete conditioned voice
+conversion or speaker identity. Actual model/GPU/platform qualification needs
+reviewed fixtures and capture adapters; the provided manifest is deliberately
+unqualified. No blanket regression-free or end-to-end speed claim is accepted.
+
+## Historical continuation snapshot — 2026-10-30 18:05 UTC
 
 Updated 2026-10-30 18:05 UTC: this snapshot supersedes older status and owner prose.
 - **Haas-ja-v1.0 Japanese ASR Port COMPLETE (Issue #561)**:

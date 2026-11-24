@@ -6,6 +6,7 @@
 //   3. 40-layer Granite 1B LLM (GQA 16/4, μP multipliers, RoPE)
 
 #include "granite_speech.h"
+#include "core/gpu_layers.h"
 #include "core/crispasr_env.h"
 #include <chrono>
 
@@ -457,10 +458,8 @@ static bool granite_speech_load_model(granite_speech_model& model, const char* p
     // `blk.<N>.*` (the LLM naming), treating encoder tensors as
     // non-layered.
     core_gguf::WeightLoad wl;
-    int n_gpu_layers_env = -1;
-    if (const char* s = std::getenv("CRISPASR_N_GPU_LAYERS")) {
-        n_gpu_layers_env = std::atoi(s);
-    }
+    // Session n_gpu_layers, else CRISPASR_N_GPU_LAYERS (#610).
+    const int n_gpu_layers_env = core_gpu_layers::resolve();
     const int total_layers = (int)model.hparams.llm_n_layers;
     const bool do_split =
         backend_cpu && backend_cpu != backend && n_gpu_layers_env >= 0 && n_gpu_layers_env < total_layers;
@@ -1772,7 +1771,7 @@ extern "C" float* granite_speech_run_encoder(struct granite_speech_context* ctx,
         // Shaw block attention on CPU
         core_conformer_ibm::shaw_block_attention_cpu(attn_out.data(), Q.data(), K.data(), V.data(),
                                                      rpe_per_layer[il].empty() ? nullptr : rpe_per_layer[il].data(), T,
-                                                     n_heads, hd, ctx_size, attn_scale, remainder);
+                                                     n_heads, hd, ctx_size, attn_scale, remainder, ctx->n_threads);
 
         if (ctx->params.verbosity >= 2 && il == 0) {
             fprintf(stderr, "  L0 after attn[0][:4] = %.4f %.4f %.4f %.4f\n", attn_out[0], attn_out[1], attn_out[2],
@@ -1812,7 +1811,7 @@ extern "C" float* granite_speech_run_encoder(struct granite_speech_context* ctx,
             if (b.post_norm_b)
                 ggml_backend_tensor_get(b.post_norm_b, nb.data(), 0, d * sizeof(float));
             core_cpu::layernorm(hidden.data(), hidden.data(), b.post_norm_w ? nw.data() : nullptr,
-                                b.post_norm_b ? nb.data() : nullptr, d, T, 1e-5f);
+                                b.post_norm_b ? nb.data() : nullptr, d, T, 1e-5f, ctx->n_threads);
         }
 
         // PLUS: snapshot the post-norm hidden state at any cat_layer index.

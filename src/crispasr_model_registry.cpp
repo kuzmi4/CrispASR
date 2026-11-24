@@ -2,6 +2,7 @@
 
 #include "crispasr_model_registry.h"
 #include "crispasr_cache.h"
+#include "core/backend_aliases.h"
 
 #include <algorithm>
 #include <cctype>
@@ -71,6 +72,32 @@ constexpr Entry k_registry[] = {
     {"mel-band-roformer", "mel-band-roformer-vocals-f16.gguf",
      "https://huggingface.co/cstr/mel-band-roformer-vocals-GGUF/resolve/main/mel-band-roformer-vocals-f16.gguf",
      "~436 MB", nullptr, nullptr},
+    // HiDolen Mini-BS-RoFormer V2.5 source separation (--separate). 4-stem
+    // (bass, drums, other, vocals) at 44.1 kHz; MIT license. Q8_0 is the default
+    // balanced download; Q4_K and F16 are also qualified.
+    {"mini-bs-roformer", "mini-bs-roformer-q8_0.gguf",
+     "https://huggingface.co/cstr/mini-bs-roformer-GGUF/resolve/main/mini-bs-roformer-q8_0.gguf",
+     "~50 MB", nullptr, nullptr, nullptr, "MIT", ",f16,q8_0,q4_k,"},
+    {"mini-bs-roformer", "mini-bs-roformer-q4_k.gguf",
+     "https://huggingface.co/cstr/mini-bs-roformer-GGUF/resolve/main/mini-bs-roformer-q4_k.gguf",
+     "~37 MB", nullptr, nullptr, nullptr, "MIT", ",f16,q8_0,q4_k,"},
+    {"mini-bs-roformer", "mini-bs-roformer-f16.gguf",
+     "https://huggingface.co/cstr/mini-bs-roformer-GGUF/resolve/main/mini-bs-roformer-f16.gguf",
+     "~88 MB", nullptr, nullptr, nullptr, "MIT", ",f16,q8_0,q4_k,"},
+    // Inworld Voice Isolator v1 (#602) voice isolation (--separate): mono 48 kHz,
+    // stems voice + background. Apache-2.0. Q8_0 is the default (voice SI-SDR
+    // 44 dB vs the upstream F32 output); F16 is reference-precision, Q4_K lite.
+    {"voice-isolator", "voice-isolator-q8_0.gguf", "https://huggingface.co/cstr/inworld-voice-isolator-GGUF/resolve/main/voice-isolator-q8_0.gguf", "~114 MB", nullptr, nullptr,
+     nullptr, "Apache-2.0", ",f16,q8_0,q4_k,"},
+    {"voice-isolator", "voice-isolator-f16.gguf", "https://huggingface.co/cstr/inworld-voice-isolator-GGUF/resolve/main/voice-isolator-f16.gguf", "~129 MB", nullptr, nullptr, nullptr,
+     "Apache-2.0", ",f16,q8_0,q4_k,"},
+    {"voice-isolator", "voice-isolator-q4_k.gguf", "https://huggingface.co/cstr/inworld-voice-isolator-GGUF/resolve/main/voice-isolator-q4_k.gguf", "~90 MB", nullptr, nullptr, nullptr,
+     "Apache-2.0", ",f16,q8_0,q4_k,"},
+    // Realtime (causal, 20 ms look-ahead) checkpoint, same runtime.
+    {"voice-isolator-realtime", "voice-isolator-realtime-q8_0.gguf", "https://huggingface.co/cstr/inworld-voice-isolator-GGUF/resolve/main/voice-isolator-realtime-q8_0.gguf",
+     "~108 MB", nullptr, nullptr, nullptr, "Apache-2.0", ",f16,q8_0,"},
+    {"voice-isolator-realtime", "voice-isolator-realtime-f16.gguf", "https://huggingface.co/cstr/inworld-voice-isolator-GGUF/resolve/main/voice-isolator-realtime-f16.gguf",
+     "~117 MB", nullptr, nullptr, nullptr, "Apache-2.0", ",f16,q8_0,"},
     // Sidon v0.1 (SaruLab) speech restoration (--s2s). w2v-BERT predictor +
     // continuous DAC decoder; MIT. Q8_0 is the best-fidelity practical quant
     // (predictor cos 0.998 vs the upstream F32; ASR round-trip identical). #283.
@@ -246,11 +273,23 @@ constexpr Entry k_registry[] = {
      nullptr, nullptr,
      "CC-BY-NC-4.0 — NON-COMMERCIAL use only (KRAFTON/Raon-Speech-9B, "
      "https://huggingface.co/KRAFTON/Raon-Speech-9B)"},
+    // rumble-2-flash (#602) — Reson8/Rumble-2-Flash, a 0.5B Qwen3-ASR fine-tune
+    // (audio 18L d=896, LLM 14L d=1024, re-indexed 99 630-token vocab, Reson8
+    // control tokens <digits><nofiller><verbatim> in the system turn via
+    // qwen3asr.system_prefix). 45 languages. Apache-2.0.
+    {"rumble-2-flash", "rumble-2-flash-q4_k.gguf",
+     "https://huggingface.co/cstr/rumble-2-flash-GGUF/resolve/main/rumble-2-flash-q4_k.gguf", "~400 MB", nullptr,
+     nullptr},
     // Qwen3-ASR-1.7B fine-tuned for Japanese anime/galgame speech (Apache-2.0).
     // Same architecture as qwen3-1.7b; uses the standard qwen3 backend.
     {"qwen3-ja-anime", "qwen3-asr-1.7b-ja-anime-q4_k.gguf",
      "https://huggingface.co/cstr/qwen3-asr-1.7b-ja-anime-GGUF/resolve/main/qwen3-asr-1.7b-ja-anime-q4_k.gguf",
      "~1.3 GB", nullptr, nullptr},
+    // Musci-ASR-qwen-1019 (#595): GRPO fine-tune of Qwen3-ASR-1.7B (Apache-2.0),
+    // config/tokenizer/template identical to the base; standard qwen3 backend.
+    {"musci-asr", "musci-asr-qwen-1019-q4_k.gguf",
+     "https://huggingface.co/cstr/musci-asr-qwen-1019-GGUF/resolve/main/musci-asr-qwen-1019-q4_k.gguf", "~1.5 GB",
+     nullptr, nullptr},
     // higgs-audio-v3-stt: Whisper-large-v3 encoder + Qwen3-1.7B decoder (Apache-2.0).
     {"higgs-stt", "higgs-stt-q4_k.gguf",
      "https://huggingface.co/cstr/higgs-audio-v3-stt-GGUF/resolve/main/higgs-stt-q4_k.gguf",
@@ -790,6 +829,18 @@ constexpr Entry k_registry[] = {
     {"parakeet-redux", "parakeet-redux-q4_k.gguf",
      "https://huggingface.co/cstr/parakeet-redux-GGUF/resolve/main/parakeet-redux-q4_k.gguf", "~402 MB", nullptr,
      nullptr, nullptr, "CC-BY-4.0 (see https://huggingface.co/moondream/parakeet-redux)"},
+    // fluid-speech-pro (#595) — FluidVoice-Labs/fluid-speech-pro: parakeet-tdt-0.6b-v3
+    // plus one FrameCleaner block after subsampling (encoder.fv_insert.*, run by
+    // the parakeet runtime when present). Converted from the .nemo; F16/Q8_0
+    // transcripts equal NeMo on en + de/en. Q8_0 is the default (Q4_K drifts on
+    // code-switched speech). -clean folds the upstream clean-mode adapter in at
+    // conversion: edited text without fillers/repetitions.
+    {"fluid-speech-pro", "fluid-speech-pro-q8_0.gguf",
+     "https://huggingface.co/cstr/fluid-speech-pro-GGUF/resolve/main/fluid-speech-pro-q8_0.gguf", "~677 MB", nullptr,
+     nullptr, nullptr, "CC-BY-4.0 (see https://huggingface.co/FluidVoice-Labs/fluid-speech-pro)"},
+    {"fluid-speech-pro-clean", "fluid-speech-pro-clean-q8_0.gguf",
+     "https://huggingface.co/cstr/fluid-speech-pro-GGUF/resolve/main/fluid-speech-pro-clean-q8_0.gguf", "~677 MB",
+     nullptr, nullptr, nullptr, "CC-BY-4.0 (see https://huggingface.co/FluidVoice-Labs/fluid-speech-pro)"},
     // Phonon-2 (#481) — exact five-value/int6 expansion, existing Parakeet TDT
     // runtime. Q8_0 is the fidelity/size default; Q4_K has more text drift.
     {"phonon2", "phonon2-q8_0.gguf",
@@ -1390,6 +1441,13 @@ constexpr Entry k_registry[] = {
     {"qwen3-fa", "qwen3-forced-aligner-0.6b-q4_k.gguf",
      "https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF/resolve/main/qwen3-forced-aligner-0.6b-q4_k.gguf",
      "~500 MB", nullptr, nullptr},
+    // Qwen3-ForcedAligner-Ultra base (17slever17, Apache-2.0, #579): same
+    // architecture, F16 only. Base model only — the optional local boundary
+    // head is not converted. Matches upstream on JFK; nightly regression entry
+    // qwen3-forced-aligner-ultra-f16.
+    {"qwen3-forced-aligner-ultra", "qwen3-forced-aligner-ultra-f16.gguf",
+     "https://huggingface.co/cstr/qwen3-forced-aligner-ultra-GGUF/resolve/992f8360e1e99cc5dae6bb162c530cd927e14a30/qwen3-forced-aligner-ultra-f16.gguf",
+     "~1.8 GB", nullptr, nullptr},
     // M2M-100 (facebook/m2m100_418M, MIT) — multilingual text-to-text
     // translation. 100 source/target languages via SentencePiece + lang
     // codes prefix. Encoder-decoder transformer with cross-attention
@@ -1975,6 +2033,10 @@ const Entry* find_by_backend(const std::string& backend) {
     for (const auto& e : k_registry)
         if (backend == e.backend)
             return &e;
+    // Preserve exact registry identities, while allowing all runtime aliases
+    // to select the Haas checkpoint rather than Parakeet's default model.
+    if (core_backend::is_haas_alias(backend) && backend != "haas")
+        return find_by_backend("haas");
     // Fallback: the CLI passes the raw `--backend` alias (e.g. the short
     // `cosyvoice3` / `voxcpm2`) while the registry keys the canonical
     // `cosyvoice3-tts` / `voxcpm2-tts`. When the exact alias has no entry,

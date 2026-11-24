@@ -1,19 +1,115 @@
 name: CI
 
+# What runs when (docs/contributing.md, "CI: what runs when"):
+#   - main docs/ and lanes/ changes do not start this workflow, except for
+#     two historical JSON fixtures read by unit tests; PR coverage stays broader;
+#   - every other change runs the `changes` job plus the cheap Linux tier:
+#     linux-x86_64 (CPU build + smoke) and linux-unit (the unit tier);
+#   - native changes (C/C++/ObjC/CUDA/Metal/shader sources, any CMake file,
+#     src/, include/, examples/, ggml, glint/, third_party/, crisp_*/,
+#     scripts/, samples/, this workflow) additionally run macOS, Windows,
+#     iOS, Android, Vulkan, GGML_BACKEND_DL and the audio sanitizer/fuzz/
+#     FetchContent legs. A Python-, tools- or docs-only change skips them.
+#   - workflow_dispatch runs everything, on any branch.
 on:
   # Manual runs on a feature branch: heavy builds and tests belong on CI, not
   # on the shared dev box (`gh workflow run ci.yml --ref <branch>`).
   workflow_dispatch:
   push:
-    branches: [main, master, integrated_cli]
+    branches: [main]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - '!lanes/**'
+      # These two JSON receipts are inputs to model-free tests.
+      - 'docs/historical/data2vec-avx512-controls-2026-10-28.json'
+      - 'docs/historical/musa-sdk52-2026-10-26.json'
+      - '!hf_readmes/**'
+      - '!LICENSE'
+      - '!AUTHORS'
   pull_request:
-    branches: [main, master]
+    branches: [main]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docs/**'
+      - 'docs/**.json'
+      - '!hf_readmes/**'
+      - '!LICENSE'
+      - '!AUTHORS'
 
+# PRs: a newer push to the same PR cancels the older run. main pushes and
+# manual runs get their own group (run_id), so they are never cancelled.
+# Literal `ci-yml` prefix: build.yml is also named "CI" (see its note).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: ci-yml-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
+  # Path gate for the expensive legs below. Fail-open: dispatch, a new or
+  # force-pushed base, or any error answers native=true.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.filter.outputs.native }}
+      windows_unicode: ${{ steps.filter.outputs.windows_unicode }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          FILTERS: |
+            native:
+              - '**.c'
+              - '**.cc'
+              - '**.cpp'
+              - '**.cxx'
+              - '**.h'
+              - '**.hpp'
+              - '**.inc'
+              - '**.m'
+              - '**.mm'
+              - '**.cu'
+              - '**.cuh'
+              - '**.metal'
+              - '**.comp'
+              - '**.glsl'
+              - '**.cmake'
+              - '**.in'
+              - '**/CMakeLists.txt'
+              - 'CMakePresets.json'
+              - 'cmake/**'
+              - 'ggml'
+              - 'ggml/**'
+              - '.gitmodules'
+              - 'src/**'
+              - 'include/**'
+              - 'examples/**'
+              - 'glint/**'
+              - 'third_party/**'
+              - 'crisp_*/**'
+              - 'scripts/**'
+              - 'samples/**'
+              - 'tests/fuzz/**'
+              - 'tools/ci-apt.sh'
+              - 'tools/test_vulkan_sdk_download.py'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/ci_changes.py'
+              - 'tests/test_windows_unicode_inference.py'
+            windows_unicode:
+              - 'src/core/gguf_loader.cpp'
+              - 'src/core/gguf_loader.h'
+              - 'src/core/gguf_file.h'
+              - 'tests/test_windows_unicode_inference.py'
+        run: python3 .github/scripts/ci_changes.py >> "$GITHUB_OUTPUT"
+
   # The configuration the shipped CUDA packages are built in — and, until
   # v0.8.30, the one configuration NOTHING compiled before release day.
   #
@@ -26,6 +122,8 @@ jobs:
   # live behind `#if CRISPASR_ISA_X86`, so an arm64 build compiles the whole
   # block out and links clean either way.
   linux-backend-dl:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -53,6 +151,27 @@ jobs:
           mkdir -p "$stage"
           find build-dl \( -type f -o -type l \) -name '*.so*' -exec cp -L {} "$stage/" \;
           python3 tests/test_packaged_backend_discovery.py --library "$stage/libcrispasr.so"
+
+      - name: A GPU plugin that cannot load is explained, not silently skipped (#606)
+        run: |
+          # The CUDA 13 package on a host with only the driver: libggml-cuda.so is
+          # there, libcublas.so.13 is not, and the CLI used to fall back to the CPU
+          # without a word. Fake that plugin: link it against a stub
+          # libcublas.so.13, then delete the stub.
+          t="$RUNNER_TEMP/gpu606"; mkdir -p "$t/stub"
+          cp build-dl/bin/crispasr "$t/"
+          find build-dl \( -type f -o -type l \) -name '*.so*' -exec cp -P {} "$t/" \;
+          echo 'int cublasCreate_v2(void){return 0;}' > "$t/stub/c.c"
+          gcc -shared -fPIC -Wl,-soname,libcublas.so.13 -o "$t/stub/libcublas.so.13" "$t/stub/c.c"
+          echo 'int cublasCreate_v2(void); int ggml_backend_init(void){return cublasCreate_v2();}' > "$t/stub/g.c"
+          gcc -shared -fPIC -o "$t/libggml-cuda.so" "$t/stub/g.c" -L"$t/stub" -l:libcublas.so.13
+          rm -rf "$t/stub"
+          "$t/crispasr" --diag > "$t/diag.txt" 2>&1 || true
+          sed -n '/did not register/,$p' "$t/diag.txt"
+          grep -q 'libcublas.so.13' "$t/diag.txt"
+          grep -q 'apt install cuda-cudart-13-0 libcublas-13-0' "$t/diag.txt"
+          "$t/crispasr" -m /nonexistent.bin -f samples/jfk.wav > /dev/null 2> "$t/run.txt" || true
+          grep 'CUDA backend not available' "$t/run.txt"
 
   # ====================================================================
   # Linux x86_64 (CPU)
@@ -129,6 +248,9 @@ jobs:
       # packaging scripts. Without it that test SKIPs, and a skip is
       # indistinguishable from a pass in the summary — which is how the release
       # packaging went unobserved in the first place.
+      - name: Check main CI path filter controls
+        run: python3 tests/test_ci_main_path_filters.py
+
       - name: Install dependencies
         run: bash tools/ci-apt.sh update && bash tools/ci-apt.sh install -y cmake ninja-build g++ libopenblas-dev patchelf
 
@@ -137,12 +259,6 @@ jobs:
           python3 -m pip install clang-format==18.1.8
           ln -s "$(command -v clang-format)" "$RUNNER_TEMP/clang-format-18"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-
-      # The generated capability catalogue includes the optional ONNX adapters.
-      # Its exact drift check needs the same complete roster, not a native-only
-      # build that omits four rows. Other platform jobs retain native-only builds.
-      - name: Fetch pinned ONNX Runtime SDK for the complete capability check
-        run: bash scripts/fetch_onnxruntime.sh "$RUNNER_TEMP/onnxruntime-sdk"
 
       # Examples/server stay at their defaults: some tests link `common`, which
       # lives under examples/, so switching them off would break configure.
@@ -153,7 +269,6 @@ jobs:
           -DGGML_NATIVE=OFF
           -DGGML_OPENBLAS=ON
           -DCRISPASR_BUILD_TESTS=ON
-          -DCRISPASR_ONNXRUNTIME_ROOT="$RUNNER_TEMP/onnxruntime-sdk"
 
       - name: Check Python unit registration
         run: |
@@ -175,6 +290,11 @@ jobs:
       - name: Build
         run: cmake --build build -j $(nproc)
 
+      - name: Verify optimization regression discovery and tier separation
+        run: >
+          python3 tools/check_performance_test_discovery.py --build-dir build
+          --require-blas --require-openmp
+
       # Compare real compiled artifacts; missing CLI/shared library is a failure.
       - name: Check generated capability table and C ABI
         run: |
@@ -184,6 +304,11 @@ jobs:
       - name: Check production GPU backend/device selection without hardware
         run: python3 tests/test_gpu_backend_selection.py -v
 
+      # #568: string-named Metal kernels lost in a kernel-file split only fail
+      # on real Apple GPUs, which hosted runners do not have.
+      - name: Metal kernels named by host code exist
+        run: python3 tests/test_metal_kernel_names.py -v
+
       - name: CANN model validator false-success and archive controls
         run: python3 tests/test_cann_model_validator.py -v
 
@@ -191,7 +316,7 @@ jobs:
       # downloading. --timeout: a hung unit test must not eat the runner.
       - name: Breeze guided acceptance deletion controls
         run: |
-          python3 -m pip install numpy pytest
+          python3 -m pip install numpy pytest gguf
           python3 tests/test_breeze_guided_validation.py -v
 
       - name: Run the unit tier
@@ -305,6 +430,8 @@ jobs:
   # came from (clang 21 on Termux). Both compilers default to C++17 here, so the
   # matrix is the whole guard.
   linux-amr-fetch:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -351,6 +478,8 @@ jobs:
   # (Opus-in-WebM) through the static libs. Same false-green guard: the
   # configure step asserts the gate actually turned ON.
   linux-opus-fetch:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -389,6 +518,8 @@ jobs:
   # — the fuzzable surface — which keeps the job fast; broaden to the full unit
   # lane later if desired.)
   linux-asan-audio:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -425,6 +556,8 @@ jobs:
   # short, seeded smoke pass under ASan/UBSan — a new crash fails CI. This is a
   # regression gate, not a fuzzing campaign; run it longer out of band for depth.
   linux-fuzz-smoke:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -503,6 +636,8 @@ jobs:
   # Linux x86_64 + Vulkan
   # ====================================================================
   linux-vulkan:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -533,6 +668,8 @@ jobs:
   # macOS (Apple Silicon / x86_64)
   # ====================================================================
   macos:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -552,6 +689,8 @@ jobs:
   # Windows (MSVC)
   # ====================================================================
   windows:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -567,10 +706,10 @@ jobs:
       # path (CreateDirectoryA branch in src/speaker_db.cpp) and the
       # tests/test-speaker-db.cpp _WIN32 make_temp_dir() path.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRISPASR_BUILD_TESTS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRISPASR_BUILD_TESTS=ON -DBUILD_SHARED_LIBS=ON
 
       - name: Build
-        run: cmake --build build --config Release --target crispasr-cli -j $env:NUMBER_OF_PROCESSORS
+        run: cmake --build build --config Release --target crispasr-cli --target crispasr-lib -j $env:NUMBER_OF_PROCESSORS
 
       - name: Smoke test
         run: .\build\bin\Release\crispasr.exe --list-backends
@@ -590,10 +729,52 @@ jobs:
       - name: Run speaker-db unit tests
         run: ctest --test-dir build -C Release -R "speaker|cluster|centroid|whisper_params" -E "live|NOT_BUILT" --output-on-failure --timeout 120
 
+      - name: Build GGUF file path test
+        run: cmake --build build --config Release --target test-gguf-file -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Test GGUF file paths on Windows
+        run: ctest --test-dir build -C Release -R "^test-gguf-file$" --no-tests=error --output-on-failure --timeout 120
+
+      # Exercise the production Session C ABI too; helper-only file I/O cannot
+      # establish that a UTF-8 model path opens and transcribes through bindings.
+      - uses: actions/setup-python@v6
+        if: needs.changes.outputs.windows_unicode != 'false'
+        with:
+          python-version: '3.12'
+
+      - name: Install path inference test dependency
+        if: needs.changes.outputs.windows_unicode != 'false'
+        run: python -m pip install numpy==2.2.6
+
+      - name: Compare ASCII and Unicode model paths through the session C ABI
+        if: needs.changes.outputs.windows_unicode != 'false'
+        timeout-minutes: 15
+        env:
+          PYTHONPATH: ${{ github.workspace }}/python
+          PYTHONUTF8: '1'
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CHECKOUT_SHA: ${{ github.sha }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: >-
+          python tests/test_windows_unicode_inference.py
+          --dll build/bin/Release/crispasr.dll
+          --wav samples/jfk.wav
+          --output windows-unicode-inference.json
+
+      - name: Upload Unicode session inference result
+        if: always() && needs.changes.outputs.windows_unicode != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unicode-inference
+          path: windows-unicode-inference.json
+          if-no-files-found: warn
+
   # ====================================================================
   # iOS (cross-compile gate — no runtime test)
   # ====================================================================
   ios:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -617,6 +798,8 @@ jobs:
   # Android (cross-compile gate — no runtime test)
   # ====================================================================
   android:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.native != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

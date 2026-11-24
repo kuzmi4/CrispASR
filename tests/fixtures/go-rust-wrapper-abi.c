@@ -666,6 +666,12 @@ int crispasr_session_set_tts_seed(crispasr_session* s, uint64_t sd) {
 int crispasr_session_set_max_new_tokens(crispasr_session* s, int n) {
     return 0;
 }
+int crispasr_session_set_autochunk(crispasr_session* s, int en, int cs) {
+    return 0;
+}
+int crispasr_session_set_max_new_tokens_per_second(crispasr_session* s, float r, int m) {
+    return 0;
+}
 int crispasr_session_set_frequency_penalty(crispasr_session* s, float p) {
     return 0;
 }
@@ -1029,15 +1035,11 @@ int crispasr_stream_flush(crispasr_stream* s) {
 }
 void crispasr_stream_set_live_decode(crispasr_stream* s, int e) {}
 #include "wrapper-parakeet-legacy.c"
-int crispasr_vad_segments(const char* m, const float* pcm, int n, int sr, float th, int min_s, int min_si, int nt,
-                          bool gpu, float** out) {
-    return 0;
-}
+#include "wrapper-vad-segments.c"
 int crispasr_vad_slices(const char* m, const float* pcm, int n, int sr, float th, int min_s, int min_si, int pad,
                         float max_dur, int nt, float** out) {
     return 0;
 }
-void crispasr_vad_free(float* p) {}
 #define CRISPASR_PROBE_AUDIO_ONLY
 #include "wrapper-audio-utilities.c"
 #undef CRISPASR_PROBE_AUDIO_ONLY
@@ -2004,4 +2006,35 @@ void crispasr_chat_string_free(char* s) {
 const char* crispasr_chat_ai_disclosure_text(void) {
     STUB_ABORT();
     return 0;
+}
+
+// Ultra's doubles must not pass through the generic centisecond result.
+struct crispasr_ultra_align_result {
+    char text[16];
+};
+static struct crispasr_ultra_align_result ultra_result;
+crispasr_ultra_align_result* crispasr_align_words_ultra_abi(const char* base, const char* head, const char* text,
+                                                            const float* pcm, int32_t count, int32_t threads) {
+    ++probe_calls;
+    if (probe_mode == 2 || strcmp(base, "base.gguf") || strcmp(head, "head.gguf") || strcmp(text, "你好") ||
+        count != 3 || threads != 7 || !pcm || pcm[0] != 1 || pcm[1] != 3 || pcm[2] != 5)
+        return NULL;
+    strcpy(ultra_result.text, text);
+    return &ultra_result;
+}
+int crispasr_ultra_align_result_n_words(const crispasr_ultra_align_result* r) {
+    return probe_mode == 1 ? 0 : probe_mode == 3 ? -1 : 1;
+}
+const char* crispasr_ultra_align_result_word_text(const crispasr_ultra_align_result* r, int i) {
+    return r->text;
+}
+double crispasr_ultra_align_result_word_start_ms(const crispasr_ultra_align_result* r, int i) {
+    return 12.345;
+}
+double crispasr_ultra_align_result_word_end_ms(const crispasr_ultra_align_result* r, int i) {
+    return 67.891;
+}
+void crispasr_ultra_align_result_free(crispasr_ultra_align_result* r) {
+    ++probe_result_frees;
+    strcpy(r->text, "freed");
 }

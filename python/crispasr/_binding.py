@@ -1261,6 +1261,63 @@ def align_words(
 # Microphone capture (PLAN #62d) — cross-platform live PCM via miniaudio.
 # ===========================================================================
 
+def align_words_ultra(
+    aligner_model: str,
+    head_model: str,
+    transcript: str,
+    pcm: np.ndarray,
+    *,
+    n_threads: int = 4,
+    lib_path: Optional[str] = None,
+) -> List[AlignedWord]:
+    """Experimental Qwen Ultra local-head alignment, with times in seconds.
+
+    Audio must be mono 16 kHz and at most 120 seconds. Both the converted
+    base model and its separately converted local-head GGUF are required.
+    Returns an empty list on invalid input or native alignment failure.
+    """
+    if not aligner_model or not head_model or not transcript or pcm is None or len(pcm) == 0:
+        return []
+    pcm_np = _mono_pcm(pcm)
+    if len(pcm_np) > 120 * 16000:
+        return []
+    lib = ctypes.CDLL(lib_path or _find_lib())
+    if not hasattr(lib, "crispasr_align_words_ultra_abi"):
+        raise RuntimeError("loaded CrispASR library does not provide Ultra local-head alignment")
+    lib.crispasr_align_words_ultra_abi.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int32, ctypes.c_int32,
+    ]
+    lib.crispasr_align_words_ultra_abi.restype = ctypes.c_void_p
+    for name, result, args in [
+        ("n_words", ctypes.c_int, [ctypes.c_void_p]),
+        ("word_text", ctypes.c_char_p, [ctypes.c_void_p, ctypes.c_int]),
+        ("word_start_ms", ctypes.c_double, [ctypes.c_void_p, ctypes.c_int]),
+        ("word_end_ms", ctypes.c_double, [ctypes.c_void_p, ctypes.c_int]),
+        ("free", None, [ctypes.c_void_p]),
+    ]:
+        fn = getattr(lib, "crispasr_ultra_align_result_" + name)
+        fn.restype, fn.argtypes = result, args
+    handle = lib.crispasr_align_words_ultra_abi(
+        aligner_model.encode("utf-8"), head_model.encode("utf-8"), transcript.encode("utf-8"),
+        pcm_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), int(len(pcm_np)), int(n_threads),
+    )
+    if not handle:
+        return []
+    try:
+        words = []
+        for i in range(lib.crispasr_ultra_align_result_n_words(handle)):
+            raw = lib.crispasr_ultra_align_result_word_text(handle, i)
+            words.append(AlignedWord(
+                text=raw.decode("utf-8") if raw else "",
+                start=lib.crispasr_ultra_align_result_word_start_ms(handle, i) / 1000.0,
+                end=lib.crispasr_ultra_align_result_word_end_ms(handle, i) / 1000.0,
+            ))
+        return words
+    finally:
+        lib.crispasr_ultra_align_result_free(handle)
+
+
 class Mic:
     """Library-level microphone capture handle.
 
@@ -1408,7 +1465,7 @@ def detect_language_pcm(
     ]
     lib.crispasr_detect_language_pcm.restype = ctypes.c_int
 
-    pcm_np = np.asarray(pcm, dtype=np.float32)
+    pcm_np = _mono_pcm(pcm)
     buf = ctypes.create_string_buffer(16)
     conf = ctypes.c_float(-1.0)
     rc = lib.crispasr_detect_language_pcm(
@@ -1444,7 +1501,8 @@ def diarize_segments(
 
     Five methods — see :class:`DiarizeMethod`. ``left`` is mono PCM for
     mono-only methods, otherwise the left channel of a stereo pair.
-    All PCM is 16 kHz float32. Returns ``True`` on success; only
+    All PCM is one-dimensional 16 kHz audio; stereo channels must have equal
+    lengths. Strided views are supported. Returns ``True`` on success; only
     Model-backed methods can fail when their model cannot be loaded.
     """
     ok, _ = _diarize_segments_impl(
@@ -1521,10 +1579,12 @@ def _diarize_segments_impl(
     ]
     lib.crispasr_diarize_segments_abi.restype = ctypes.c_int
 
-    left_np = np.asarray(left, dtype=np.float32)
+    left_np = _mono_pcm(left)
     left_ptr = left_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     if is_stereo and right is not None:
-        right_np = np.asarray(right, dtype=np.float32)
+        right_np = _mono_pcm(right)
+        if len(right_np) != len(left_np):
+            raise ValueError("stereo PCM channels must have equal lengths")
         right_ptr = right_np.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     else:
         right_ptr = left_ptr
@@ -2215,7 +2275,7 @@ class Session(SessionExtras):
         return vocab
 
     # ---------------------------------------------------------------------
-    # TTS synthesis (vibevoice, qwen3-tts, miotts, arktts, moss-tts, moss-tts-local, confucius4-tts, omnivoice, kokoro, orpheus, chatterbox, outetts, indextts, voxcpm2, csm, dia, zonos-tts, bark, speecht5, parler-tts, pocket-tts, kugelaudio, tada, lfm2-audio, dots-tts, fireredtts3)
+    # TTS synthesis (vibevoice, qwen3-tts, miotts, zonos3, arktts, moss-tts, moss-tts-local, confucius4-tts, omnivoice, kokoro, orpheus, chatterbox, outetts, indextts, voxcpm2, csm, dia, zonos-tts, bark, speecht5, parler-tts, pocket-tts, kugelaudio, tada, lfm2-audio, dots-tts, fireredtts3)
     # ---------------------------------------------------------------------
 
     def set_codec_path(self, path: str) -> None:
@@ -2564,7 +2624,8 @@ class Session(SessionExtras):
 
     def set_temperature(self, temperature: float, seed: int = 0) -> None:
         """Set decoder temperature on backends that support runtime control
-        (canary, cohere, parakeet, nemotron, moonshine). Other backends silently no-op.
+        (canary, cohere, parakeet, nemotron, moonshine, moss-diarize). Other backends
+        silently no-op. For moss-diarize, temperature > 0 enables sampling (#564).
 
         ``seed`` is the RNG seed for sampling; pass 0 for time-based.
         Breeze (bt2-tts) forwards temperature and seed to its native sampler.
@@ -2605,6 +2666,44 @@ class Session(SessionExtras):
         rc = self._lib.crispasr_session_set_max_new_tokens(self._handle, int(max_new_tokens))
         if rc != 0:
             raise RuntimeError(f"set_max_new_tokens failed (rc={rc})")
+
+    def set_autochunk(self, enabled: bool = True, chunk_seconds: int = 0) -> None:
+        """Control session-level auto-chunking for long audio (> 30 s).
+
+        When enabled (the default), long audio is sliced at quiet points into chunks
+        of up to `chunk_seconds` (default 30 s) before transcribing.
+        Pass ``enabled=False`` to disable auto-chunking and pass audio to the model whole.
+        Pass ``chunk_seconds > 0`` to customize the chunk window.
+        """
+        if not hasattr(self._lib, "crispasr_session_set_autochunk"):
+            raise RuntimeError("crispasr_session_set_autochunk not present in this libcrispasr build")
+        self._lib.crispasr_session_set_autochunk.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        self._lib.crispasr_session_set_autochunk.restype = ctypes.c_int
+        rc = self._lib.crispasr_session_set_autochunk(self._handle, 1 if enabled else 0, int(chunk_seconds))
+        if rc != 0:
+            raise RuntimeError(f"set_autochunk failed (rc={rc})")
+
+    def set_max_new_tokens_per_second(self, rate: float, minimum: int = 16) -> None:
+        """Set a dynamic token budget proportional to piece audio length.
+
+        When active (rate > 0.0), each audio piece gets a token limit of
+        ``max(minimum, round(rate * piece_duration_seconds))``. If a flat
+        ``set_max_new_tokens`` cap is also set, the piece budget is capped at that value.
+        Pass ``rate <= 0.0`` to disable dynamic per-piece token limits.
+        """
+        if not hasattr(self._lib, "crispasr_session_set_max_new_tokens_per_second"):
+            raise RuntimeError("crispasr_session_set_max_new_tokens_per_second not present in this libcrispasr build")
+        self._lib.crispasr_session_set_max_new_tokens_per_second.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_float,
+            ctypes.c_int,
+        ]
+        self._lib.crispasr_session_set_max_new_tokens_per_second.restype = ctypes.c_int
+        rc = self._lib.crispasr_session_set_max_new_tokens_per_second(
+            self._handle, float(rate), int(minimum)
+        )
+        if rc != 0:
+            raise RuntimeError(f"set_max_new_tokens_per_second failed (rc={rc})")
 
     def set_frequency_penalty(self, penalty: float) -> None:
         """Set an opt-in repeated generated-token penalty for AR backends.
@@ -2649,7 +2748,7 @@ class Session(SessionExtras):
             raise RuntimeError(f"set_tts_num_candidates failed (rc={rc})")
 
     def set_top_p(self, top_p: float) -> None:
-        """Set the top-p nucleus threshold. Honoured by chatterbox, TADA and Dia."""
+        """Set the top-p nucleus threshold. Honoured by chatterbox, TADA, Dia and moss-diarize."""
         if not hasattr(self._lib, "crispasr_session_set_top_p"):
             return
         self._lib.crispasr_session_set_top_p.argtypes = [ctypes.c_void_p, ctypes.c_float]
@@ -2659,7 +2758,7 @@ class Session(SessionExtras):
             raise RuntimeError(f"set_top_p failed (rc={rc})")
 
     def set_top_k(self, top_k: int) -> None:
-        """Set the top-k sampling cutoff (0 = disabled). Honoured by TADA and Dia."""
+        """Set the top-k sampling cutoff (0 = disabled). Honoured by TADA, Dia and moss-diarize."""
         if not hasattr(self._lib, "crispasr_session_set_top_k"):
             return
         self._lib.crispasr_session_set_top_k.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -2669,7 +2768,8 @@ class Session(SessionExtras):
             raise RuntimeError(f"set_top_k failed (rc={rc})")
 
     def set_do_sample(self, enable: bool) -> None:
-        """Enable/disable sampling (False = greedy). Honoured by TADA."""
+        """Enable/disable sampling (False = greedy). Honoured by TADA and moss-diarize
+        (True with no temperature set samples at temperature 1.0)."""
         if not hasattr(self._lib, "crispasr_session_set_do_sample"):
             return
         self._lib.crispasr_session_set_do_sample.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -3233,7 +3333,7 @@ class Session(SessionExtras):
         ``csm``, ``dia``, ``fastpitch``, ``bananamind-tts``, ``speecht5``,
         ``melotts``, ``piper``, ``parler-tts``, ``outetts``, ``cosyvoice3-tts``,
         ``pocket-tts``, ``f5-tts``, ``irodori-tts``, ``supertonic``, ``bark``, ``kugelaudio``, ``tada``,
-        ``lfm2-audio``, ``voxtral-tts``, ``dots-tts``, ``fireredtts3``, ``omnivoice``, ``miotts``, ``arktts``.
+        ``lfm2-audio``, ``voxtral-tts``, ``dots-tts``, ``fireredtts3``, ``omnivoice``, ``miotts``, ``zonos3``, ``arktts``.
         For MioTTS, call :meth:`set_voice` with a preset embedding GGUF and
         use :meth:`output_sample_rate` (44.1 kHz for MioCodec-v2).
         For qwen3-tts call :meth:`set_codec_path` and one of:
@@ -3338,11 +3438,17 @@ class Session(SessionExtras):
         """Source separation: split audio into named stems.
 
         Input is stereo interleaved float32 PCM at the model's native
-        sample rate (44100 Hz for ``htdemucs``).  Returns a dict mapping
+        sample rate (44100 Hz for the supported separation models). Returns a dict mapping
         stem names (``"drums"``, ``"bass"``, ``"other"``, ``"vocals"``)
         to stereo interleaved float32 numpy arrays.
 
-        Works with separation-capable backends — ``htdemucs``.
+        Works with ``htdemucs``, ``mel-band-roformer``, ``mini-bs-roformer``, ``scnet`` and
+        ``voice-isolator``.
+        Mini BS RoFormer returns ``bass``, ``drums``, ``other``, ``vocals`` in
+        that order. ``voice-isolator`` (Inworld Voice Isolator, 48000 Hz) mixes
+        the input to mono and returns ``voice`` and ``background``
+        (= input - voice), each duplicated to stereo interleaved (L = R).
+        Arrays own their storage and survive subsequent calls.
         """
         lib = self._lib
         lib.crispasr_session_separate.argtypes = [
@@ -3360,13 +3466,14 @@ class Session(SessionExtras):
         lib.crispasr_session_separate_sample_rate.argtypes = [ctypes.c_void_p]
         lib.crispasr_session_separate_sample_rate.restype = ctypes.c_int
 
-        data = np.asarray(pcm_stereo, dtype=np.float32)
-        if data.ndim == 2 and data.shape[1] == 2:
-            data = data.reshape(-1)
-        elif data.ndim != 1 or data.size % 2:
+        data = np.asarray(pcm_stereo)
+        if not ((data.ndim == 2 and data.shape[1] == 2) or
+                (data.ndim == 1 and data.size % 2 == 0)):
             raise ValueError("expected interleaved stereo or an (n_frames, 2) array")
-        data = np.ascontiguousarray(data)
         n_samples = data.size // 2
+        if n_samples > 2147483647:
+            raise ValueError("PCM exceeds the C API frame limit")
+        data = np.ascontiguousarray(data, dtype=np.float32).reshape(-1)
         n_stems = lib.crispasr_session_separate(
             self._handle, data.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n_samples,
         )
@@ -3632,9 +3739,10 @@ class TitaNet:
         """Extract 192-d speaker embedding from 16 kHz mono float32 PCM."""
         import numpy as np
         if not self._ctx: raise RuntimeError("TitaNet context is closed")
-        pcm = np.ascontiguousarray(pcm_16k, dtype=np.float32)
-        if pcm.ndim!=1 or not pcm.size: raise ValueError("nonempty mono PCM required")
+        pcm = _mono_pcm(pcm_16k)
+        if not pcm.size: raise ValueError("nonempty mono PCM required")
         out = np.zeros(192, dtype=np.float32)
+        if not self._ctx: raise RuntimeError("TitaNet context is closed")
         dim = self._lib.crispasr_titanet_embed(
             self._ctx,
             pcm.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -3664,6 +3772,16 @@ class TitaNet:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def _speaker_vector(embedding):
+    # Check native dimensions before dtype conversion or a contiguous copy.
+    arr = np.asarray(embedding)
+    if arr.ndim != 1 or not arr.size:
+        raise ValueError("Expected a nonempty embedding")
+    if arr.size > 2147483647:
+        raise ValueError("speaker embedding exceeds native int32 size")
+    return np.ascontiguousarray(arr, dtype=np.float32)
 
 
 class SpeakerDB:
@@ -3720,17 +3838,25 @@ class SpeakerDB:
         return self._lib.crispasr_speaker_db_count(self._db) if self._db else 0
 
     def match(self, embedding, threshold=0.7):
-        """Return (name, score); a negative native score always means no match."""
+        """Return (name, score), comparing at native float32 threshold precision.
+
+        The threshold must remain finite as float32. A negative native score
+        always means no match.
+        """
         if not self._db:
             raise RuntimeError("SpeakerDB is closed")
         import numpy as np
-        emb = np.ascontiguousarray(embedding, dtype=np.float32)
-        if emb.ndim != 1 or not emb.size or not np.isfinite(threshold):
-            raise ValueError("Expected a nonempty embedding and finite threshold")
+        emb = _speaker_vector(embedding)
+        threshold = ctypes.c_float(float(threshold)).value
+        if not np.isfinite(threshold):
+            raise ValueError("Expected a finite float32 threshold")
+        native_threshold = ctypes.c_float(threshold)
         name_buf = ctypes.create_string_buffer(256)
+        if not self._db:
+            raise RuntimeError("SpeakerDB is closed")
         score = self._lib.crispasr_speaker_db_match(
             self._db, emb.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-            len(emb), threshold, name_buf, 256,
+            len(emb), native_threshold, name_buf, 256,
         )
         name = name_buf.value.decode() if score >= 0 and score >= threshold else None
         return name, float(score)
@@ -3739,12 +3865,12 @@ class SpeakerDB:
         """Enroll on disk with the attestation from construction; reopen to refresh the roster."""
         if not self._db:
             raise RuntimeError("SpeakerDB is closed")
-        import numpy as np
-        emb = np.ascontiguousarray(embedding, dtype=np.float32)
-        if emb.ndim != 1 or not emb.size:
-            raise ValueError("Expected a nonempty embedding")
+        emb = _speaker_vector(embedding)
+        directory, encoded_name = self._dir.encode(), name.encode()
+        if not self._db:
+            raise RuntimeError("SpeakerDB is closed")
         rc = self._lib.crispasr_speaker_db_enroll2(
-            self._dir.encode(), name.encode(),
+            directory, encoded_name,
             emb.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(emb), 1,
         )
         return rc == 0
@@ -3899,19 +4025,21 @@ def agglomerative_cluster(embeddings, *, merge_threshold: float = 0.5,
     ``[0, k)`` assigned in first-appearance order.
     """
     import numpy as np
-    arr = np.asarray(embeddings, dtype=np.float32)
+    arr = np.asarray(embeddings)
     if arr.ndim != 2:
         raise ValueError("expected a two-dimensional speaker embedding matrix")
-    if arr.size == 0:
-        return np.zeros(0, dtype=np.int32)
     n, dim = arr.shape
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    if dim == 0:
+        raise ValueError("speaker embeddings must have a nonzero dimension")
     if arr.size > 2147483647:
         raise ValueError("speaker matrix exceeds native int32 size")
     maximum = _speaker_int32(max_speakers, "max_speakers")
     threshold = ctypes.c_float(float(merge_threshold)).value
     if not np.isfinite(threshold):
         raise ValueError("merge_threshold must be finite float32")
-    arr = np.ascontiguousarray(arr)
+    arr = np.ascontiguousarray(arr, dtype=np.float32)
 
     lib = ctypes.CDLL(lib_path or _find_lib())
     lib.crispasr_speaker_cluster_abi.argtypes = [
@@ -4034,6 +4162,21 @@ class VadSpan:
     end: float    # seconds
 
 
+def _copy_vad_spans(out_spans, count, free, api_name, divisor):
+    """Copy VAD boundaries to seconds and release their library-owned storage."""
+    try:
+        if count < 0:
+            raise RuntimeError(f"{api_name} failed (rc={count})")
+        if count > 0 and not out_spans:
+            raise RuntimeError(f"{api_name} returned a count but no spans")
+        return [VadSpan(start=float(out_spans[2 * i]) / divisor,
+                        end=float(out_spans[2 * i + 1]) / divisor)
+                for i in range(count)]
+    finally:
+        if out_spans:
+            free(out_spans)
+
+
 def vad_segments(
     pcm: "np.ndarray",
     model_path: str,
@@ -4065,7 +4208,9 @@ def vad_segments(
     ]
     fn.restype = ctypes.c_int
 
-    pcm_arr = np.ascontiguousarray(pcm, dtype=np.float32)
+    pcm_arr = _mono_pcm(pcm)
+    lib.crispasr_vad_free.argtypes = [ctypes.POINTER(ctypes.c_float)]
+    lib.crispasr_vad_free.restype = None
     out_spans = ctypes.POINTER(ctypes.c_float)()
     n = fn(
         model_path.encode("utf-8"),
@@ -4074,15 +4219,8 @@ def vad_segments(
         min_speech_ms, min_silence_ms, n_threads, False,
         ctypes.byref(out_spans),
     )
-    if n < 0:
-        raise RuntimeError(f"crispasr_vad_segments failed (rc={n})")
-    spans = []
-    for i in range(n):
-        spans.append(VadSpan(start=float(out_spans[2 * i]),
-                             end=float(out_spans[2 * i + 1])))
-    if n > 0:
-        lib.free(out_spans)
-    return spans
+    return _copy_vad_spans(out_spans, n, lib.crispasr_vad_free,
+                           "crispasr_vad_segments", 100.0)
 
 
 def text_detect_language(
@@ -4123,11 +4261,10 @@ def enhance_audio_rnnoise(
     *,
     lib_path: Optional[str] = None,
 ) -> "np.ndarray":
-    """Apply RNNoise audio denoising to raw 48 kHz mono PCM.
+    """Apply RNNoise audio denoising to raw 16 kHz mono PCM.
 
-    Returns a float32 array of the same length with noise reduced.
-    Note: RNNoise operates at 48 kHz internally. If your audio is
-    16 kHz, resample to 48 kHz first, denoise, then resample back.
+    Returns a 16 kHz float32 array of the same length with noise reduced.
+    The native implementation resamples to 48 kHz internally and back.
     """
     lib = ctypes.CDLL(lib_path or _find_lib())
     fn = lib.crispasr_enhance_audio_rnnoise
@@ -4137,7 +4274,7 @@ def enhance_audio_rnnoise(
     ]
     fn.restype = ctypes.c_int
 
-    pcm_arr = np.ascontiguousarray(pcm, dtype=np.float32)
+    pcm_arr = _mono_pcm(pcm)
     out = np.zeros_like(pcm_arr)
     rc = fn(
         pcm_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -4391,7 +4528,7 @@ def vad_slices(
     lib.crispasr_vad_free.argtypes = [ctypes.POINTER(ctypes.c_float)]
     lib.crispasr_vad_free.restype = None
 
-    pcm_arr = np.ascontiguousarray(pcm, dtype=np.float32)
+    pcm_arr = _mono_pcm(pcm)
     out_spans = ctypes.POINTER(ctypes.c_float)()
     n = fn(
         model_path.encode("utf-8"),
@@ -4401,15 +4538,8 @@ def vad_slices(
         max_chunk_duration_s, n_threads,
         ctypes.byref(out_spans),
     )
-    if n < 0:
-        raise RuntimeError(f"crispasr_vad_slices failed (rc={n})")
-    spans = []
-    for i in range(n):
-        spans.append(VadSpan(start=float(out_spans[2 * i]),
-                             end=float(out_spans[2 * i + 1])))
-    if n > 0:
-        lib.crispasr_vad_free(out_spans)
-    return spans
+    return _copy_vad_spans(out_spans, n, lib.crispasr_vad_free,
+                           "crispasr_vad_slices", 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -4423,7 +4553,7 @@ def watermark_load_model(gguf_path: str) -> None:
     dispatch to AudioSeal automatically. Without loading, they use the
     built-in spread-spectrum watermark.
     """
-    lib = _get_lib()
+    lib = ctypes.CDLL(_find_lib())
     fn = lib.crispasr_watermark_load_model
     fn.argtypes = [ctypes.c_char_p]
     fn.restype = ctypes.c_int
@@ -4434,6 +4564,9 @@ def watermark_load_model(gguf_path: str) -> None:
 
 def watermark_embed(pcm: "numpy.ndarray", alpha: float = -1.0) -> None:
     """Embed an AI-generated watermark into float32 PCM in-place.
+
+    ``pcm`` must be writable and one-dimensional. Strided views are supported;
+    only the selected samples are modified.
 
     ``alpha`` controls spread-spectrum strength; ignored when AudioSeal is
     loaded. The default (``<= 0``) selects the band-limited strength that makes
@@ -4450,12 +4583,17 @@ def watermark_embed(pcm: "numpy.ndarray", alpha: float = -1.0) -> None:
     import numpy as np
     if pcm.dtype != np.float32:
         raise TypeError("pcm must be float32")
-    lib = _get_lib()
+    if not pcm.flags.writeable:
+        raise ValueError("pcm must be writable for in-place watermark embedding")
+    data = _mono_pcm(pcm)
+    lib = ctypes.CDLL(_find_lib())
     fn = lib.crispasr_watermark_embed
     fn.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int, ctypes.c_float]
     fn.restype = None
-    fn(pcm.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-       ctypes.c_int(len(pcm)), ctypes.c_float(alpha))
+    fn(data.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+       ctypes.c_int(len(data)), ctypes.c_float(alpha))
+    if data is not pcm:
+        pcm[...] = data
 
 
 def watermark_detect(pcm: "numpy.ndarray") -> float:
@@ -4463,12 +4601,13 @@ def watermark_detect(pcm: "numpy.ndarray") -> float:
     import numpy as np
     if pcm.dtype != np.float32:
         raise TypeError("pcm must be float32")
-    lib = _get_lib()
+    data = _mono_pcm(pcm)
+    lib = ctypes.CDLL(_find_lib())
     fn = lib.crispasr_watermark_detect
     fn.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
     fn.restype = ctypes.c_float
-    return float(fn(pcm.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    ctypes.c_int(len(pcm))))
+    return float(fn(data.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    ctypes.c_int(len(data))))
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "core/arch_backend_map.h"
+#include "crispasr_session.h"
 
 #include "gguf.h"
 
@@ -118,6 +119,9 @@ static const std::vector<std::pair<std::string, std::string>>& converter_archs()
         {"t5", "madlad"},
         {"htdemucs", "htdemucs"},
         {"mel-band-roformer", "mel-band-roformer"},
+        {"mini-bs-roformer", "mini-bs-roformer"},
+        {"voice-isolator", "voice-isolator"},
+        {"scnet", "scnet"},
         {"crepe", "crepe"},
         {"btc", "btc-chords"},
         {"tabcnn", "tabcnn"},
@@ -155,8 +159,12 @@ TEST_CASE("unknown / empty architectures resolve to the empty string", "[unit][a
     CHECK(core_arch::backend_for_arch(static_cast<const char*>(nullptr)) == std::string(""));
     CHECK(core_arch::backend_for_arch("bert") == std::string(""));
     CHECK(core_arch::backend_for_arch("crispasr.reference") == std::string(""));
+    CHECK(core_arch::backend_for_arch("reuse") == std::string(""));
     CHECK(core_arch::backend_for_arch("kokoro-voice") == std::string(""));
     CHECK(core_arch::backend_for_arch("cosyvoice3-s3tok") == std::string(""));
+    // Backend-name aliases are not additional checkpoint architecture profiles.
+    CHECK(core_arch::backend_for_arch("mini_bs_roformer") == std::string(""));
+    CHECK(core_arch::backend_for_arch("mini-bs-roformer-v2.5") == std::string(""));
     CHECK(core_arch::backend_for_arch("not-a-real-architecture") == std::string(""));
 }
 
@@ -245,6 +253,7 @@ TEST_CASE("every emitted backend name is a name a surface can open", "[unit][arc
         "voxtral-tts",
         "kugelaudio",
         "zonos",
+        "zonos3", // Zyphra ZONOS3-Mini (#603)
         "indextts",
         "outetts",
         "pocket-tts",
@@ -262,6 +271,9 @@ TEST_CASE("every emitted backend name is a name a surface can open", "[unit][arc
         "madlad",
         "htdemucs",
         "mel-band-roformer",
+        "mini-bs-roformer",
+        "voice-isolator",
+        "scnet",
         "crepe",
         "btc-chords",
         "tabcnn",
@@ -348,6 +360,13 @@ static std::string write_stub_gguf(const std::string& arch) {
     return path;
 }
 
+TEST_CASE("RE-USE research GGUF is not opened as a product session", "[unit][arch-map]") {
+    const std::string path = write_stub_gguf("reuse");
+    crispasr_session* session = crispasr_session_open(path.c_str(), 1);
+    std::remove(path.c_str());
+    REQUIRE(session == nullptr);
+}
+
 TEST_CASE("crispasr_detect_backend_from_gguf reads the shared table", "[unit][arch-map]") {
     // A metadata-only GGUF with nothing but general.architecture: no tensors,
     // no weights, no model download. This is the exact reproduction of #335 —
@@ -363,6 +382,12 @@ TEST_CASE("crispasr_detect_backend_from_gguf reads the shared table", "[unit][ar
         {"dolphin", "dolphin"},        // #540: full model passed diff, automatic bindings failed
         {"qwen3tts", "qwen3-tts"},     // ditto
         {"whisper", "whisper"},        // was already shared — must not regress
+        {"mini-bs-roformer", "mini-bs-roformer"},
+        {"scnet", "scnet"},
+        {"voice-isolator", "voice-isolator"},
+        {"reuse", ""}, // RE-USE is research-only; never auto-open it as a product backend.
+        {"mini_bs_roformer", ""},
+        {"mini-bs-roformer-v2.5", ""},
         {"not-a-real-architecture", ""},
     };
     for (const auto& p : probes) {

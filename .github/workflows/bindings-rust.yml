@@ -11,6 +11,7 @@ name: Bindings Tests (Rust)
 # it, so the suite is runnable and therefore worth gating on.
 on:
   push:
+    branches: [main]
     paths:
       - crispasr/**
       - crispasr-sys/**
@@ -41,8 +42,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   ubuntu-22:
     runs-on: ubuntu-22.04

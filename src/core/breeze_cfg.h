@@ -19,6 +19,9 @@
 
 #pragma once
 
+#include "core/repetition_penalty.h"
+
+#include <cstdint>
 #include <vector>
 
 namespace breeze_cfg {
@@ -46,6 +49,13 @@ inline void combine(const float* rows, int n, const std::vector<Branch>& branche
             v += branches[b].scale * (rows[b * (size_t)n + i] - rows[i]);
         out[i] = v;
     }
+}
+
+// Repetition penalty over the generated first-codebook history (#594): once
+// per distinct token, as upstream's GeneratedTokenRepetitionPenaltyLogitsProcessor.
+// Shared with outetts in core/repetition_penalty.h.
+inline void apply_repetition_penalty(float* logits, int n, const std::vector<int32_t>& history, float penalty) {
+    core_sampling::apply_repetition_penalty(logits, n, history, penalty);
 }
 
 } // namespace breeze_cfg

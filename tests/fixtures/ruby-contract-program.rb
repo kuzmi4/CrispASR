@@ -16,6 +16,36 @@ def reject(type)
   end
   raise "expected #{type}"
 end
+# Experimental Ultra local head: UTF-8 ownership, fractional seconds and cleanup.
+def ultra
+  Whisper::CrispASR::Session.align_words_ultra('基础.gguf','头.gguf','你好',[1,3,5],7)
+end
+words=ultra
+eq(words.size,1);eq(words[0][:text],'你好');eq(words[0][:text].encoding,Encoding::UTF_8)
+eq((words[0][:start]-0.012345).abs < 1e-12,true)
+eq((words[0][:end]-0.067891).abs < 1e-12,true)
+eq(Whisper.ultra_calls,1);eq(Whisper.ultra_frees,1)
+Whisper.ultra_mode(1);eq(ultra,[]);eq(Whisper.ultra_frees,2)
+Whisper.ultra_mode(2);reject(RuntimeError){ultra};eq(Whisper.ultra_frees,2)
+Whisper.ultra_mode(3);reject(RuntimeError){ultra};eq(Whisper.ultra_frees,3)
+Whisper.ultra_mode(4);eq(ultra[0][:text],'');eq(Whisper.ultra_frees,4)
+# Raise during native-result conversion: Ruby nonlocal jumps must free ownership.
+Whisper.ultra_mode(5);reject(TypeError){ultra};eq(Whisper.ultra_frees,5)
+Whisper.ultra_mode(0)
+eq(ultra[0][:text],'你好');eq(Whisper.ultra_frees,6)
+calls=Whisper.ultra_calls
+['',"bad\0path"].each do |bad|
+  reject(ArgumentError){s.align_words_ultra(bad,'head','text',[1],1)}
+  reject(ArgumentError){s.align_words_ultra('base',bad,'text',[1],1)}
+  reject(ArgumentError){s.align_words_ultra('base','head',bad,[1],1)}
+end
+reject(TypeError){s.align_words_ultra(nil,'head','text',[1],1)}
+reject(TypeError){s.align_words_ultra('base','head','text',nil,1)}
+reject(TypeError){s.align_words_ultra('base','head','text',[Object.new],1)}
+reject(ArgumentError){s.align_words_ultra('base','head','text',[],1)}
+reject(ArgumentError){s.align_words_ultra('base','head','text',Array.new(1920001,0),1)}
+reject(RangeError){s.align_words_ultra('base','head','text',[1],2**40)}
+eq(Whisper.ultra_calls,calls)
 # Original 29 assertions (preserve exact semantics)
 h=s.open('probe',1)
 s.set_speaker_id(h,0);s.set_speaker_id(h,1)
@@ -51,6 +81,12 @@ chunks=[];s.synthesize_streaming(h,'a. b.'){|pcm,last|chunks << [pcm,last]}
 eq(chunks.size,2);eq(chunks.first.first.first,0.25);eq(chunks.last.first.first,0.75);eq(chunks.last.last,true)
 reject(RuntimeError){s.synthesize_streaming(h,'test'){|pcm,last|s.close(h)}}
 reject(ArgumentError){s.synthesize_streaming(h,'test'){|pcm,last|raise ArgumentError,'sentinel'}}
+# Legacy session VAD preserves native centiseconds.
+spans=s.vad_segments('vad',[1,3,5],16000,0.375,123,456,2)
+eq(spans,[{t0:125.5,t1:250.25},{t0:300.75,t1:903.75}])
+eq(s.vad_segments('empty',[1,3,5],16000,0.375,123,456,2),[])
+reject(RuntimeError){s.vad_segments('error',[1,3,5],16000,0.375,123,456,2)}
+eq(spans.first[:t0],125.5)
 # New: audio load family
 al=c.audio_load('probe.wav')
 eq(al[:pcm].size,3);eq(al[:sample_rate],16000);eq(al[:n_samples],3)
@@ -474,11 +510,27 @@ mh=mic.open(16000,1) do |pcm|
 end
 mic.start(mh);Timeout.timeout(5){finished.pop};mic.stop(mh);mic.close(mh)
 eq(seen,(39..69).map(&:to_f));eq(c.test_mic_live,0);eq(mic.test_live_chunks,0);c.test_mic_mode(0)
-# Killing an idle pump still closes the native microphone and retires its ticket.
+# Non-StandardError callback exceptions are also ignored, with delivery continuing.
+c.test_mic_mode(0);delivered=Queue.new;calls=0
+mh=mic.open(16000,1) do |pcm|
+  calls+=1
+  raise Exception,'expected callback exception' if calls==1
+  delivered << true
+end
+mic.start(mh);mic.start(mh);Timeout.timeout(5){delivered.pop};mic.close(mh)
+eq(calls,2);eq(c.test_mic_live,0);eq(mic.test_live_chunks,0)
+# Killing a pump inside its callback must propagate through exception handling.
 threads=Queue.new
-mh=mic.open(16000,1){|pcm|threads << Thread.current};mic.start(mh)
-pump=Timeout.timeout(5){threads.pop};pump.kill;pump.join
+mh=mic.open(16000,1){|pcm|threads << Thread.current;Thread.stop};mic.start(mh)
+pump=Timeout.timeout(5){threads.pop};closed_before=c.test_mic_closes
+pump.kill;Timeout.timeout(5){pump.join}
+eq(c.test_mic_closes,closed_before+1);eq(mic.test_live_chunks,0)
 eq(c.test_mic_live,0);reject(RuntimeError){mic.start(mh)};mic.close(mh)
+# Killing an idle native wait also runs cleanup.
+mh=mic.open(16000,1){};pump=mic.test_pump(mh)
+Timeout.timeout(5){Thread.pass until pump.status=='sleep'}
+closed_before=c.test_mic_closes;pump.kill;Timeout.timeout(5){pump.join}
+eq(c.test_mic_closes,closed_before+1);eq(c.test_mic_live,0);eq(mic.test_live_chunks,0)
 # New owners cannot revive old tickets, even if native malloc reuses an address.
 old=mh;mh=mic.open(16000,1){};eq(mh==old,false);reject(RuntimeError){mic.start(old)}
 mic.close(old);eq(c.test_mic_live,1);mic.close(mh);eq(c.test_mic_live,0)

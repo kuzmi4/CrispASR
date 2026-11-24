@@ -106,6 +106,9 @@ public:
 
     const char* name() const override { return "qwen3-tts"; }
 
+    // Own --voice-dir resolution (prefers <name>.wav over <name>.gguf, and only in Base mode); skip the shared #584 step.
+    bool resolves_voice_dir_itself() const override { return true; }
+
     uint32_t capabilities() const override {
         // #329: CAP_SRC_TGT_LANGUAGE — the talker's prefill carries an explicit
         // codec_language_id, so `-tl`/`--target-lang` picks the OUTPUT language
@@ -365,6 +368,10 @@ public:
             }
             last_voice_key_ = voice_key;
         }
+        qwen3_tts_set_capture_metadata(ctx_, params.tts_capture_request_id.c_str(),
+                                       params.tts_capture_source_text.c_str(), params.tts_voice.c_str(),
+                                       params.tts_instruct.c_str(), params.tts_speed,
+                                       params.tts_capture_suppress ? 1 : 0);
         return true;
     }
 

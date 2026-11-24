@@ -46,6 +46,7 @@ public:
     ~Qwen3Backend() override { Qwen3Backend::shutdown(); }
 
     const char* name() const override { return "qwen3"; }
+    bool honours_context() const override { return context_enabled_; }
 
     uint32_t capabilities() const override {
         // CAP_LANGUAGE_DETECT intentionally NOT declared. The transcribe
@@ -185,8 +186,9 @@ public:
             else
                 assistant_prefill = "language " + crispasr_iso_to_english_lang(params.language) + "<asr_text>";
         }
-        std::string text = core_qwen3_prompt::build(N_enc, sys_instruction, "", assistant_prefill, params.hotwords,
-                                                    context_enabled_ ? params.context : "");
+        std::string text = core_qwen3_prompt::build(
+            N_enc, core_qwen3_prompt::with_system_prefix(qwen3_asr_system_prefix(ctx_), sys_instruction), "",
+            assistant_prefill, params.hotwords, context_enabled_ ? params.context : "");
         if (raon_) {
             warn_raon_ignored_flags(params);
             text = raon_prompt(N_enc, params.ask);
@@ -569,8 +571,9 @@ public:
             else
                 assistant_prefill = "language " + crispasr_iso_to_english_lang(params.language) + "<asr_text>";
         }
-        std::string text = core_qwen3_prompt::build(N_enc, sys_instruction, "", assistant_prefill, params.hotwords,
-                                                    context_enabled_ ? params.context : "");
+        std::string text = core_qwen3_prompt::build(
+            N_enc, core_qwen3_prompt::with_system_prefix(qwen3_asr_system_prefix(ctx_), sys_instruction), "",
+            assistant_prefill, params.hotwords, context_enabled_ ? params.context : "");
         if (raon_) {
             warn_raon_ignored_flags(params);
             text = raon_prompt(N_enc, params.ask);

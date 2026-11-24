@@ -39,14 +39,6 @@ static bool file_exists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
-static void set_env_overwrite(const char* name, const char* value) {
-#if defined(_WIN32)
-    _putenv_s(name, value);
-#else
-    setenv(name, value, 1);
-#endif
-}
-
 static std::vector<float> resample_16k_to_24k(const float* in, int n_in) {
     std::vector<float> out;
     if (!in || n_in <= 0)
@@ -114,6 +106,10 @@ public:
     ~VibeVoiceBackend() override { VibeVoiceBackend::shutdown(); }
 
     const char* name() const override { return backend_name_.c_str(); }
+    bool honours_context() const override { return true; }
+
+    // Own --voice-dir resolution (prefers <name>.gguf, then per-language sibling packs); skip the shared #584 step.
+    bool resolves_voice_dir_itself() const override { return true; }
 
     uint32_t capabilities() const override {
         // ASR mode produces segments → framework -am + --diarize work.
@@ -140,7 +136,7 @@ public:
         // until a loaded streaming checkpoint lets us narrow it.
         if (backend_name_ != "vibevoice-streaming" && !vibevoice_is_asr_streaming(ctx_))
             caps |= CAP_TTS;
-        if (allow_generic_no_voice_)
+        if (generic_voice_ok())
             caps |= CAP_VOICE_CLONING;
         if (backend_name_ == "vibevoice-streaming" || vibevoice_is_asr_streaming(ctx_))
             caps |= CAP_STREAMING;
@@ -168,14 +164,17 @@ public:
             fprintf(stderr, "crispasr[vibevoice]: failed to load model '%s'\n", p.model.c_str());
             return false;
         }
-        // For the ASR backend ("vibevoice"), verify encoder tensors exist
-        // immediately so the user gets a clear diagnostic before any audio is
-        // processed.  TTS-only aliases ("vibevoice-tts", "vibevoice-1.5b")
-        // legitimately lack these tensors and must not fail here.
-        if ((backend_name_ == "vibevoice" || backend_name_ == "vibevoice-streaming") && !vibevoice_has_asr(ctx_)) {
+        // #589: the checkpoint, not the alias, decides what this context can
+        // do. Every VibeVoice GGUF auto-detects (by file name) as "vibevoice",
+        // so a TTS checkpoint reaching the ASR alias is the normal case for
+        // `crispasr -m vibevoice-7b.gguf --tts "..."`, as it is for the
+        // library. Fail early only when the run asks this TTS checkpoint to
+        // transcribe.
+        if ((backend_name_ == "vibevoice" || backend_name_ == "vibevoice-streaming") && !vibevoice_has_asr(ctx_) &&
+            p.tts_text.empty() && !p.server) {
             fprintf(stderr,
-                    "crispasr[vibevoice]: error: '%s' is a TTS-only model (no at_enc.*/st_enc.* tensors).\n"
-                    "  Use --backend vibevoice-tts for this model, or download the ASR model:\n"
+                    "crispasr[vibevoice]: error: '%s' is a VibeVoice TTS checkpoint, not an ASR one.\n"
+                    "  Synthesize with --tts \"text\", or transcribe with the ASR model:\n"
                     "  crispasr -m auto --backend vibevoice --auto-download\n",
                     p.model.c_str());
             vibevoice_free(ctx_);
@@ -207,6 +206,8 @@ public:
         // through the transcribe path at all, which is part of why the knob
         // looked inert from outside (#369).
         vibevoice_set_seed(ctx_, (uint32_t)params.seed);
+        // --frequency-penalty breaks greedy repetition loops (#610); 0 = off.
+        vibevoice_set_frequency_penalty(ctx_, params.frequency_penalty);
         const char* context = params.context.empty() ? nullptr : params.context.c_str();
         char* text = vibevoice_transcribe_with_context(ctx_, vv_pcm, vv_n, context);
         if (!text)
@@ -276,11 +277,12 @@ public:
             // empty so the caller reports no transcript — falling through here
             // would hand back the raw JSON, which is how "[Silence]" reached the
             // user's transcript in the first place.
-            if (!utts.empty())
+            // An answer cut off before any Content is a transcript too; its raw
+            // JSON is never segment text (#610).
+            if (!utts.empty() || core_vibevoice::looks_like_transcript(raw))
                 return out;
-            // Nothing parsed — the model answered in prose, or the decode was
-            // cut before the first complete object. Fall through and hand back
-            // the raw string rather than dropping the transcript.
+            // Nothing parsed and not a transcript — the model answered in
+            // prose. Hand back the raw string rather than dropping it.
         }
 
         crispasr_segment seg;
@@ -301,6 +303,11 @@ public:
     }
 
     std::vector<float> synthesize(const std::string& text, const whisper_params& params) override {
+        if (vibevoice_has_asr(ctx_)) {
+            fprintf(stderr, "crispasr[vibevoice]: this is an ASR checkpoint and does not support TTS.\n"
+                            "  Use a GGUF converted from a VibeVoice TTS checkpoint.\n");
+            return {};
+        }
         if (ctx_) {
             vibevoice_set_tts_steps(ctx_, params.tts_steps);
             vibevoice_set_seed(ctx_, (uint32_t)params.seed);
@@ -311,12 +318,13 @@ public:
         //      (matches qwen3-tts post-d35940b — server callers can pass the same
         //       {"voice": "<name>"} shape across all TTS backends.)
         //   2. Explicit --voice <path.gguf>: literal path to a voice GGUF.
-        //      --voice <path.wav>: 1.5B WAV-cloning path (see wav_ref_path_ below).
+        //      --voice <path.wav>: 1.5B WAV-cloning path (see wav_ref_path below).
         //   3. Per-language sibling pick (vibevoice-voice-<lang>-Spk1_woman.gguf
         //      → vibevoice-voice-<lang>-Spk0_man.gguf), if -l <lang> is set.
         //   4. Sibling vibevoice-voice-emma.gguf as English default (matches
         //      the auto-download companion).
-        std::string voice_path = params.tts_voice;
+        std::string voice_path = params.tts_force_neutral_voice ? std::string{} : params.tts_voice;
+        std::string wav_ref_path;
 
         // (1) Bare name → voice-dir lookup. A "bare name" is a token with no path
         // separators and no .gguf/.wav extension (e.g. `voice: "vik"` from a server
@@ -343,9 +351,9 @@ public:
         }
 
         // (2b) WAV reference → 1.5B cloning path. Don't attempt to load .wav as GGUF;
-        // store it and expose via VIBEVOICE_VOICE_AUDIO before each synthesize call.
+        // select it on this context for this synthesis call.
         if (ends_with_ci(voice_path, ".wav")) {
-            wav_ref_path_ = voice_path;
+            wav_ref_path = voice_path;
             voice_path.clear();
         }
 
@@ -353,7 +361,7 @@ public:
         // The realtime model wants a prompt voice. The 1.5B base model can
         // synthesize a generic voice without one, so keep the fallback only for
         // the realtime path.
-        if (!allow_generic_no_voice_ && voice_path.empty() && wav_ref_path_.empty()) {
+        if (!generic_voice_ok() && voice_path.empty() && wav_ref_path.empty()) {
             auto slash = params.model.find_last_of("/\\");
             std::string dir = (slash == std::string::npos) ? "." : params.model.substr(0, slash);
             auto try_sibling = [&](const std::string& fname) -> std::string {
@@ -389,7 +397,7 @@ public:
 
         // Gate: the realtime model requires a prompt voice. The 1.5B base
         // model can run without one and generate its generic prior voice.
-        if (!allow_generic_no_voice_ && last_voice_key_.empty() && wav_ref_path_.empty()) {
+        if (!generic_voice_ok() && last_voice_key_.empty() && wav_ref_path.empty()) {
             const char* voice_wav_env = crispasr_env::get("CRISPASR_VIBEVOICE_VOICE_AUDIO");
             if (!voice_wav_env || !voice_wav_env[0]) {
                 fprintf(stderr,
@@ -404,9 +412,12 @@ public:
         if (!ctx_ || text.empty())
             return {};
 
-        // Expose --voice <path.wav> to vibevoice_synthesize via env var.
-        if (!wav_ref_path_.empty())
-            set_env_overwrite("VIBEVOICE_VOICE_AUDIO", wav_ref_path_.c_str());
+        // Context-owned selection avoids process environment writes and stale
+        // references between requests. Null preserves the ordinary env fallback;
+        // an empty path explicitly suppresses it for the neutral disclosure.
+        vibevoice_set_reference_wav(ctx_, params.tts_force_neutral_voice ? ""
+                                          : wav_ref_path.empty()         ? nullptr
+                                                                         : wav_ref_path.c_str());
 
         int n_samples = 0;
         float* pcm = vibevoice_synthesize(ctx_, text.c_str(), &n_samples);
@@ -428,9 +439,18 @@ public:
 private:
     vibevoice_context* ctx_ = nullptr;
     std::string last_voice_key_;
-    std::string wav_ref_path_; // set when --voice <path.wav> is used (1.5B WAV cloning)
     std::string backend_name_ = "vibevoice";
     bool allow_generic_no_voice_ = false;
+
+    // #589: whether synthesis may run without a voice prompt. A loaded TTS
+    // checkpoint answers for itself: base models (1.5B, 7B) have a generic
+    // voice and clone from a WAV; the realtime model needs a voice prompt.
+    // The alias default only applies before a model is loaded.
+    bool generic_voice_ok() const {
+        if (ctx_ && !vibevoice_has_asr(ctx_))
+            return !vibevoice_is_realtime_tts(ctx_);
+        return allow_generic_no_voice_;
+    }
 };
 
 } // namespace

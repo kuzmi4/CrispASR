@@ -114,6 +114,8 @@ export CRISPASR_MODEL_MOSS_DIARIZE="${CRISPASR_MODEL_MOSS_DIARIZE:-$CRISPASR_MOD
 # codebooks + transformer codec companion (validated by ASR round-trip, #249).
 # MioTTS-0.6B (Qwen3 + MioCodec, Apache-2.0)
 export CRISPASR_MODEL_MIOTTS="${CRISPASR_MODEL_MIOTTS:-$CRISPASR_MODELS_DIR/miotts-0.6b-q8_0.gguf}"
+# ZONOS3-Mini (Zyphra, Apache-2.0): upstream gguf/backbone-ptq.gguf, zac-keep2.gguf beside it (#603)
+export CRISPASR_MODEL_ZONOS3="${CRISPASR_MODEL_ZONOS3:-$CRISPASR_MODELS_DIR/zonos3-mini/backbone-ptq.gguf}"
 export CRISPASR_MODEL_CONFUCIUS4_T2S="${CRISPASR_MODEL_CONFUCIUS4_T2S:-$CRISPASR_MODELS_DIR/confucius4-tts-t2s-q4_k.gguf}"
 export CRISPASR_MODEL_PIANO_TRANSCRIPTION="${CRISPASR_MODEL_PIANO_TRANSCRIPTION:-$CRISPASR_MODELS_DIR/piano-transcription-f16.gguf}"
 export CRISPASR_MODEL_BASIC_PITCH="${CRISPASR_MODEL_BASIC_PITCH:-$CRISPASR_MODELS_DIR/basic-pitch-f32.gguf}"
@@ -221,3 +223,9 @@ export CRISPASR_MODEL_QWEN3_TTS="${CRISPASR_MODEL_QWEN3_TTS:-$CRISPASR_MODELS_DI
 # voice cache for later F16 runs).
 export CRISPASR_TEST_OMNIVOICE_MODEL="${CRISPASR_TEST_OMNIVOICE_MODEL:-$CRISPASR_MODELS_DIR/omnivoice-q4_k.gguf}"
 export CRISPASR_TEST_OMNIVOICE_TOKENIZER="${CRISPASR_TEST_OMNIVOICE_TOKENIZER:-$CRISPASR_MODELS_DIR/omnivoice-tokenizer-f16.gguf}"
+
+# VibeVoice base clone quality stays opt-in: set these explicitly before CTest.
+# CRISPASR_VIBEVOICE_CLONE_15B_MODEL / CRISPASR_VIBEVOICE_CLONE_7B_MODEL
+# CRISPASR_VIBEVOICE_CLONE_REFERENCE (owned/synthetic PCM16 WAV, preferably 5-10s)
+# CRISPASR_VIBEVOICE_CLONE_ASR_MODEL (local Parakeet; ASR_BACKEND overrides it)
+# See tests/regression/README.md for quality thresholds and both live test names.

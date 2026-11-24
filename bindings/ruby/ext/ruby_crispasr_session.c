@@ -74,6 +74,8 @@ extern int crispasr_session_set_translate(struct CrispasrSession* s, int enable)
 extern int crispasr_session_set_temperature(struct CrispasrSession* s, float temperature, unsigned long long seed);
 extern int crispasr_session_set_tts_seed(struct CrispasrSession* s, unsigned long long seed);
 extern int crispasr_session_set_max_new_tokens(struct CrispasrSession* s, int n);
+extern int crispasr_session_set_autochunk(struct CrispasrSession* s, int enabled, int chunk_seconds);
+extern int crispasr_session_set_max_new_tokens_per_second(struct CrispasrSession* s, float rate, int minimum);
 extern int crispasr_session_set_frequency_penalty(struct CrispasrSession* s, float penalty);
 extern int crispasr_session_set_tts_steps(struct CrispasrSession* s, int steps);
 extern int crispasr_session_set_tts_num_candidates(struct CrispasrSession* s, int n);
@@ -574,6 +576,22 @@ static VALUE rb_session_set_max_new_tokens(VALUE self, VALUE handle, VALUE n) {
     int rc = crispasr_session_set_max_new_tokens(s, NUM2INT(n));
     if (rc != 0)
         rb_raise(rb_eRuntimeError, "set_max_new_tokens failed (rc=%d)", rc);
+    return Qnil;
+}
+
+static VALUE rb_session_set_autochunk(VALUE self, VALUE handle, VALUE enabled, VALUE chunk_seconds) {
+    struct CrispasrSession* s = rb_extra_handle(handle);
+    int rc = crispasr_session_set_autochunk(s, RTEST(enabled) ? 1 : 0, NUM2INT(chunk_seconds));
+    if (rc != 0)
+        rb_raise(rb_eRuntimeError, "set_autochunk failed (rc=%d)", rc);
+    return Qnil;
+}
+
+static VALUE rb_session_set_max_new_tokens_per_second(VALUE self, VALUE handle, VALUE rate, VALUE minimum) {
+    struct CrispasrSession* s = rb_extra_handle(handle);
+    int rc = crispasr_session_set_max_new_tokens_per_second(s, (float)NUM2DBL(rate), NUM2INT(minimum));
+    if (rc != 0)
+        rb_raise(rb_eRuntimeError, "set_max_new_tokens_per_second failed (rc=%d)", rc);
     return Qnil;
 }
 
@@ -1208,7 +1226,7 @@ static VALUE rb_session_get_progress(VALUE self) {
 }
 
 // CrispASR::Session.vad_segments(vad_model_path, pcm, sample_rate, threshold, min_speech_ms, min_silence_ms, n_threads)
-// -> [{t0:, t1:}]
+// -> [{t0:, t1:}], with native centisecond timestamps.
 static VALUE rb_session_vad_segments(int argc, VALUE* argv, VALUE self) {
     if (argc < 3)
         rb_raise(rb_eArgError, "vad_segments needs at least 3 args: vad_model_path, pcm, sample_rate");
@@ -1241,6 +1259,69 @@ static VALUE rb_session_vad_segments(int argc, VALUE* argv, VALUE self) {
     if (spans)
         crispasr_vad_free(spans);
     return result;
+}
+
+// Experimental Ultra local head: mono 16 kHz PCM, owned words and double-second times.
+struct crispasr_ultra_align_result;
+extern struct crispasr_ultra_align_result* crispasr_align_words_ultra_abi(const char* base, const char* head,
+                                                                          const char* text, const float* pcm, int32_t n,
+                                                                          int32_t threads);
+extern int crispasr_ultra_align_result_n_words(const struct crispasr_ultra_align_result* r);
+extern const char* crispasr_ultra_align_result_word_text(const struct crispasr_ultra_align_result* r, int i);
+extern double crispasr_ultra_align_result_word_start_ms(const struct crispasr_ultra_align_result* r, int i);
+extern double crispasr_ultra_align_result_word_end_ms(const struct crispasr_ultra_align_result* r, int i);
+extern void crispasr_ultra_align_result_free(struct crispasr_ultra_align_result* r);
+
+static VALUE rb_ultra_copy_words(VALUE opaque) {
+    struct crispasr_ultra_align_result* r = (struct crispasr_ultra_align_result*)(uintptr_t)opaque;
+    int count = crispasr_ultra_align_result_n_words(r);
+    if (count < 0)
+        rb_raise(rb_eRuntimeError, "Invalid Ultra alignment word count");
+    VALUE words = rb_ary_new_capa(count);
+    for (int i = 0; i < count; ++i) {
+        VALUE word = rb_hash_new();
+        const char* text = crispasr_ultra_align_result_word_text(r, i);
+        rb_hash_aset(word, ID2SYM(rb_intern("text")), rb_utf8_str_new_cstr(text ? text : ""));
+        rb_hash_aset(word, ID2SYM(rb_intern("start")),
+                     DBL2NUM(crispasr_ultra_align_result_word_start_ms(r, i) / 1000.0));
+        rb_hash_aset(word, ID2SYM(rb_intern("end")), DBL2NUM(crispasr_ultra_align_result_word_end_ms(r, i) / 1000.0));
+        rb_ary_push(words, word);
+    }
+    return words;
+}
+
+static VALUE rb_session_align_words_ultra(VALUE self, VALUE base, VALUE head, VALUE text, VALUE pcm_arr,
+                                          VALUE threads) {
+    StringValue(base);
+    StringValue(head);
+    StringValue(text);
+    // Validate C strings before dispatch, including embedded NULs.
+    StringValueCStr(base);
+    StringValueCStr(head);
+    StringValueCStr(text);
+    if (RSTRING_LEN(base) == 0 || RSTRING_LEN(head) == 0 || RSTRING_LEN(text) == 0)
+        rb_raise(rb_eArgError, "Ultra alignment requires base model, local head and transcript");
+    Check_Type(pcm_arr, T_ARRAY);
+    long count = RARRAY_LEN(pcm_arr);
+    if (count <= 0 || count > 120 * 16000)
+        rb_raise(rb_eArgError, "Ultra alignment requires 1 to 1920000 mono 16 kHz samples");
+    int n_threads = NUM2INT(threads);
+    VALUE storage = rb_aux_pcm_storage(pcm_arr);
+    struct crispasr_ultra_align_result* r =
+        crispasr_align_words_ultra_abi(StringValueCStr(base), StringValueCStr(head), StringValueCStr(text),
+                                       (float*)RSTRING_PTR(storage), (int32_t)count, n_threads);
+    RB_GC_GUARD(storage);
+    RB_GC_GUARD(base);
+    RB_GC_GUARD(head);
+    RB_GC_GUARD(text);
+    if (!r)
+        rb_raise(rb_eRuntimeError, "Ultra alignment failed");
+    int state = 0;
+    VALUE words = rb_protect(rb_ultra_copy_words, (VALUE)(uintptr_t)r, &state);
+    crispasr_ultra_align_result_free(r);
+    if (state)
+        rb_jump_tag(state);
+    return words;
 }
 
 // CrispASR::Session.align_words(aligner_model, transcript, pcm, n_threads) -> [{text:, t0:, t1:}]
@@ -1844,6 +1925,7 @@ RB_CONTEXT_WRAPPER_1(rb_session_ctc_vocab);
 RB_CONTEXT_WRAPPER_5(rb_session_transcribe_chunked);
 RB_CONTEXT_WRAPPER_0(rb_session_get_progress);
 RB_CONTEXT_WRAPPER_VAR(rb_session_vad_segments);
+RB_CONTEXT_WRAPPER_5(rb_session_align_words_ultra);
 RB_CONTEXT_WRAPPER_4(rb_session_align_words);
 RB_CONTEXT_WRAPPER_1(rb_session_clear_phoneme_cache);
 RB_CONTEXT_WRAPPER_2(rb_session_set_source_language);
@@ -1854,6 +1936,8 @@ RB_CONTEXT_WRAPPER_2(rb_session_set_translate);
 RB_CONTEXT_WRAPPER_3(rb_session_set_temperature);
 RB_CONTEXT_WRAPPER_2(rb_session_set_tts_seed);
 RB_CONTEXT_WRAPPER_2(rb_session_set_max_new_tokens);
+RB_CONTEXT_WRAPPER_3(rb_session_set_autochunk);
+RB_CONTEXT_WRAPPER_3(rb_session_set_max_new_tokens_per_second);
 RB_CONTEXT_WRAPPER_2(rb_session_set_frequency_penalty);
 RB_CONTEXT_WRAPPER_2(rb_session_set_tts_steps);
 RB_CONTEXT_WRAPPER_2(rb_session_set_tts_num_candidates);
@@ -1969,6 +2053,7 @@ void init_ruby_crispasr_session(VALUE* mWhisper) {
     rb_define_singleton_method(mSession, "transcribe_chunked", rb_context_guard_rb_session_transcribe_chunked, 5);
     rb_define_singleton_method(mSession, "get_progress", rb_context_guard_rb_session_get_progress, 0);
     rb_define_singleton_method(mSession, "vad_segments", rb_context_guard_rb_session_vad_segments, -1);
+    rb_define_singleton_method(mSession, "align_words_ultra", rb_context_guard_rb_session_align_words_ultra, 5);
     rb_define_singleton_method(mSession, "align_words", rb_context_guard_rb_session_align_words, 4);
     rb_define_singleton_method(mSession, "clear_phoneme_cache", rb_context_guard_rb_session_clear_phoneme_cache, 1);
     rb_define_singleton_method(mSession, "set_source_language", rb_context_guard_rb_session_set_source_language, 2);
@@ -1980,6 +2065,9 @@ void init_ruby_crispasr_session(VALUE* mWhisper) {
     rb_define_singleton_method(mSession, "set_temperature", rb_context_guard_rb_session_set_temperature, 3);
     rb_define_singleton_method(mSession, "set_tts_seed", rb_context_guard_rb_session_set_tts_seed, 2);
     rb_define_singleton_method(mSession, "set_max_new_tokens", rb_context_guard_rb_session_set_max_new_tokens, 2);
+    rb_define_singleton_method(mSession, "set_autochunk", rb_context_guard_rb_session_set_autochunk, 3);
+    rb_define_singleton_method(mSession, "set_max_new_tokens_per_second",
+                               rb_context_guard_rb_session_set_max_new_tokens_per_second, 3);
     rb_define_singleton_method(mSession, "set_frequency_penalty", rb_context_guard_rb_session_set_frequency_penalty, 2);
     rb_define_singleton_method(mSession, "set_tts_steps", rb_context_guard_rb_session_set_tts_steps, 2);
     rb_define_singleton_method(mSession, "set_tts_num_candidates", rb_context_guard_rb_session_set_tts_num_candidates,

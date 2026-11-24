@@ -36,10 +36,20 @@ int32_t crispasr_speaker_db_count(const void* db) {
 float crispasr_speaker_db_match(const void* db, const float* emb, int32_t dim, float threshold, char* name,
                                 int32_t cap) {
     ++db_calls;
-    if (!db || !emb || dim != 3 || emb[0] != 1 || emb[1] != 3 || emb[2] != 5 || cap < 10)
+    // Record a closed-handle dispatch without crashing the coercion guard test.
+    if (!db)
+        return -1.f;
+    if (!emb || dim != 3 || emb[0] != 1 || emb[1] != 3 || emb[2] != 5 || cap < 10)
         abort();
     if (db_mode == 1)
         return -1.f;
+    if (db_mode == 4 || db_mode == 5) {
+        // Independent score lets the wrapper exercise the native float boundary.
+        float score = db_mode == 4 ? .7f : .875f;
+        if (score >= threshold)
+            strcpy(name, "Alice");
+        return score;
+    }
     const char text[] = "\xe3\x82\xa2\xe3\x83\xaa\xe3\x82\xb9";
     memcpy(name, text, sizeof(text));
     return .875f;

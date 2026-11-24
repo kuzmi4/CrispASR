@@ -596,9 +596,10 @@ static bool whisper_params_parse_arg_backend_vad(int argc, char** argv, int& i, 
 static bool whisper_params_parse_arg_tts_sampling(int argc, char** argv, int& i, whisper_params& params) {
     std::string arg = argv[i];
 #define ARGV_NEXT (((i + 1) < argc) ? argv[++i] : requires_value_error(arg))
-    if (arg == "--tts-top-k") {
+    // --top-k/--top-p are generic aliases (#564: moss-diarize reads the same fields).
+    if (arg == "--tts-top-k" || arg == "--top-k") {
         params.tts_top_k = std::stoi(ARGV_NEXT);
-    } else if (arg == "--tts-top-p") {
+    } else if (arg == "--tts-top-p" || arg == "--top-p") {
         params.tts_top_p = std::stof(ARGV_NEXT);
     } else {
         return false;
@@ -696,6 +697,8 @@ static bool whisper_params_parse_arg_streaming_tts(int argc, char** argv, int& i
         params.align_format = ARGV_NEXT;
     } else if (arg == "--align-only") {
         params.align_only = true;
+    } else if (arg == "--ultra-head") {
+        params.ultra_head = ARGV_NEXT;
     } else if (arg == "--align-granularity") {
         params.align_granularity = ARGV_NEXT;
     } else if (arg == "--text-file") {
@@ -1577,6 +1580,7 @@ static void whisper_print_usage(int /*argc*/, char** argv, const whisper_params&
             "                                                 --text-file - reads from stdin (auto-detects format);\n"
             "                                                 .json accepts CrispASR --output-json transcription\n"
             "                                                 -m/--backend, --vad, --max-len are unused here\n"
+            "             --ultra-head FNAME        optional Ultra local-head GGUF for --align-only\n"
             "             --align-granularity G     [auto   ] align-only output units: auto|word|segment\n"
             "                                                 (segment = re-timed input cues/segments;\n"
             "                                                 auto = segment for .srt/.json, word otherwise)\n");
@@ -1623,13 +1627,14 @@ static void whisper_print_usage(int /*argc*/, char** argv, const whisper_params&
             "12.5 Hz on the shipped models, so 80 ms each and N=25 floors at ~2 s. -1 = model default\n",
             params.tts_min_speech_tokens);
     fprintf(out,
-            "             --tts-top-k N            [%-7s] TTS top-k cutoff (dia/tada/chatterbox/moss-tts); "
+            "             --tts-top-k, --top-k N   [%-7s] top-k cutoff (dia/tada/chatterbox/moss-tts/moss-diarize); "
             "0 disables filtering\n",
             "default");
-    fprintf(out,
-            "             --tts-top-p X            [%-7s] TTS nucleus threshold (dia/tada/chatterbox/moss-tts); "
-            "1 disables filtering\n",
-            "default");
+    fprintf(
+        out,
+        "             --tts-top-p, --top-p X   [%-7s] nucleus threshold (dia/tada/chatterbox/moss-tts/moss-diarize); "
+        "1 disables filtering\n",
+        "default");
     fprintf(out,
             "             --tts-cfg-scale X        [%-7s] TTS CFG guidance scale "
             "(vibevoice/chatterbox/f5/tada/irodori/bt2-tts; "
@@ -2577,6 +2582,10 @@ int main(int argc, char** argv) {
         whisper_print_usage(argc, argv, params, stderr);
         return 1;
     }
+    if (!params.ultra_head.empty() && !params.align_only) {
+        fprintf(stderr, "crispasr: --ultra-head requires --align-only\n");
+        return 1;
+    }
 
     // Argument validation belongs before dispatch. This check used to sit after
     // every crispasr_run_backend() early return, so it only ever ran on the
@@ -2658,6 +2667,9 @@ int main(int argc, char** argv) {
     if (params.use_gpu) {
         if (params.gpu_backend != "cpu") {
             ggml_backend_load_all();
+            // #606: say why a shipped GPU plugin did not load instead of
+            // silently running on the CPU.
+            crispasr_report_unloaded_gpu_plugins(stderr, /*compact=*/true);
         }
         // Issue #214 — propagate --gpu-backend preference so every
         // backend's init picks the right GPU device instead of the

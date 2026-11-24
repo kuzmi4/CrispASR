@@ -38,6 +38,8 @@
 
 #pragma once
 
+#include "core/parallel_for.h"
+
 #if defined(HAVE_ACCELERATE)
 #include <Accelerate/Accelerate.h>
 #elif defined(CRISPASR_HAVE_BLAS)
@@ -48,6 +50,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -74,11 +77,12 @@ enum TrimMode {
 // N-point real IFFT:
 //   x[n] = (1/N) * ( X[0].re
 //                   + X[N/2].re * (-1)^n    [if N even]
-//                   + 2 * sum_{k=1}^{N/2-1} Re(X[k] * exp(j*2*pi*k*n/N)) )
+//                   + 2 * sum_{k=1}^{ceil(N/2)-1} Re(X[k] * exp(j*2*pi*k*n/N)) )
 //
 // O(N^2) but N is small (16-1280) so the simplicity wins over FFT.
 static inline void irfft_hermitian(const float* spec_re, const float* spec_im, int N, float* out) {
     const int half = N / 2;
+    const int positive_end = half + N % 2;
     const double inv_N = 1.0 / N;
 
     for (int n = 0; n < N; n++) {
@@ -88,12 +92,31 @@ static inline void irfft_hermitian(const float* spec_re, const float* spec_im, i
             val += spec_re[half] * ((n & 1) ? -1.0 : 1.0);
         }
         double angle_base = 2.0 * M_PI * n * inv_N;
-        for (int k = 1; k < half; k++) {
+        for (int k = 1; k < positive_end; k++) {
             double angle = angle_base * k;
             val += 2.0 * (spec_re[k] * std::cos(angle) - spec_im[k] * std::sin(angle));
         }
         out[n] = (float)(val * inv_N);
     }
+}
+
+// One frame of the scalar path: polar spectrum -> time samples. Kept out of
+// line so the serial loop and the parallel tiles execute the SAME machine code;
+// inlined separately at two call sites the compiler vectorized / FMA-fused them
+// differently and the tiled result drifted by 1 ulp from the serial one.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+static void
+istft_scalar_frame(const float* m_row, const float* p_row, int n_fft, float* frame_re, float* frame_im, float* out) {
+    const int n_freq = n_fft / 2 + 1;
+    for (int f = 0; f < n_freq; f++) {
+        frame_re[f] = m_row[f] * std::cos(p_row[f]);
+        frame_im[f] = m_row[f] * std::sin(p_row[f]);
+    }
+    irfft_hermitian(frame_re, frame_im, n_fft, out);
 }
 
 // Build a periodic Hann window of length N:
@@ -127,13 +150,27 @@ static inline void hann_periodic(int N, float* out) {
 //   zero_below_eps — if true, write 0.0 for positions whose window-sum is
 //                    <= win_eps (kokoro behavior). If false (default,
 //                    outetts), leave the un-normalized accumulated value.
+//   n_threads   — budget for this helper's workers (0 uses the runtime default).
+//                 A linked BLAS library controls its own internal thread pool.
+//
+// Frame scratch is bounded independently of T_frames. The serial scalar path
+// keeps just one frame; parallel frame-result tiles and BLAS tiles use at most
+// 256 KiB (or one frame when it exceeds that limit). Scalar workers additionally
+// own O(n_fft) spectrum scratch each.
 //
 // Returns a vector of PCM samples.
 static inline std::vector<float> istft(const float* mag, const float* phase, int n_fft, int hop, int T_frames,
                                        const float* window = nullptr, TrimMode trim = TRIM_CENTER, float clamp = 0.0f,
-                                       float win_eps = 1e-8f, bool zero_below_eps = false) {
+                                       float win_eps = 1e-8f, bool zero_below_eps = false, int n_threads = 0) {
+    if (!mag || !phase || n_fft <= 0 || hop <= 0 || T_frames <= 0)
+        return {};
+    if (trim == TRIM_SAME && hop > n_fft)
+        return {}; // SAME padding cannot have a negative trim width.
     const int n_freq = n_fft / 2 + 1;
-    const int ola_len = (T_frames - 1) * hop + n_fft;
+    const int64_t ola_len_wide = (int64_t)(T_frames - 1) * hop + n_fft;
+    if (ola_len_wide > std::numeric_limits<int>::max())
+        return {}; // offsets and the public C buffer length are int-sized.
+    const int ola_len = (int)ola_len_wide;
 
     // Build window if not provided.
     std::vector<float> hann_buf;
@@ -147,9 +184,23 @@ static inline std::vector<float> istft(const float* mag, const float* phase, int
     std::vector<float> output(ola_len, 0.0f);
     std::vector<float> win_sum(ola_len, 0.0f);
 
+    const char* env_serial = std::getenv("CRISPASR_ISTFT_SERIAL");
+    const bool force_serial = (env_serial && env_serial[0] == '1');
+    const size_t scratch_bytes = 256 * 1024;
+    auto overlap_add = [&](int t, const float* frame) {
+        const int offset = t * hop;
+        for (int i = 0; i < n_fft; i++) {
+            const float w = window[i];
+            output[offset + i] += frame[i] * w;
+            win_sum[offset + i] += w * w;
+        }
+    };
+
 #if defined(HAVE_ACCELERATE) || defined(CRISPASR_HAVE_BLAS)
     if (n_freq >= 3) {
-        const int K = n_freq - 2;
+        // Odd transforms have no Nyquist bin: their highest positive bin
+        // also has a conjugate partner and must participate in the GEMM.
+        const int K = n_freq - 2 + n_fft % 2;
         const double inv_N = 1.0 / n_fft;
 
         struct FourierBasis {
@@ -165,14 +216,14 @@ static inline std::vector<float> istft(const float* mag, const float* phase, int
             auto it = s_basis_cache.find(n_fft);
             if (it == s_basis_cache.end()) {
                 FourierBasis fb;
-                fb.M_cos.resize(n_fft * K);
-                fb.M_sin.resize(n_fft * K);
+                fb.M_cos.resize((size_t)n_fft * K);
+                fb.M_sin.resize((size_t)n_fft * K);
                 for (int n = 0; n < n_fft; n++) {
                     double angle_base = 2.0 * M_PI * n * inv_N;
-                    for (int k = 1; k < n_freq - 1; k++) {
+                    for (int k = 1; k <= K; k++) {
                         double angle = angle_base * k;
-                        fb.M_cos[n * K + (k - 1)] = (float)(2.0 * std::cos(angle));
-                        fb.M_sin[n * K + (k - 1)] = (float)(-2.0 * std::sin(angle));
+                        fb.M_cos[(size_t)n * K + (k - 1)] = (float)(2.0 * std::cos(angle));
+                        fb.M_sin[(size_t)n * K + (k - 1)] = (float)(-2.0 * std::sin(angle));
                     }
                 }
                 it = s_basis_cache.emplace(n_fft, std::move(fb)).first;
@@ -182,73 +233,96 @@ static inline std::vector<float> istft(const float* mag, const float* phase, int
 
         const auto& M_cos = basis_ptr->M_cos;
         const auto& M_sin = basis_ptr->M_sin;
+        const size_t bytes_per_frame = ((size_t)2 * K + n_fft) * sizeof(float);
+        const int tile_frames =
+            force_serial ? 1 : (int)std::min((size_t)T_frames, std::max((size_t)1, scratch_bytes / bytes_per_frame));
+        std::vector<float> spec_re((size_t)tile_frames * K);
+        std::vector<float> spec_im((size_t)tile_frames * K);
+        std::vector<float> frames((size_t)tile_frames * n_fft);
 
-        std::vector<float> spec_re(T_frames * K);
-        std::vector<float> spec_im(T_frames * K);
-        for (int t = 0; t < T_frames; t++) {
-            const float* m_row = mag + (size_t)t * n_freq;
-            const float* p_row = phase + (size_t)t * n_freq;
-            for (int k = 1; k < n_freq - 1; k++) {
-                float s, c;
+        for (int first = 0; first < T_frames;) {
+            const int count = std::min(tile_frames, T_frames - first);
+            // Phase preparation is O(N), much cheaper than the O(N^2)
+            // scalar inverse transform. Do not spawn a team for tiny tiles.
+            core_parallel::for_each_chunk_work(count, force_serial ? 1 : n_threads, (uint64_t)K, 65536,
+                                               [&](int begin, int end) {
+                                                   for (int local = begin; local < end; local++) {
+                                                       const int t = first + local;
+                                                       const float* m_row = mag + (size_t)t * n_freq;
+                                                       const float* p_row = phase + (size_t)t * n_freq;
+                                                       float* re_row = spec_re.data() + (size_t)local * K;
+                                                       float* im_row = spec_im.data() + (size_t)local * K;
+                                                       for (int k = 1; k <= K; k++) {
+                                                           float s, c;
 #if defined(__APPLE__)
-                __sincosf(p_row[k], &s, &c);
+                                                           __sincosf(p_row[k], &s, &c);
 #elif defined(_GNU_SOURCE)
-                sincosf(p_row[k], &s, &c);
+                        sincosf(p_row[k], &s, &c);
 #else
-                s = std::sin(p_row[k]);
-                c = std::cos(p_row[k]);
+                        s = std::sin(p_row[k]);
+                        c = std::cos(p_row[k]);
 #endif
-                spec_re[t * K + (k - 1)] = m_row[k] * c;
-                spec_im[t * K + (k - 1)] = m_row[k] * s;
-            }
-        }
+                                                           re_row[k - 1] = m_row[k] * c;
+                                                           im_row[k - 1] = m_row[k] * s;
+                                                       }
+                                                   }
+                                               });
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, count, n_fft, K, 1.0f, spec_re.data(), K, M_cos.data(),
+                        K, 0.0f, frames.data(), n_fft);
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, count, n_fft, K, 1.0f, spec_im.data(), K, M_sin.data(),
+                        K, 1.0f, frames.data(), n_fft);
 
-        std::vector<float> all_frames(T_frames * n_fft, 0.0f);
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T_frames, n_fft, K, 1.0f, spec_re.data(), K, M_cos.data(),
-                    K, 0.0f, all_frames.data(), n_fft);
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T_frames, n_fft, K, 1.0f, spec_im.data(), K, M_sin.data(),
-                    K, 1.0f, all_frames.data(), n_fft);
-
-        for (int t = 0; t < T_frames; t++) {
-            const float* m_row = mag + (size_t)t * n_freq;
-            const float* p_row = phase + (size_t)t * n_freq;
-            float dc = m_row[0] * std::cos(p_row[0]);
-            float nyq = (n_fft % 2 == 0) ? m_row[n_fft / 2] * std::cos(p_row[n_fft / 2]) : 0.0f;
-            const float* f_out = all_frames.data() + t * n_fft;
-            int offset = t * hop;
-            for (int i = 0; i < n_fft && (offset + i) < ola_len; i++) {
-                float val = (f_out[i] + dc + nyq * ((i & 1) ? -1.0f : 1.0f)) * (float)inv_N;
-                float w = window[i];
-                output[offset + i] += val * w;
-                win_sum[offset + i] += w * w;
+            for (int local = 0; local < count; local++) {
+                const int t = first + local;
+                const float* m_row = mag + (size_t)t * n_freq;
+                const float* p_row = phase + (size_t)t * n_freq;
+                const float dc = m_row[0] * std::cos(p_row[0]);
+                const float nyq = (n_fft % 2 == 0) ? m_row[n_fft / 2] * std::cos(p_row[n_fft / 2]) : 0.0f;
+                float* frame = frames.data() + (size_t)local * n_fft;
+                for (int i = 0; i < n_fft; i++)
+                    frame[i] = (frame[i] + dc + nyq * ((i & 1) ? -1.0f : 1.0f)) * (float)inv_N;
+                overlap_add(t, frame);
             }
+            first += count;
         }
     } else
 #endif
     {
-        // Per-frame scratch.
-        std::vector<float> frame_re(n_freq);
-        std::vector<float> frame_im(n_freq);
-        std::vector<float> frame_out(n_fft);
-
-        for (int t = 0; t < T_frames; t++) {
-            // Build complex spectrum from magnitude + phase.
-            const float* m_row = mag + (size_t)t * n_freq;
-            const float* p_row = phase + (size_t)t * n_freq;
-            for (int f = 0; f < n_freq; f++) {
-                frame_re[f] = m_row[f] * std::cos(p_row[f]);
-                frame_im[f] = m_row[f] * std::sin(p_row[f]);
+        // A transform's cost depends on N^2, not merely on the number of
+        // frames. In particular Kokoro's N=20 frames should stay serial for
+        // short clips. Resolve before allocating to preserve one-frame memory.
+        const uint64_t work_per_frame = (uint64_t)n_fft * (n_fft / 2);
+        const int nt =
+            force_serial ? 1 : core_parallel::resolve_threads_for_work(T_frames, n_threads, work_per_frame, 65536);
+        if (nt == 1) {
+            std::vector<float> frame_re(n_freq);
+            std::vector<float> frame_im(n_freq);
+            std::vector<float> frame(n_fft);
+            for (int t = 0; t < T_frames; t++) {
+                istft_scalar_frame(mag + (size_t)t * n_freq, phase + (size_t)t * n_freq, n_fft, frame_re.data(),
+                                   frame_im.data(), frame.data());
+                overlap_add(t, frame.data());
             }
-
-            // Inverse RFFT.
-            irfft_hermitian(frame_re.data(), frame_im.data(), n_fft, frame_out.data());
-
-            // Overlap-add with window.
-            int offset = t * hop;
-            for (int i = 0; i < n_fft && (offset + i) < ola_len; i++) {
-                float w = window[i];
-                output[offset + i] += frame_out[i] * w;
-                win_sum[offset + i] += w * w;
+        } else {
+            const int tile_frames =
+                (int)std::min((size_t)T_frames, std::max((size_t)1, scratch_bytes / ((size_t)n_fft * sizeof(float))));
+            std::vector<float> frames((size_t)tile_frames * n_fft);
+            for (int first = 0; first < T_frames;) {
+                const int count = std::min(tile_frames, T_frames - first);
+                core_parallel::for_each_chunk_work(count, nt, work_per_frame, 65536, [&](int begin, int end) {
+                    std::vector<float> frame_re(n_freq);
+                    std::vector<float> frame_im(n_freq);
+                    for (int local = begin; local < end; local++) {
+                        const int t = first + local;
+                        istft_scalar_frame(mag + (size_t)t * n_freq, phase + (size_t)t * n_freq, n_fft, frame_re.data(),
+                                           frame_im.data(), frames.data() + (size_t)local * n_fft);
+                    }
+                });
+                // Only independent transforms run concurrently. Keep the
+                // original frame order for every overlapping accumulation.
+                for (int local = 0; local < count; local++)
+                    overlap_add(first + local, frames.data() + (size_t)local * n_fft);
+                first += count;
             }
         }
     }
@@ -309,8 +383,9 @@ static inline std::vector<float> istft(const float* mag, const float* phase, int
 // Returns nullptr on failure; *out_n is set to the number of samples.
 static inline float* istft_alloc(const float* mag, const float* phase, int n_fft, int hop, int T_frames,
                                  const float* window, TrimMode trim, float clamp_val, int* out_n, float win_eps = 1e-8f,
-                                 bool zero_below_eps = false) {
-    std::vector<float> pcm = istft(mag, phase, n_fft, hop, T_frames, window, trim, clamp_val, win_eps, zero_below_eps);
+                                 bool zero_below_eps = false, int n_threads = 0) {
+    std::vector<float> pcm =
+        istft(mag, phase, n_fft, hop, T_frames, window, trim, clamp_val, win_eps, zero_below_eps, n_threads);
     if (pcm.empty()) {
         if (out_n) {
             *out_n = 0;

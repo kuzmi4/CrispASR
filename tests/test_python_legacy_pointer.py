@@ -5,6 +5,7 @@ import sys
 import tempfile
 import subprocess
 import unittest
+from unittest.mock import patch
 import numpy as np
 from build_legacy_wrapper_probe import build
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,5 +123,128 @@ class LegacyPointerContract(unittest.TestCase):
             with self.assertRaises(RuntimeError):db.match(emb)
             with self.assertRaises(RuntimeError):db.enroll('Alice',emb)
             self.assertEqual(lib.probe_db_calls(),before)
+
+    def test_speaker_threshold_float32_boundary(self):
+        with tempfile.TemporaryDirectory(prefix='python-speaker-threshold-') as tmp:
+            path = Path(tmp) / 'libcrispasr.so'
+            subprocess.run(['cc', '-shared', '-fPIC', '-Werror', '-I' + str(ROOT / 'include'),
+                            str(ROOT / 'tests/fixtures/wrapper-speaker-db.c'), '-o', str(path)], check=True)
+            db = SpeakerDB('db', 'Alice,Bob', True, lib_path=str(path))
+            try:
+                for mode, threshold in ((4, .7), (5, np.nextafter(.875, 1.0))):
+                    with self.subTest(threshold=threshold):
+                        db._lib.probe_db_mode(mode)
+                        score = C.c_float(threshold).value
+                        self.assertLess(score, threshold)  # native float rounds down
+                        self.assertEqual(db.match([1, 3, 5], threshold=threshold), ('Alice', score))
+                        above = float(np.nextafter(np.float32(score), np.float32(1)))
+                        self.assertEqual(db.match([1, 3, 5], threshold=above), (None, score))
+            finally:
+                db.close()
+            self.assertEqual(db._lib.probe_db_live(), 0)
+
+    def test_speaker_threshold_overflow_rejected_before_dispatch(self):
+        with tempfile.TemporaryDirectory(prefix='python-speaker-threshold-') as tmp:
+            path = Path(tmp) / 'libcrispasr.so'
+            subprocess.run(['cc', '-shared', '-fPIC', '-Werror', '-I' + str(ROOT / 'include'),
+                            str(ROOT / 'tests/fixtures/wrapper-speaker-db.c'), '-o', str(path)], check=True)
+            db = SpeakerDB('db', 'Alice,Bob', True, lib_path=str(path))
+            try:
+                for threshold in (1e100, -1e100, float('inf'), -float('inf'), float('nan')):
+                    with self.subTest(threshold=threshold):
+                        before = db._lib.probe_db_calls()
+                        with self.assertRaises(ValueError):
+                            db.match([1, 3, 5], threshold=threshold)
+                        self.assertEqual(db._lib.probe_db_calls(), before)
+                # Existing API allows finite out-of-cosine-range thresholds.
+                self.assertEqual(db.match([1, 3, 5], threshold=float(np.finfo(np.float32).max)), (None, .875))
+            finally:
+                db.close()
+            self.assertEqual(db._lib.probe_db_live(), 0)
+
+    def test_speaker_vectors_reject_large_views_before_copy_and_dispatch(self):
+        with tempfile.TemporaryDirectory(prefix='python-speaker-bounds-') as tmp:
+            titan_path = Path(tmp) / 'titan.so'
+            db_path = Path(tmp) / 'db.so'
+            for path, fixture in ((titan_path, 'wrapper-titanet-legacy.c'),
+                                  (db_path, 'wrapper-speaker-db.c')):
+                subprocess.run(['cc', '-shared', '-fPIC', '-Werror', '-I' + str(ROOT / 'include'),
+                                str(ROOT / 'tests/fixtures' / fixture), '-o', str(path)], check=True)
+            titan = TitaNet('probe', lib_path=str(titan_path))
+            db = SpeakerDB('db', 'Alice,Bob', True, lib_path=str(db_path))
+            try:
+                original_asarray = np.asarray
+                def no_dtype_copy(value, *args, **kwargs):
+                    if args or kwargs.get('dtype') is not None:
+                        raise AssertionError('unexpected dtype copy')
+                    return original_asarray(value)
+                for dtype in (np.float32, np.float64):
+                    oversized = np.broadcast_to(np.array([1], dtype=dtype), (2**31,))
+                    for operation in (titan.embed, db.match, lambda v: db.enroll('Alice', v)):
+                        with self.subTest(dtype=dtype, operation=operation):
+                            with patch.object(np, 'asarray', side_effect=no_dtype_copy):
+                                with patch.object(np, 'ascontiguousarray', side_effect=AssertionError('unexpected copy')):
+                                    with self.assertRaises(ValueError):
+                                        operation(oversized)
+                for invalid in (np.array(1., dtype=np.float64), np.ones((2, 3), dtype=np.float64)):
+                    for operation in (titan.embed, db.match, lambda v: db.enroll('Alice', v)):
+                        with patch.object(np, 'ascontiguousarray', side_effect=AssertionError('unexpected copy')):
+                            with self.assertRaises(ValueError):
+                                operation(invalid)
+                self.assertEqual(titan._lib.probe_titanet_calls(), 0)
+                self.assertEqual(db._lib.probe_db_calls(), 1)  # constructor only
+                # Both dtype conversion and logical ordering must survive valid views.
+                for pcm in (np.arange(1, 7, dtype=np.float64)[::2],
+                            np.array([5, 3, 1], dtype=np.float32)[::-1]):
+                    self.assertEqual(titan.embed(pcm)[0], 1)
+                    self.assertEqual(db.match(pcm), ('アリス', .875))
+                    self.assertTrue(db.enroll('Alice', pcm))
+            finally:
+                titan.close()
+                db.close()
+            self.assertEqual(titan._lib.probe_titanet_live(), 0)
+            self.assertEqual(db._lib.probe_db_live(), 0)
+
+    def test_speaker_array_coercion_cannot_dispatch_after_close(self):
+        with tempfile.TemporaryDirectory(prefix='python-speaker-reentry-') as tmp:
+            titan_path = Path(tmp) / 'titan.so'
+            db_path = Path(tmp) / 'db.so'
+            for path, fixture in ((titan_path, 'wrapper-titanet-legacy.c'),
+                                  (db_path, 'wrapper-speaker-db.c')):
+                subprocess.run(['cc', '-shared', '-fPIC', '-Werror', '-I' + str(ROOT / 'include'),
+                                str(ROOT / 'tests/fixtures' / fixture), '-o', str(path)], check=True)
+            for name in ('embed', 'match', 'enroll', 'threshold', 'name'):
+                with self.subTest(operation=name):
+                    owner = (TitaNet('probe', lib_path=str(titan_path)) if name == 'embed' else
+                             SpeakerDB('db', 'Alice,Bob', True, lib_path=str(db_path)))
+                    counter = (owner._lib.probe_titanet_calls if name == 'embed' else owner._lib.probe_db_calls)
+                    before = counter()
+                    class ClosesOwner:
+                        def __array__(self, dtype=None, copy=None):
+                            owner.close()
+                            return np.array([1, 3, 5], dtype=np.float64)
+                    class ClosingThreshold(float):
+                        def __float__(self):
+                            owner.close()
+                            return .7
+                    class ClosingName(str):
+                        def encode(self, *args, **kwargs):
+                            owner.close()
+                            return b'Alice'
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, 'closed'):
+                            if name == 'threshold':
+                                owner.match([1, 3, 5], threshold=ClosingThreshold(.7))
+                            elif name == 'name':
+                                owner.enroll(ClosingName('Alice'), [1, 3, 5])
+                            elif name == 'enroll':
+                                owner.enroll('Alice', ClosesOwner())
+                            else:
+                                getattr(owner, name)(ClosesOwner())
+                    finally:
+                        owner.close()
+                    self.assertEqual(counter(), before)
+                    live = owner._lib.probe_titanet_live if name == 'embed' else owner._lib.probe_db_live
+                    self.assertEqual(live(), 0)
 
 if __name__=='__main__':unittest.main()

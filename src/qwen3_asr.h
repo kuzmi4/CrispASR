@@ -173,6 +173,8 @@ int qwen3_asr_lm_head_dim(struct qwen3_asr_context* ctx);
 // and the pre-adaptor encoder frames (out_N x enc_dim) for the diff harness;
 // free() them.
 bool qwen3_asr_is_raon_speech(struct qwen3_asr_context* ctx);
+// #602 Rumble-2-Flash: control-token prefix for the system turn ("" if none).
+const char* qwen3_asr_system_prefix(struct qwen3_asr_context* ctx);
 float* qwen3_asr_raon_encode(struct qwen3_asr_context* ctx, const float* samples, int n_samples, int* out_N,
                              int* out_dim);
 float* qwen3_asr_raon_encode_stages(struct qwen3_asr_context* ctx, const float* samples, int n_samples, int mel_chunk,
@@ -208,6 +210,22 @@ float* qwen3_asr_run_aligner(struct qwen3_asr_context* ctx, const float* inputs_
 // 0 on success, non-zero on failure.
 int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float* samples, int n_samples, const char** words,
                           int n_words, int64_t* out_start_ms, int64_t* out_end_ms);
+
+// Diagnostic/porting API: additionally copy the final normalized hidden state
+// at each timestamp marker into `out_hidden`, in word/start/end order. The
+// buffer capacity is measured in float elements and must hold 2*n_words*d_model.
+// This opt-in path leaves the existing alignment API and its graph unchanged.
+int qwen3_asr_align_words_with_hidden(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
+                                      const char** words, int n_words, int64_t* out_start_ms, int64_t* out_end_ms,
+                                      float* out_hidden, size_t hidden_capacity);
+
+// Experimental isolated Ultra base+local-head path. The caller supplies the
+// separately converted F32 head sidecar and output arrays of n_words doubles;
+// times are milliseconds. The normal aligner is unchanged. This is not yet
+// wired into CLI, the session C ABI, or language bindings.
+int qwen3_asr_align_words_ultra(struct qwen3_asr_context* ctx, const float* samples, int n_samples, const char** words,
+                                int n_words, const char* head_gguf, double* out_start_ms, double* out_end_ms);
+
 
 #ifdef __cplusplus
 }

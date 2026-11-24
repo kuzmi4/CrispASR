@@ -141,6 +141,12 @@ surviving artifact. Applied on both the CLI and the session C-ABI.
 | `CRISPASR_SEG_MERGE_GAP_CS` | Never merge across a gap wider than this many centiseconds (default 200). Two identical lines a minute apart are two real utterances. |
 | `CRISPASR_SEG_MERGE_MIN_RUN` | Minimum consecutive similar segments before merging (default 3), so an ordinary repeated "yes." pair survives. |
 
+### Sentence splitting (TTS chunking, subtitles)
+
+| Variable | Purpose |
+|----------|---------|
+| `CRISPASR_SENTENCE_ABBREV` | Default ON. TTS long-form chunking and `--split-on-punct` subtitles use live translation's sentence-end rule for `.`, so ordinals, initials and known abbreviations (`am 3. Oktober`, `z. B.`, `Dr.`, `Mr.`) stay inside the sentence. On 1,776 UD German GSD sentences this cut false splits from 72 to 8. `0` restores the bare `. ` rule. |
+
 ### Alignment and VAD sanity checks
 
 | Variable | Purpose |
@@ -167,7 +173,8 @@ surviving artifact. Applied on both the CLI and the session C-ABI.
 | `CRISPASR_STREAM_TIMING` | `1` prints one stderr line per streaming step: audio taken in, total step cost, VAD cost, recogniser cost and seconds decoded. A step that costs more than the audio it took in is a stream falling behind. |
 | `CRISPASR_TRANSLATE_SYNC` | Live translation: run the translator on the streaming thread instead of its own. Deterministic event order for tests and debugging; the recogniser then waits for every translation. |
 | `CRISPASR_TRANSLATE_CPU` | Live translation: keep the translator off the GPU the recogniser is using (an A/B switch for GPU contention). |
-| `CRISPASR_GAP_FILL` / `_GAP_FILL_MIN_CS` | Re-transcribe spans a first pass left empty (long audio); on by default for parakeet, threshold non-JA 300 cs / JA 100 cs. |
+| `CRISPASR_GAP_FILL` / `_GAP_FILL_MIN_CS` / `_GAP_FILL_MIN_CONF` | Re-transcribe spans a first pass left empty (long audio); on by default for parakeet except Haas-ja (`1` forces it), threshold non-JA 300 cs / JA 100 cs. JA recoveries are kept only above mean token confidence 0.85 (`_MIN_CONF`, `0` keeps all) (#605). |
+| `CRISPASR_HAAS_LONGFORM` | Haas-ja long audio: `1` (default) = upstream recipe, 30 s chunks cut at quiet points, no forced VAD; `0` = parakeet-ja path (VAD, 12 s slices) (#605). |
 
 ### G2P / phonemizer
 
@@ -1333,6 +1340,7 @@ All three optimisation gates are output-equivalent: the per-stage diff reports
 - `CRISPASR_QWEN3_ASR_EMBED_FAST`
 - `CRISPASR_QWEN3_ASR_FUSED_QKV`
 - `CRISPASR_QWEN3_SYSPROMPT_LANG`
+- `CRISPASR_QWEN3_SYSTEM_PREFIX`
 - `CRISPASR_QWEN3_TTS_BENCH`
 - `CRISPASR_QWEN3_TTS_CODEC_ALLOW_FULL`
 - `CRISPASR_QWEN3_TTS_CODEC_CHUNK`
@@ -1368,6 +1376,10 @@ All three optimisation gates are output-equivalent: the per-stage diff reports
 - `CRISPASR_QWEN3_TTS_TALKER_SCHED`
 - `CRISPASR_QWEN3_TTS_VULKAN_CPU=1` — run the talker on CPU when the GPU backend is
   Vulkan (the pre-#337-fix default). The talker runs natively on Vulkan otherwise.
+  Add `CRISPASR_QWEN3_TTS_CODEC_GPU=1` (or `CRISPASR_QWEN3_TTS_CODEC_VULKAN=1`) to
+  keep only the codec (decoder and reference encoder) on Vulkan. That split suits a
+  shared iGPU, where the autoregressive talker competes with the compositor but the
+  codec still runs several times faster on the GPU (#585). `CODEC_CPU=1` wins.
 - `CRISPASR_QWEN3_TTS_VULKAN_NATIVE` — legacy: native is now the default; `=0` still
   requests the CPU pin.
 - `CRISPASR_QWEN3_TTS_DUMP_LOGITS=<dir>` — write the raw per-frame talker

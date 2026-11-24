@@ -21,7 +21,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
+#include <memory>
 #include <regex>
 #include <string>
 #include <utility>
@@ -132,6 +134,22 @@ static ggml_type crispasr_row_fit(ggml_type want, int64_t ncols) {
 }
 
 static bool crispasr_model_quantize(const std::string& fname_inp, const std::string& fname_out, ggml_ftype ftype) {
+    // Compare file identities, not path strings: symlinks and hardlinks can name
+    // the input too. Reject before opening output with truncation.
+    std::error_code path_error;
+    const bool output_exists = std::filesystem::exists(fname_out, path_error);
+    if (!path_error && output_exists) {
+        const bool same_file = std::filesystem::equivalent(fname_inp, fname_out, path_error);
+        if (same_file) {
+            fprintf(stderr, "%s: input and output refer to the same file; choose a different output path\n", __func__);
+            return false;
+        }
+    }
+    if (path_error) {
+        fprintf(stderr, "%s: cannot check input/output file identities: %s\n", __func__, path_error.message().c_str());
+        return false;
+    }
+
     ggml_type qtype = GGML_TYPE_F32;
 
     switch (ftype) {
@@ -206,6 +224,7 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
             arch = gguf_get_val_str(ctx_in, key);
     }
     const bool is_firered = (arch.find("firered") != std::string::npos);
+    const bool is_nemotron_h_moe = (arch == "nemotron_h_moe");
     const bool is_ecapa = (arch.find("ecapa") != std::string::npos);
     // DAC-44kHz: pure convolutional audio codec (Descript Audio Codec).
     // ALL weight tensors store the kernel_size as ne[0] (ggml conv layout:
@@ -256,6 +275,28 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     // to stop deriving the im2col geometry from the kernel's own shape.
     const bool is_crepe = (arch == "crepe");
     const bool is_tabcnn = (arch == "tabcnn");
+
+    // Mini BS RoFormer V2.5 shares one complex-mask decoder across all four
+    // stems. Keep its spectral input projections and mask/gate heads at source
+    // precision; quantization error there directly changes the complex mask.
+    // The axial encoder is the bulk Q4_K path. Pooling and temporal grouping /
+    // ungrouping get a Q8_0 floor below, preserving the stem-conditioning and
+    // reconstruction bottlenecks. Explicit --tensor-type rules still win for
+    // measured calibration sweeps; this policy itself is not a quality claim.
+    const bool is_mini_bs_roformer = (arch == "mini-bs-roformer");
+
+    // Inworld Voice Isolator (#602): the per-band spectral encoders and the
+    // per-band decoder heads (which emit the complex mask/residual directly)
+    // stay at source precision, as do the host-read decoder condition and
+    // look-ahead embedding. Only the dual-path backbone (attention, FFN, Mamba
+    // projections) is quantized.
+    const bool is_voice_isolator = (arch == "voice-isolator");
+
+    // SCNet matrices include flattened convolution kernels and recurrent gates.
+    // Q4_K rows that cannot fit its 256-value blocks use Q8_0, never the
+    // unrelated legacy Q4_0 format. Sub-32-wide rows retain source precision.
+    // This is a storage policy; model/stage fidelity still requires validation.
+    const bool is_scnet = (arch == "scnet");
 
     // BTC chords: a 12 MB model whose weight matrices are all 128x128 or
     // 128x256 — small enough that quantisation buys little, and the FFN convs
@@ -867,6 +908,14 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
     std::vector<int> override_hits(g_type_overrides.size(), 0);
     std::vector<int> override_skips(g_type_overrides.size(), 0);
 
+    // Report structural substitutions separately from intentional architecture rules.
+    std::map<ggml_type, std::pair<int, int64_t>> row_fallbacks;
+    std::map<std::pair<ggml_type, ggml_type>, std::pair<int, int64_t>> override_fallbacks;
+    int skipped_expert_banks = 0;
+    int64_t skipped_expert_elements = 0;
+    int n_type_changed = 0;
+    int n_quantized_output = 0;
+
     // Allocate a scratch ggml context for creating modified tensor descriptors.
     ggml_init_params scratch_params = {ggml_tensor_overhead() * (size_t)n_tensors + 1024, nullptr, true};
     ggml_context* ctx_scratch = ggml_init(scratch_params);
@@ -913,8 +962,12 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         // matmul row. See the is_crepe note above for why.
         const bool crepe_conv3d =
             is_crepe && ggml_n_dims(t) == 3 && sname.rfind("conv", 0) == 0 && ends_with(".weight");
-        const bool ok_dims =
-            (ggml_n_dims(t) == 2) || pw_conv3d || crepe_conv3d || ((is_firered || is_ecapa) && ggml_n_dims(t) >= 2);
+        // Nemotron-H MoE banks are [input, output, expert], not convolution
+        // kernels. Each expert row has the same quantization layout as a 2-D
+        // matrix; retain all dimensions and process every row in the writer.
+        const bool moe_expert3d = is_nemotron_h_moe && ggml_n_dims(t) == 3 && ends_with("_exps.weight");
+        const bool ok_dims = (ggml_n_dims(t) == 2) || pw_conv3d || crepe_conv3d || moe_expert3d ||
+                             ((is_firered || is_ecapa) && ggml_n_dims(t) >= 2);
         const int64_t ncols = pw_conv3d ? t->ne[1] : t->ne[0];
         row_lens[i] = ncols;
 
@@ -929,6 +982,11 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         bool should_quantize =
             ggml_is_quantized(qtype) && src_ok && ok_dims && is_weight && (sname.find("norm") == std::string::npos) &&
             (granite_quant_all || sname.find("proj.") != 0) &&
+            !(is_mini_bs_roformer && (sname.find("freq_domain_model.mask_model.band_split.") == 0 ||
+                                      sname.find("freq_domain_model.mask_model.mask_estimator.") == 0)) &&
+            !(is_voice_isolator &&
+              (sname.find("encoders.") == 0 || sname.find("denoise_decoder.") == 0 ||
+               sname.find("lookahead_embedding") == 0 || sname.find("conv1d") != std::string::npos)) &&
             // CREPE: allow-list, not a deny-list — only the conv kernels and the
             // dense classifier matrix. conv*.bias / conv*_BN.scale / .offset /
             // classifier.bias stay F32 (per-channel affines; see is_crepe note).
@@ -1074,9 +1132,9 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
                            sname.find("feature_projection.projection.") != std::string::npos)) &&
             !(is_higgs && (sname == "token_embd.weight" || sname == "output.weight")) &&
             !(is_miotts && sname.find("codec.") == 0) &&
-            !(is_arktts && (sname.find("codec.") == 0 || sname == "embeddings.weight" ||
-                            sname.find("codebook_embeddings") == 0 || sname.find("fast_embeddings") == 0 ||
-                            sname.find("fast_output") == 0)) &&
+            !(is_arktts &&
+              (sname.find("codec.") == 0 || sname == "embeddings.weight" || sname.find("codebook_embeddings") == 0 ||
+               sname.find("fast_embeddings") == 0 || sname.find("fast_output") == 0)) &&
             !(is_parakeet && parakeet_is_rnnt && !parakeet_quant_all &&
               (sname.find("joint.") == 0 || sname.find("decoder.embed") == 0)) &&
             // encoder.pre.* stays unquantized for the same reason it is F32 in the
@@ -1127,6 +1185,8 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
 
         // Determine actual quant type with row-size fallback
         ggml_type qt = qtype;
+        bool row_fallback = false;
+        bool unsupported_row = false;
         if (should_quantize && ncols % ggml_blck_size(qt) != 0) {
             ggml_type fallback = GGML_TYPE_COUNT;
             switch (qtype) {
@@ -1153,10 +1213,14 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
             default:
                 break;
             }
+            if (is_scnet && qtype == GGML_TYPE_Q4_K)
+                fallback = GGML_TYPE_Q8_0;
             if (fallback != GGML_TYPE_COUNT && ncols % ggml_blck_size(fallback) == 0) {
                 qt = fallback;
+                row_fallback = true;
             } else {
                 should_quantize = false;
+                unsupported_row = true;
             }
         }
 
@@ -1174,6 +1238,31 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         } else {
             target_types[i] = t->type;
         }
+
+        // Unlike the axial transformer, these projections carry a compressed
+        // temporal representation or select a stem. Keep them at least Q8_0
+        // when producing a lower-bit artifact; norms/probes/registers and
+        // unsupported row widths retain their original unquantized storage.
+        const bool mini_bs_q8_floor =
+            is_mini_bs_roformer &&
+            (sname.find("freq_domain_model.freq_pooling.") == 0 || sname.find("freq_domain_model.time_pooling.") == 0 ||
+             sname.find("freq_domain_model.mask_model.time_conv.") == 0 ||
+             sname.find("freq_domain_model.mask_model.time_deconv.") == 0);
+        if (mini_bs_q8_floor && should_quantize && ggml_is_quantized(target_types[i]) &&
+            target_types[i] != GGML_TYPE_Q8_0) {
+            target_types[i] = (ncols % ggml_blck_size(GGML_TYPE_Q8_0) == 0) ? GGML_TYPE_Q8_0 : t->type;
+        }
+
+        // The final SCNet spectral reconstruction needs these four matrices
+        // at F16: quantizing them failed the original-checkpoint raw stem gates.
+        // Keep the earlier decoder quantized, and let explicit overrides below
+        // remain authoritative for separately measured experiments.
+        const bool scnet_reconstruction_f16 =
+            is_scnet && (qtype == GGML_TYPE_Q8_0 || qtype == GGML_TYPE_Q4_K) && ggml_n_dims(t) == 2 &&
+            (sname == "decoder.2.0.conv.weight" || sname == "decoder.2.1.convtrs.0.weight" ||
+             sname == "decoder.2.1.convtrs.1.weight" || sname == "decoder.2.1.convtrs.2.weight");
+        if (scnet_reconstruction_f16)
+            target_types[i] = GGML_TYPE_F16;
 
         // Qwen3-ASR audio-tower Q8_0 floor (see is_qwen3_asr note above).
         // Applies only when the chosen type is a sub-8-bit quant; Q8_0 and
@@ -1230,6 +1319,7 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         // (#461: '^locdit\.=f16' turned the LocDiT biases F16 and CPU
         // synthesis crashed; Vulkan happened to tolerate it). An ill-tiled row
         // under a quant override is skipped the same way.
+        bool override_applied = false;
         for (size_t r = 0; r < g_type_overrides.size(); r++) {
             if (!std::regex_search(sname, g_type_overrides[r].first))
                 continue;
@@ -1244,12 +1334,34 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
                     override_skips[r]++;
                     break;
                 }
+                if (fit != ov) {
+                    auto& count = override_fallbacks[{ov, fit}];
+                    count.first++;
+                    count.second += ggml_nelements(t);
+                }
                 ov = fit;
             }
             target_types[i] = ov;
+            override_applied = true;
             override_hits[r]++;
             break;
         }
+
+        // Count only fallbacks still selected after precision floors and overrides.
+        if (row_fallback && !override_applied && target_types[i] == qt) {
+            auto& count = row_fallbacks[qt];
+            count.first++;
+            count.second += ggml_nelements(t);
+        }
+        // GGUF MoE expert banks use these names. Do not diagnose intentionally
+        // preserved conv tensors or an already-matching quantized source as skips.
+        if (ggml_is_quantized(qtype) && src_ok && (!ok_dims || unsupported_row) && ggml_n_dims(t) == 3 &&
+            ends_with("_exps.weight") && !override_applied && target_types[i] == t->type && t->type != qtype) {
+            skipped_expert_banks++;
+            skipped_expert_elements += ggml_nelements(t);
+        }
+        n_type_changed += target_types[i] != t->type;
+        n_quantized_output += ggml_is_quantized(target_types[i]);
 
         // Create a tensor descriptor with the target type for ctx_out
         if (target_types[i] != t->type) {
@@ -1275,25 +1387,74 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         printf("\n");
     }
 
+    for (const auto& entry : row_fallbacks) {
+        fprintf(stderr,
+                "%s: WARNING — row-width fallback: %d tensors (%lld elements) use %s instead of requested %s; "
+                "their rows do not fit %lld-element blocks.\n",
+                __func__, entry.second.first, (long long)entry.second.second, ggml_type_name(entry.first),
+                ggml_type_name(qtype), (long long)ggml_blck_size(qtype));
+    }
+    for (const auto& entry : override_fallbacks) {
+        fprintf(stderr,
+                "%s: WARNING — tensor-type row-width fallback: %d tensors (%lld elements) use %s instead of "
+                "override %s; their rows do not fit %lld-element blocks.\n",
+                __func__, entry.second.first, (long long)entry.second.second, ggml_type_name(entry.first.second),
+                ggml_type_name(entry.first.first), (long long)ggml_blck_size(entry.first.first));
+    }
+    if (skipped_expert_banks) {
+        fprintf(stderr,
+                "%s: WARNING — copied %d 3-D expert banks (%lld elements) at source precision; "
+                "unsupported dimensions or row widths prevent requested %s quantization.\n",
+                __func__, skipped_expert_banks, (long long)skipped_expert_elements, ggml_type_name(qtype));
+    }
+
+    // Own contexts before opening either stream so open failures clean up too.
+    std::unique_ptr<gguf_context, decltype(&gguf_free)> input_meta(ctx_in, gguf_free);
+    std::unique_ptr<gguf_context, decltype(&gguf_free)> output_meta(ctx_out, gguf_free);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> input_tensors(ctx_in_ggml, ggml_free);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> scratch(ctx_scratch, ggml_free);
+    auto close_file = [](FILE* file) { fclose(file); };
+
+    // Open input before creating/truncating output, including when the input
+    // became unavailable after reading its metadata.
+    FILE* fin = fopen(fname_inp.c_str(), "rb");
+    if (!fin) {
+        fprintf(stderr, "%s: failed to open '%s' for reading\n", __func__, fname_inp.c_str());
+        return false;
+    }
+    std::unique_ptr<FILE, decltype(close_file)> input_file(fin, close_file);
+
     // Allocate output file
     printf("%s: writing quantized model to '%s'\n", __func__, fname_out.c_str());
     FILE* fout = fopen(fname_out.c_str(), "w+b");
     if (!fout) {
         fprintf(stderr, "%s: failed to open '%s' for writing\n", __func__, fname_out.c_str());
-        gguf_free(ctx_in);
-        gguf_free(ctx_out);
-        if (ctx_in_ggml)
-            ggml_free(ctx_in_ggml);
         return false;
     }
+    std::unique_ptr<FILE, decltype(close_file)> output_file(fout, close_file);
+
+    const char* function_name = __func__;
+    auto output_error = [&](const char* operation) {
+        fprintf(stderr, "%s: failed to %s output '%s'\n", function_name, operation, fname_out.c_str());
+        return false;
+    };
+    auto write_output = [&](const void* data, size_t size, const char* operation) {
+        if (fwrite(data, 1, size, fout) != size || ferror(fout))
+            return output_error(operation);
+        return true;
+    };
+    auto write_padding = [&](size_t size) {
+        const uint8_t zeros[GGUF_DEFAULT_ALIGNMENT] = {};
+        const size_t pad = GGML_PAD(size, GGUF_DEFAULT_ALIGNMENT) - size;
+        return pad == 0 || write_output(zeros, pad, "write tensor padding to");
+    };
 
     // Write metadata placeholder
     const size_t meta_size = gguf_get_meta_size(ctx_out);
     std::vector<uint8_t> meta_data(meta_size, 0);
-    fwrite(meta_data.data(), 1, meta_size, fout);
+    if (!write_output(meta_data.data(), meta_size, "write metadata placeholder to"))
+        return false;
 
-    // Open input file for data reading
-    FILE* fin = fopen(fname_inp.c_str(), "rb");
     const size_t data_offset_in = gguf_get_data_offset(ctx_in);
 
     std::vector<float> f32_data;
@@ -1317,56 +1478,42 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
         // Use 64-bit seek to avoid overflow on files > 2 GB (Windows
         // long is 32-bit even on x86_64, wrapping at 2^31).
 #ifdef _WIN32
-        _fseeki64(fin, (__int64)offset, SEEK_SET);
+        const int seek_result = _fseeki64(fin, (__int64)offset, SEEK_SET);
 #else
-        fseeko(fin, (off_t)offset, SEEK_SET);
+        const int seek_result = fseeko(fin, (off_t)offset, SEEK_SET);
 #endif
+        if (seek_result != 0) {
+            fprintf(stderr, "failed to seek input tensor %s\n", name);
+            return false;
+        }
 
-        if (quantize) {
-            n_quantized++;
-            printf("quantizing to %s... ", ggml_type_name(qtype_used));
-
-            const int64_t nelements = ggml_nelements(t);
-            f32_data.resize(nelements);
-
-            if (type == GGML_TYPE_F32) {
-                if (fread(f32_data.data(), sizeof(float), nelements, fin) != (size_t)nelements) {
-                    fprintf(stderr, "failed to read f32 data\n");
-                    return false;
-                }
-            } else if (type == GGML_TYPE_F16) {
-                std::vector<ggml_fp16_t> f16_data(nelements);
-                if (fread(f16_data.data(), sizeof(ggml_fp16_t), nelements, fin) != (size_t)nelements) {
-                    fprintf(stderr, "failed to read f16 data\n");
-                    return false;
-                }
-                for (int j = 0; j < nelements; j++)
-                    f32_data[j] = ggml_fp16_to_fp32(f16_data[j]);
+        if (quantize || ((qtype_used == GGML_TYPE_F16 || qtype_used == GGML_TYPE_F32) && qtype_used != type)) {
+            if (quantize) {
+                n_quantized++;
+                printf("quantizing to %s... ", ggml_type_name(qtype_used));
             } else {
-                // Quantized source: read the raw quantized bytes and dequantize
-                // to F32 via the type's traits, then re-quantize to the target.
-                const size_t src_bytes = ggml_nbytes(t);
-                std::vector<uint8_t> qbuf(src_bytes);
-                if (fread(qbuf.data(), 1, src_bytes, fin) != src_bytes) {
-                    fprintf(stderr, "failed to read quantized source data\n");
-                    return false;
-                }
-                const ggml_type_traits* tr = ggml_get_type_traits(type);
-                if (!tr || !tr->to_float) {
-                    fprintf(stderr, "no dequantizer for source type %s\n", ggml_type_name(type));
-                    return false;
-                }
-                tr->to_float(qbuf.data(), f32_data.data(), nelements);
+                printf("%s -> %s... ", ggml_type_name(type), ggml_type_name(qtype_used));
+            }
+            const int64_t nelements = ggml_nelements(t);
+            const int64_t n_per_row = row_lens[i] > 0 ? row_lens[i] : t->ne[0];
+            if (n_per_row <= 0 || nelements <= 0 || nelements % n_per_row != 0) {
+                fprintf(stderr, "invalid tensor row layout for %s\n", name);
+                return false;
+            }
+            // Keep complete rows, including flattened pointwise convolutions and
+            // every expert in a 3-D bank. One unusually wide row is the minimum
+            // working set; ordinary tensors use at most 1M F32 elements at once.
+            const int64_t rows_per_chunk = std::max<int64_t>(1, (1 << 20) / n_per_row);
+            const int64_t nrows = nelements / n_per_row;
+            std::vector<uint8_t> source_data;
+            const ggml_type_traits* traits = ggml_get_type_traits(type);
+            if (type != GGML_TYPE_F32 && type != GGML_TYPE_F16 && (!traits || !traits->to_float)) {
+                fprintf(stderr, "no dequantizer for source type %s\n", ggml_type_name(type));
+                return false;
             }
 
-            const int64_t n_per_row = row_lens[i] > 0 ? row_lens[i] : t->ne[0];
-            const size_t max_q_size = ggml_row_size(qtype_used, n_per_row) * (nelements / n_per_row);
-            q_data.resize(max_q_size);
-
-            // Importance matrix (if loaded and shape-matched): steers k-quant/IQ
-            // precision toward the columns the calibration data actually used.
             const float* imatrix = nullptr;
-            if (!g_imatrix.empty()) {
+            if (quantize && !g_imatrix.empty()) {
                 auto it = g_imatrix.find(name);
                 if (it != g_imatrix.end()) {
                     if ((int64_t)it->second.size() == n_per_row) {
@@ -1378,109 +1525,106 @@ static bool crispasr_model_quantize(const std::string& fname_inp, const std::str
                 }
             }
 
-            size_t q_size = ggml_quantize_chunk(qtype_used, f32_data.data(), q_data.data(), 0, nelements / n_per_row,
-                                                n_per_row, imatrix);
-
-            fwrite(q_data.data(), 1, q_size, fout);
-
-            // Padding
-            size_t pad = GGML_PAD(q_size, GGUF_DEFAULT_ALIGNMENT) - q_size;
-            for (size_t j = 0; j < pad; j++)
-                fputc(0, fout);
-
-            printf("done\n");
-        } else if ((qtype_used == GGML_TYPE_F16 || qtype_used == GGML_TYPE_F32) && qtype_used != type) {
-            // Up/down-cast to F16 or F32 from ANY source (F32/F16/quantized):
-            // e.g. the granite encoder F32→F16 downcast, or a --tensor-type
-            // override pinning a quantized tensor to F16. Read → F32 → write.
-            printf("%s -> %s... ", ggml_type_name(type), ggml_type_name(qtype_used));
-            const int64_t nelements = ggml_nelements(t);
-            std::vector<float> f32(nelements);
-            if (type == GGML_TYPE_F32) {
-                if (fread(f32.data(), sizeof(float), nelements, fin) != (size_t)nelements) {
-                    fprintf(stderr, "failed to read f32 data\n");
-                    return false;
+            size_t out_bytes = 0;
+            for (int64_t row = 0; row < nrows; row += rows_per_chunk) {
+                const int64_t rows = std::min(rows_per_chunk, nrows - row);
+                const int64_t count = rows * n_per_row;
+                f32_data.resize(count);
+                if (type == GGML_TYPE_F32) {
+                    if (fread(f32_data.data(), sizeof(float), count, fin) != (size_t)count) {
+                        fprintf(stderr, "failed to read f32 data\n");
+                        return false;
+                    }
+                } else {
+                    const size_t src_bytes = ggml_row_size(type, n_per_row) * rows;
+                    source_data.resize(src_bytes);
+                    if (fread(source_data.data(), 1, src_bytes, fin) != src_bytes) {
+                        fprintf(stderr, "failed to read %s data\n", ggml_type_name(type));
+                        return false;
+                    }
+                    if (type == GGML_TYPE_F16) {
+                        // memcpy avoids imposing alignment on a byte buffer.
+                        for (int64_t j = 0; j < count; j++) {
+                            ggml_fp16_t value;
+                            memcpy(&value, source_data.data() + j * sizeof(value), sizeof(value));
+                            f32_data[j] = ggml_fp16_to_fp32(value);
+                        }
+                    } else {
+                        traits->to_float(source_data.data(), f32_data.data(), count);
+                    }
                 }
-            } else if (type == GGML_TYPE_F16) {
-                std::vector<ggml_fp16_t> f16in(nelements);
-                if (fread(f16in.data(), sizeof(ggml_fp16_t), nelements, fin) != (size_t)nelements) {
-                    fprintf(stderr, "failed to read f16 data\n");
-                    return false;
+                const size_t chunk_bytes = ggml_row_size(qtype_used, n_per_row) * rows;
+                q_data.resize(chunk_bytes);
+                if (quantize) {
+                    // Both buffers begin at this chunk: start must remain zero.
+                    const size_t written =
+                        ggml_quantize_chunk(qtype_used, f32_data.data(), q_data.data(), 0, rows, n_per_row, imatrix);
+                    if (written != chunk_bytes) {
+                        fprintf(stderr, "unexpected quantized chunk size for %s\n", name);
+                        return false;
+                    }
+                } else if (qtype_used == GGML_TYPE_F16) {
+                    for (int64_t j = 0; j < count; j++) {
+                        const ggml_fp16_t value = ggml_fp32_to_fp16(f32_data[j]);
+                        memcpy(q_data.data() + j * sizeof(value), &value, sizeof(value));
+                    }
+                } else {
+                    memcpy(q_data.data(), f32_data.data(), chunk_bytes);
                 }
-                for (int64_t j = 0; j < nelements; j++)
-                    f32[j] = ggml_fp16_to_fp32(f16in[j]);
-            } else {
-                std::vector<uint8_t> qbuf(size);
-                if (fread(qbuf.data(), 1, size, fin) != size) {
-                    fprintf(stderr, "failed to read quantized source data\n");
+                if (!write_output(q_data.data(), chunk_bytes, "write converted tensor to"))
                     return false;
-                }
-                const ggml_type_traits* tr = ggml_get_type_traits(type);
-                if (!tr || !tr->to_float) {
-                    fprintf(stderr, "no dequantizer for source type %s\n", ggml_type_name(type));
-                    return false;
-                }
-                tr->to_float(qbuf.data(), f32.data(), nelements);
+                out_bytes += chunk_bytes;
             }
-            size_t out_bytes;
-            if (qtype_used == GGML_TYPE_F16) {
-                std::vector<ggml_fp16_t> f16(nelements);
-                for (int64_t j = 0; j < nelements; j++)
-                    f16[j] = ggml_fp32_to_fp16(f32[j]);
-                out_bytes = (size_t)nelements * sizeof(ggml_fp16_t);
-                fwrite(f16.data(), 1, out_bytes, fout);
-            } else {
-                out_bytes = (size_t)nelements * sizeof(float);
-                fwrite(f32.data(), 1, out_bytes, fout);
-            }
-            size_t pad = GGML_PAD(out_bytes, GGUF_DEFAULT_ALIGNMENT) - out_bytes;
-            for (size_t j = 0; j < pad; j++)
-                fputc(0, fout);
+            // GGUF aligns tensors, never individual chunks.
+            if (!write_padding(out_bytes))
+                return false;
             printf("done\n");
         } else {
             printf("copying... ");
-            std::vector<uint8_t> raw_data(size);
-            if (fread(raw_data.data(), 1, size, fin) != size) {
-                fprintf(stderr, "failed to read raw data\n");
-                return false;
+            q_data.resize(std::min<size_t>(size, 1 << 20));
+            for (size_t remaining = size; remaining > 0;) {
+                const size_t count = std::min(remaining, q_data.size());
+                if (fread(q_data.data(), 1, count, fin) != count) {
+                    fprintf(stderr, "failed to read raw data\n");
+                    return false;
+                }
+                if (!write_output(q_data.data(), count, "write copied tensor to"))
+                    return false;
+                remaining -= count;
             }
-            fwrite(raw_data.data(), 1, size, fout);
-
-            // Padding
-            size_t pad = GGML_PAD(size, GGUF_DEFAULT_ALIGNMENT) - size;
-            for (size_t j = 0; j < pad; j++)
-                fputc(0, fout);
+            if (!write_padding(size))
+                return false;
             printf("done\n");
         }
     }
 
-    if (n_quantized == 0) {
-        fprintf(stderr,
-                "%s: WARNING — 0 of %d tensors were quantized. The output file is the\n"
-                "  same size as the input. Check that the architecture supports block\n"
-                "  quantization (ne[0] must be ≥32 for Q8_0, ≥256 for Q4_K) and that\n"
-                "  weight tensors are 2-D (or a supported conv architecture).\n",
-                __func__, n_tensors);
-    } else {
-        printf("%s: quantized %d / %d tensors\n", __func__, n_quantized, n_tensors);
-    }
-
     // Rewrite metadata header. Since tensor types were set correctly in
     // the first pass (before gguf_add_tensor), meta_size should be stable.
-    fflush(fout);
-    fseek(fout, 0, SEEK_SET);
+    if (fflush(fout) != 0)
+        return output_error("flush tensor data to");
+    if (fseek(fout, 0, SEEK_SET) != 0)
+        return output_error("seek metadata in");
     gguf_get_meta_data(ctx_out, meta_data.data());
-    size_t written = fwrite(meta_data.data(), 1, meta_size, fout);
-    fflush(fout);
-    printf("%s: metadata rewrite: %zu / %zu bytes at offset 0, magic=0x%08x\n", __func__, written, meta_size,
-           *(uint32_t*)meta_data.data());
+    if (!write_output(meta_data.data(), meta_size, "rewrite metadata in"))
+        return false;
+    if (fflush(fout) != 0)
+        return output_error("flush metadata to");
+    // A successful flush does not guarantee that close succeeds (e.g. network
+    // storage). fclose consumes the stream even when it returns an error.
+    if (fclose(output_file.release()) != 0)
+        return output_error("close");
 
-    fclose(fin);
-    fclose(fout);
-    gguf_free(ctx_in);
-    gguf_free(ctx_out);
-    ggml_free(ctx_in_ggml);
-    ggml_free(ctx_scratch);
+    printf("%s: quantized %d / %d tensors; %d tensor types changed; %d output tensors use quantized storage\n",
+           __func__, n_quantized, n_tensors, n_type_changed, n_quantized_output);
+    if (ggml_is_quantized(qtype) && n_quantized_output == 0) {
+        fprintf(stderr,
+                "%s: WARNING — no output tensors use quantized storage. Tensors were copied or converted "
+                "to floating point; check weight selection, row widths and tensor-type overrides.\n",
+                __func__);
+    }
+
+    printf("%s: metadata rewrite: %zu / %zu bytes at offset 0, magic=0x%08x\n", __func__, meta_size, meta_size,
+           *(uint32_t*)meta_data.data());
 
     return true;
 }

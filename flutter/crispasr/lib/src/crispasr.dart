@@ -978,6 +978,90 @@ List<AlignedWord> alignWords({
   return out;
 }
 
+/// Experimental Qwen Ultra local-head word alignment on CPU.
+///
+/// Both converted base [alignerModel] and local [headModel] GGUFs are required.
+/// [pcm] must contain 1 to 1,920,000 mono 16 kHz samples (at most 120 seconds).
+/// Returned words own their UTF-8 text and retain double-precision seconds;
+/// character spans are empty. This does not qualify other languages or GPUs.
+///
+/// Throws [ArgumentError] for invalid input or missing native ABI symbols,
+/// [StateError] for native failure or an invalid result count, and
+/// [FormatException] for malformed native UTF-8. A successful empty result
+/// returns an empty list. All native buffers are released on these paths.
+List<AlignedWord> alignWordsUltra({
+  required String alignerModel,
+  required String headModel,
+  required String transcript,
+  required Float32List pcm,
+  int nThreads = 4,
+  DynamicLibrary? lib,
+}) {
+  for (final text in [alignerModel, headModel, transcript]) {
+    if (text.isEmpty || text.contains('\u0000')) {
+      throw ArgumentError(
+          'Alignment paths and transcript must be nonempty and contain no NUL');
+    }
+  }
+  if (pcm.isEmpty || pcm.length > 120 * 16000) {
+    throw ArgumentError(
+        'Ultra alignment requires 1 to 1920000 mono 16 kHz samples');
+  }
+  if (nThreads < -2147483648 || nThreads > 2147483647) {
+    throw ArgumentError.value(nThreads, 'nThreads', 'must fit int32');
+  }
+  lib ??= DynamicLibrary.open(CrispASR.defaultLibName());
+  // Resolve the complete interface before allocating or invoking native code.
+  final align = lib.lookupFunction<
+      Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Float>, Int32, Int32),
+      Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Float>, int, int)>('crispasr_align_words_ultra_abi');
+  final count = lib.lookupFunction<Int32 Function(Pointer<Void>),
+      int Function(Pointer<Void>)>('crispasr_ultra_align_result_n_words');
+  final text = lib.lookupFunction<
+      Pointer<Utf8> Function(Pointer<Void>, Int32),
+      Pointer<Utf8> Function(
+          Pointer<Void>, int)>('crispasr_ultra_align_result_word_text');
+  final start = lib.lookupFunction<
+      Double Function(Pointer<Void>, Int32),
+      double Function(
+          Pointer<Void>, int)>('crispasr_ultra_align_result_word_start_ms');
+  final end = lib.lookupFunction<
+      Double Function(Pointer<Void>, Int32),
+      double Function(
+          Pointer<Void>, int)>('crispasr_ultra_align_result_word_end_ms');
+  final free = lib.lookupFunction<Void Function(Pointer<Void>),
+      void Function(Pointer<Void>)>('crispasr_ultra_align_result_free');
+  final arena = Arena();
+  try {
+    final samples = arena<Float>(pcm.length);
+    samples.asTypedList(pcm.length).setAll(0, pcm);
+    final result = align(
+        alignerModel.toNativeUtf8(allocator: arena),
+        headModel.toNativeUtf8(allocator: arena),
+        transcript.toNativeUtf8(allocator: arena),
+        samples,
+        pcm.length,
+        nThreads);
+    if (result == nullptr) throw StateError('Ultra alignment failed');
+    try {
+      final n = count(result);
+      if (n < 0) throw StateError('Invalid native alignment word count');
+      return List<AlignedWord>.generate(
+          n,
+          (i) => AlignedWord(
+              text: _decodeCString(text(result, i)),
+              start: start(result, i) / 1000.0,
+              end: end(result, i) / 1000.0));
+    } finally {
+      free(result);
+    }
+  } finally {
+    arena.releaseAll();
+  }
+}
+
 /// Language identification result from [detectLanguagePcm]. `langCode`
 /// is an ISO 639-1 code ("en", "de", …) or empty on failure.
 class LidResult {
@@ -3574,7 +3658,7 @@ class CrispasrSession {
   }
 
   // ---------------------------------------------------------------------------
-  // TTS synthesis (vibevoice, qwen3-tts, miotts, moss-tts, kokoro, orpheus, chatterbox, zonos-tts, lfm2-audio, dots-tts, fireredtts3, and others)
+  // TTS synthesis (vibevoice, qwen3-tts, miotts, moss-tts, kokoro, orpheus, chatterbox, zonos-tts, zonos3, lfm2-audio, dots-tts, fireredtts3, and others)
   // ---------------------------------------------------------------------------
 
   /// Load a separate codec GGUF (qwen3-tts, moss-tts, moss-tts-local; no-op for other backends).
@@ -4384,6 +4468,33 @@ class CrispasrSession {
     if (rc != 0) throw Exception('setMaxNewTokens failed (rc=$rc)');
   }
 
+  /// Control session-level auto-chunking for long audio (> 30 s).
+  void setAutochunk(bool enabled, [int chunkSeconds = 0]) {
+    if (_closed) throw StateError('CrispasrSession is closed');
+    if (!_lib.providesSymbol('crispasr_session_set_autochunk')) return;
+    final fn = _lib.lookupFunction<
+        Int32 Function(Pointer<Void>, Int32, Int32),
+        int Function(
+            Pointer<Void>, int, int)>('crispasr_session_set_autochunk');
+    final rc = fn(_handle, enabled ? 1 : 0, chunkSeconds);
+    if (rc != 0) throw Exception('setAutochunk failed (rc=$rc)');
+  }
+
+  /// Set a dynamic token budget proportional to piece audio length.
+  void setMaxNewTokensPerSecond(double rate, [int minimum = 16]) {
+    if (_closed) throw StateError('CrispasrSession is closed');
+    if (!_lib
+        .providesSymbol('crispasr_session_set_max_new_tokens_per_second')) {
+      return;
+    }
+    final fn = _lib.lookupFunction<
+        Int32 Function(Pointer<Void>, Float, Int32),
+        int Function(Pointer<Void>, double,
+            int)>('crispasr_session_set_max_new_tokens_per_second');
+    final rc = fn(_handle, rate, minimum);
+    if (rc != 0) throw Exception('setMaxNewTokensPerSecond failed (rc=$rc)');
+  }
+
   /// Opt-in repeated-token penalty for autoregressive session backends.
   /// Pass <= 0 to disable.
   void setFrequencyPenalty(double penalty) {
@@ -5179,7 +5290,7 @@ class CrispasrSession {
 
   /// Split audio into source stems (e.g. drums / bass / other / vocals).
   ///
-  /// Requires a separation-capable backend (`htdemucs`).
+  /// Requires `htdemucs`, `mel-band-roformer`, `mini-bs-roformer` or `scnet`.
   ///
   /// [pcmStereo] is **interleaved stereo** float32 — `L,R,L,R,…` — at the
   /// model's native rate (44100 Hz for htdemucs; query
@@ -5249,8 +5360,8 @@ class CrispasrSession {
       inPtr.asTypedList(pcmStereo.length).setAll(0, pcmStereo);
       final nStems = sepFn(_handle, inPtr, framesPerChannel);
       if (nStems <= 0) {
-        throw Exception('separate failed for backend $_backend — the model '
-            'is probably not separation-capable (expected `htdemucs`)');
+        throw Exception(
+            'separate failed for backend $_backend: no stems produced');
       }
       final out = <Stem>[];
       for (var i = 0; i < nStems; i++) {

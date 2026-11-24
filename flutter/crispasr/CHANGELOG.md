@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.8.55
+
+* **New backends:** ZONOS3-Mini TTS, Rumble-2-Flash ASR, Inworld Voice Isolator, Fluid Speech Pro and Musci-ASR. **Fixes:** bt2-tts instruction bleed (#594), mini-bs-roformer on Metal by default (#568), NeMo-exact punctuation spacing for punctuated FastConformer CTC models, gcc 15 VAD segfault, voxcpm2 VAE upload (#461).
+
+## 0.8.54
+
+* **VibeVoice:** Reject ASR/TTS checkpoint task mismatches with a clear diagnostic; converters record the source model's task capability.
+
+## 0.8.53
+
+* **Packaging:** new `crispasr-linux-x86_64-hip7.tar.gz` for AMD GPUs on ROCm 7.x (hipBLAS `libhipblas.so.3`); the ROCm 6 HIP tarball cannot load its GPU module there (#586).
+
+## 0.8.52
+
+* **Alignment:** Qwen3-ForcedAligner-Ultra F16 GGUF in the model registry; experimental Ultra local-head alignment (#579).
+* **Speech synthesis:** Qwen3-TTS can keep only the codec on Vulkan with the talker on CPU (#585); `--voice-dir` bare names resolve into clone references (#584).
+* **Packaging:** the Linux HIP tarball falls back to CPU when ROCm/hipBLAS is missing (#586).
+
+## 0.8.51
+
+* **Bindings:** session auto-chunking and duration-proportional token budgets (#574).
+* **Speech synthesis:** optional Qwen3-TTS codec capture and VoxCPM2 long-sentence VAE improvements (#576, #164).
+* **Fixes:** environment flags now recognize false, off, and no as disabled (#572).
+
+## 0.8.50
+* **Separation:** native Mini-BS-RoFormer V2.5 (#562) and SCNet / SCNet-large
+  (#566) source separation through CLI, server and Session.
+* **Recognition:** MOSS-Transcribe-Diarize beam size and seeded sampling (#564);
+  moss-audio encodes only real audio (#569); Haas-ja-v1.0 (#561).
+* **LID:** no silent LID model downloads without consent (#570).
+* **Voice conversion:** MeanVC2 streaming zero-shot conversion.
+
 ## 0.8.49
 
 * **Native speech:** integrate Audio8-TTS (ArkTTS 0.6B) dual-autoregressive TTS

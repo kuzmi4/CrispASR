@@ -24,10 +24,10 @@ namespace CrispASR
         private IntPtr _handle;
         private readonly System.Collections.Generic.HashSet<StreamDecoder> _streams = new();
 
-        // The session C ABI reports every time in centiseconds; this binding
-        // exposes seconds throughout (issue #291). ONE constant, used by every
-        // conversion site, so a future time-bearing accessor cannot pick a
-        // different unit by accident.
+        // Ordinary session C ABI times are centiseconds (the experimental
+        // Ultra local-head accessors use milliseconds); this binding
+        // exposes seconds throughout (issue #291). All centisecond conversions
+        // share one constant so future accessors keep the same unit.
         internal const double CentisecondsPerSecond = 100.0;
 
         // The C ABI uses -1 for "this backend produced no timing for this
@@ -267,6 +267,14 @@ namespace CrispASR
         /// <summary>Generated-token cap for autoregressive session backends.</summary>
         public void SetMaxNewTokens(int n)
             => Check(NativeMethods.crispasr_session_set_max_new_tokens(Handle, n), "set_max_new_tokens");
+
+        /// <summary>Control session-level auto-chunking for long audio (> 30 s).</summary>
+        public void SetAutochunk(bool enabled, int chunkSeconds = 0)
+            => Check(NativeMethods.crispasr_session_set_autochunk(Handle, enabled ? 1 : 0, chunkSeconds), "set_autochunk");
+
+        /// <summary>Set a dynamic token budget proportional to piece audio length.</summary>
+        public void SetMaxNewTokensPerSecond(float rate, int minimum = 16)
+            => Check(NativeMethods.crispasr_session_set_max_new_tokens_per_second(Handle, rate, minimum), "set_max_new_tokens_per_second");
 
         /// <summary>Repeated generated-token penalty for autoregressive backends.</summary>
         public void SetFrequencyPenalty(float penalty)
@@ -912,7 +920,7 @@ namespace CrispASR
         // Audio enhancement (static)
         // ----------------------------------------------------------------
 
-        /// <summary>Enhance audio using RNNoise (48 kHz mono).</summary>
+        /// <summary>Enhance audio using RNNoise (16 kHz mono input and output).</summary>
         public static float[] EnhanceAudioRnnoise(float[] pcm)
         {
             var outPcm = new float[pcm.Length];

@@ -16,6 +16,86 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 include(Catch)
 
+# Catch2's discovery script writes PROPERTIES as one flattened word list, so a
+# list-valued LABELS "live;miotts" reached ctest as `LABELS live miotts ...`:
+# the second label was read as a property name and every property after it
+# shifted by one. Catch appends SKIP_RETURN_CODE 4 last, so with an even
+# number of labels a test that SKIPPED (model not present) was reported as
+# FAILED. The arguments arrive here already flattened; labels are lowercase and
+# every keyword / property name is uppercase, so the words after LABELS up to
+# the next uppercase word are the labels. They are applied after discovery by
+# a per-call include file that sets the list with correct quoting.
+function(catch_discover_tests TARGET)
+    set(_out)
+    set(_labels)
+    set(_in_labels FALSE)
+    set(_in_props FALSE)
+    set(_test_list "${TARGET}_TESTS")
+    set(_want_list FALSE)
+    foreach(_a IN LISTS ARGN)
+        if(_want_list)
+            set(_test_list "${_a}")
+            set(_want_list FALSE)
+        endif()
+        if(_in_labels)
+            if(_a MATCHES "^[A-Z][A-Z0-9_]*$")
+                set(_in_labels FALSE)
+            else()
+                list(APPEND _labels "${_a}")
+                continue()
+            endif()
+        endif()
+        if(_a STREQUAL "TEST_LIST")
+            set(_want_list TRUE)
+        elseif(_a STREQUAL "PROPERTIES")
+            set(_in_props TRUE)
+        elseif(_in_props AND _a STREQUAL "LABELS")
+            set(_in_labels TRUE)
+            continue()
+        endif()
+        list(APPEND _out "${_a}")
+    endforeach()
+    _catch_discover_tests(${TARGET} ${_out})
+    if(_labels)
+        string(MAKE_C_IDENTIFIER "${TARGET}_${_test_list}" _id)
+        set(_fix "${CMAKE_CURRENT_BINARY_DIR}/${_id}_labels.cmake")
+        file(WRITE "${_fix}"
+             "foreach(_t IN LISTS ${_test_list})\n"
+             "  set_tests_properties(\"\${_t}\" PROPERTIES LABELS \"${_labels}\")\n"
+             "endforeach()\n")
+        set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${_fix}")
+    endif()
+endfunction()
+find_package(OpenMP QUIET)
+get_target_property(CRISPASR_CPU_BLAS_AVAILABLE crispasr-cpu-blas CRISPASR_CPU_BLAS_AVAILABLE)
+
+# Keep numerical checks in ordinary CI and repeated timings in the bench tier.
+# Adjacent Catch tags are an intersection; heterogeneous suites must not use
+# impossible filters such as [rvq][istft]. Both registrations share production
+# checks; CRISPASR_RUN_PERF controls only the repeated timing phase.
+function(crispasr_discover_ab_tests target labels)
+    catch_discover_tests(${target}
+        TEST_SPEC "[unit]"
+        TEST_PREFIX "unit::"
+        TEST_LIST ${target}_UNIT_TESTS
+        PROPERTIES LABELS "unit" ENVIRONMENT "CRISPASR_RUN_PERF=0")
+    catch_discover_tests(${target}
+        TEST_SPEC "[ab-bench]"
+        TEST_PREFIX "perf::"
+        TEST_LIST ${target}_BENCH_TESTS
+        PROPERTIES LABELS "bench" ENVIRONMENT "CRISPASR_RUN_PERF=1")
+endfunction()
+
+# Shared GGUF mmap/COW and fread file access; no model or ggml linkage.
+add_executable(test-gguf-file test-gguf-file.cpp)
+add_test(NAME test-gguf-file COMMAND test-gguf-file)
+set_tests_properties(test-gguf-file PROPERTIES LABELS "unit;gguf")
+
+# Production RNNoise orchestration with link stubs; no model or library build.
+add_executable(test-rnnoise-bounds test-rnnoise-bounds.cpp)
+add_test(NAME test-rnnoise-bounds COMMAND test-rnnoise-bounds)
+set_tests_properties(test-rnnoise-bounds PROPERTIES LABELS "unit;enhance")
+
 add_executable(test-realtime-turn-buffer test-realtime-turn-buffer.cpp)
 target_include_directories(test-realtime-turn-buffer PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-realtime-turn-buffer PRIVATE Catch2::Catch2WithMain)
@@ -138,7 +218,7 @@ add_executable(test-omnivoice-encoder test-omnivoice-encoder.cpp)
 target_include_directories(test-omnivoice-encoder PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
 target_link_libraries(test-omnivoice-encoder PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
 add_test(NAME omnivoice-encoder-parity COMMAND test-omnivoice-encoder)
-set_tests_properties(omnivoice-encoder-parity PROPERTIES LABELS "unit;tts;omnivoice")
+set_tests_properties(omnivoice-encoder-parity PROPERTIES LABELS "unit;performance-parity;tts;omnivoice")
 
 add_executable(test-omnivoice-codec test-omnivoice-codec.cpp)
 target_include_directories(test-omnivoice-codec PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
@@ -146,6 +226,13 @@ target_compile_definitions(test-omnivoice-codec PRIVATE TEST_SOURCE_DIR="${PROJE
 target_link_libraries(test-omnivoice-codec PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
 add_test(NAME omnivoice-codec-lifecycle COMMAND test-omnivoice-codec)
 set_tests_properties(omnivoice-codec-lifecycle PROPERTIES LABELS "unit;tts;omnivoice")
+
+# Actual VibeVoice causal codec builders: streaming/prefix parity, no model.
+add_executable(test-vibevoice-codec-stream test-vibevoice-codec-stream.cpp)
+target_include_directories(test-vibevoice-codec-stream PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/src)
+target_link_libraries(test-vibevoice-codec-stream PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
+add_test(NAME vibevoice-codec-stream-parity COMMAND test-vibevoice-codec-stream)
+set_tests_properties(vibevoice-codec-stream-parity PROPERTIES LABELS "unit;tts;vibevoice")
 
 add_executable(test-step-graph-cache test-step-graph-cache.cpp)
 target_include_directories(test-step-graph-cache PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -232,11 +319,12 @@ set_tests_properties(${TEST_TARGET} PROPERTIES
 # paraformer exercises the CIF predictor read (read_f32 → core_cpu::to_f32).
 set(TEST_TARGET test-paraformer-jfk-live)
 add_test(NAME ${TEST_TARGET}
-    COMMAND $<TARGET_FILE:crispasr-cli>
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run-licensed-live.sh funasr-v1.1 $<TARGET_FILE:crispasr-cli>
     --backend paraformer --auto-download -f ${PROJECT_SOURCE_DIR}/samples/jfk.mp3)
 set_tests_properties(${TEST_TARGET} PROPERTIES
     LABELS "live;asr;weight-read"
     TIMEOUT 600
+    SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "do for your country")
 
 # kyutai-stt (Mimi codec) — default causal+sliding-window attention.
@@ -324,7 +412,7 @@ target_compile_definitions(${VAD_TEST} PRIVATE
     VAD_MODEL_PATH="${PROJECT_SOURCE_DIR}/models/for-tests-silero-v6.2.0-ggml.bin"
     SAMPLE_PATH="${PROJECT_SOURCE_DIR}/samples/jfk.wav")
 add_test(NAME ${VAD_TEST} COMMAND ${VAD_TEST})
-set_tests_properties(${VAD_TEST} PROPERTIES LABELS "base;en")
+set_tests_properties(${VAD_TEST} PROPERTIES LABELS "base;en" SKIP_RETURN_CODE 77)
 
 # ─── test - vad - thresholds — Verify VAD behavior with different thresholds ────────
 set(VAD_TH_TEST test-vad-thresholds)
@@ -336,7 +424,7 @@ target_compile_definitions(${VAD_TH_TEST} PRIVATE
     VAD_MODEL_PATH="${PROJECT_SOURCE_DIR}/models/for-tests-silero-v6.2.0-ggml.bin"
     SAMPLE_PATH="${PROJECT_SOURCE_DIR}/samples/jfk.wav")
 add_test(NAME ${VAD_TH_TEST} COMMAND ${VAD_TH_TEST})
-set_tests_properties(${VAD_TH_TEST} PROPERTIES LABELS "base;en")
+set_tests_properties(${VAD_TH_TEST} PROPERTIES LABELS "base;en" SKIP_RETURN_CODE 77)
 
 # ─── test - crispasr - cache — Catch2 unit tests for download / cache helpers ───────
 #
@@ -483,6 +571,40 @@ catch_discover_tests(test-audio-resample
     PROPERTIES LABELS "unit"
 )
 
+# ─── test-ctc-punct-space — NeMo space-before-punctuation decode step (unit) ───
+add_executable(test-ctc-punct-space
+    test-ctc-punct-space.cpp
+)
+target_include_directories(test-ctc-punct-space PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-ctc-punct-space PRIVATE
+    Catch2::Catch2WithMain
+)
+catch_discover_tests(test-ctc-punct-space
+    TEST_SPEC "[ctc-punct]"
+    PROPERTIES
+        LABELS unit
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+# ─── test-bert-pretok-spacing — pretokenize whitespace flags (fireredpunc) ───
+add_executable(test-bert-pretok-spacing
+    test-bert-pretok-spacing.cpp
+)
+target_include_directories(test-bert-pretok-spacing PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-bert-pretok-spacing PRIVATE
+    Catch2::Catch2WithMain
+)
+catch_discover_tests(test-bert-pretok-spacing
+    TEST_SPEC "[pretokenize]"
+    PROPERTIES
+        LABELS unit
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
 # ─── test-voxtral-pretokenize — the tekken regex split (#338 follow-up) ───────
 # Header-only, no weights, no network: expectations are generated from the
 # published `config.pattern` via Python's `regex`, so this pins the SPLIT
@@ -555,6 +677,16 @@ target_link_libraries(test-core-rvq PRIVATE
     Catch2::Catch2WithMain
 )
 catch_discover_tests(test-core-rvq
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit"
+)
+
+# ─── test-core-logit-sampler — temperature/top-k/top-p sampler (#564) ─────────
+# Header-only, weight-free: the MOSS-Diarize session/CLI sampling path uses it.
+add_executable(test-core-logit-sampler test-core-logit-sampler.cpp)
+target_include_directories(test-core-logit-sampler PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-core-logit-sampler PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-core-logit-sampler
     TEST_SPEC "[unit]"
     PROPERTIES LABELS "unit"
 )
@@ -1301,6 +1433,15 @@ catch_discover_tests(test-confucius4-tts-live
 )
 endif()
 
+# ─── test-zonos3-live — live tests for the ZONOS3-Mini TTS backend (#603)
+add_executable(test-zonos3-live test_zonos3_live.cpp)
+target_include_directories(test-zonos3-live PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/ggml/include)
+target_link_libraries(test-zonos3-live PRIVATE Catch2::Catch2WithMain zonos3_tts)
+catch_discover_tests(test-zonos3-live
+    TEST_SPEC "[zonos3]"
+    PROPERTIES LABELS "live;zonos3"
+    PROPERTIES SKIP_RETURN_CODE 4
+)
 # ─── test-miotts-live — live integration tests for MioTTS backend
 add_executable(test-miotts-live
     test_miotts_live.cpp
@@ -2363,7 +2504,7 @@ target_link_libraries(test-diarize-smooth PRIVATE
 )
 catch_discover_tests(test-diarize-smooth
     TEST_SPEC "[unit]"
-    PROPERTIES LABELS "unit;diarize_smooth"
+    PROPERTIES LABELS "unit"
 )
 
 # ─── test-parallel-for — hermetic unit tests for the shared fan-out helpers
@@ -2376,11 +2517,11 @@ target_include_directories(test-parallel-for PRIVATE
 )
 target_link_libraries(test-parallel-for PRIVATE
     Catch2::Catch2WithMain
-    crispasr-core
+    Threads::Threads
 )
 catch_discover_tests(test-parallel-for
     TEST_SPEC "[parallel]"
-    PROPERTIES LABELS "unit;parallel"
+    PROPERTIES LABELS "unit"
 )
 
 # ─── test-spectral-diarize — hermetic unit tests for the speaker-clustering
@@ -2397,7 +2538,7 @@ target_link_libraries(test-spectral-diarize PRIVATE
 )
 catch_discover_tests(test-spectral-diarize
     TEST_SPEC "[unit]"
-    PROPERTIES LABELS "unit;spectral"
+    PROPERTIES LABELS "unit"
 )
 
 # ─── test-wespeaker-params — Catch2 unit tests for wespeaker_context_params
@@ -2537,8 +2678,13 @@ catch_discover_tests(test-qwen3tts-params
 )
 
 # Model-free #555 regression: actual public loader, prefill bounds, rollback.
+# This test includes qwen3_tts.cpp directly, so it also needs the codec SHA-256
+# submodule header used by the opt-in capture instrumentation.
 add_executable(test-qwen3tts-voice-pack test-qwen3tts-voice-pack.cpp)
-target_include_directories(test-qwen3tts-voice-pack PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(test-qwen3tts-voice-pack PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/third_party/c2pa-audio/src
+)
 target_link_libraries(test-qwen3tts-voice-pack PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu)
 add_test(NAME qwen3tts-voice-pack-lifecycle COMMAND test-qwen3tts-voice-pack)
 set_tests_properties(qwen3tts-voice-pack-lifecycle PROPERTIES LABELS "unit;qwen3_tts")
@@ -2600,9 +2746,11 @@ catch_discover_tests(test-tada-params
 )
 
 # ─── test-vibevoice-params — Catch2 unit tests for vibevoice_context_params defaults
-# and null-guard coverage. No GGUF required. ───────────────────────────────────
+# and task-capability coverage. Tiny generated GGUFs; no model required. ───────────────────────────────────
 add_executable(test-vibevoice-params
     test-vibevoice-params.cpp
+    test-vibevoice-asr-capability.cpp
+    test-vibevoice-semantic-weights.cpp
 )
 target_include_directories(test-vibevoice-params PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -2615,6 +2763,13 @@ catch_discover_tests(test-vibevoice-params
     TEST_SPEC "[unit]"
     PROPERTIES LABELS "unit;vibevoice"
 )
+
+add_executable(test-vibevoice-asr-live test-vibevoice-asr-live.cpp)
+target_link_libraries(test-vibevoice-asr-live PRIVATE vibevoice)
+add_test(NAME test-vibevoice-asr-live
+    COMMAND test-vibevoice-asr-live ${PROJECT_SOURCE_DIR}/samples/jfk.wav)
+set_tests_properties(test-vibevoice-asr-live PROPERTIES
+    LABELS "integration;live;vibevoice" SKIP_RETURN_CODE 77 TIMEOUT 900)
 
 # ─── test-voxcpm2-params — Catch2 unit tests for voxcpm2_context_params defaults
 # and null-guard coverage. No GGUF required. ───────────────────────────────────
@@ -3173,6 +3328,52 @@ catch_discover_tests(test-issue-356-gap-fill-overlap
     PROPERTIES LABELS "unit;gap-fill;issue-356"
 )
 
+# ─── test-haas-quiet-point-split — #605: parakeet_quiet_point_bounds, the
+# sample-exact port of Haas-ASR's split_at_quiet_points (Haas-ja long-form).
+# Synthetic audio; expected values from the upstream Python. Pure CPU.
+add_executable(test-haas-quiet-point-split
+    test-haas-quiet-point-split.cpp
+)
+target_include_directories(test-haas-quiet-point-split PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-haas-quiet-point-split PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-lib
+)
+catch_discover_tests(test-haas-quiet-point-split
+    TEST_SPEC "[haas-split]"
+    PROPERTIES LABELS "unit;haas;issue-605"
+)
+
+# ─── test-issue-605-gap-fill-junk — issue #605 regression guard
+#
+# Pins the gap-fill confidence gate and seam guard: a refill of a pause or of
+# game noise decodes at low token confidence and must not come back as a
+# subtitle; a confident #89 recovery still must; a refill that repeats the
+# first-pass word at the hole's edge is a duplicate. Scripted fake backend with
+# preset confidences; pure CPU, no model load.
+add_executable(test-issue-605-gap-fill-junk
+    test-issue-605-gap-fill-junk.cpp
+)
+target_include_directories(test-issue-605-gap-fill-junk PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/examples
+    ${PROJECT_SOURCE_DIR}/examples/cli
+)
+target_link_libraries(test-issue-605-gap-fill-junk PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-lib
+)
+catch_discover_tests(test-issue-605-gap-fill-junk
+    TEST_SPEC "[issue-605]"
+    PROPERTIES LABELS "unit;gap-fill;issue-605"
+)
+
 # ─── test-issue-356-order-guard — issue #356 time-order guard
 #
 # Pins crispasr_first_backward_segment, the check merge_segments and the server
@@ -3368,6 +3569,13 @@ catch_discover_tests(test-canary-layout
     TEST_SPEC "[layout]"
     PROPERTIES LABELS "unit;canary"
 )
+
+# General F16 flash-mask precision and masking controls (hermetic tiny graph).
+add_executable(test-fastconformer-mask test-fastconformer-mask.cpp)
+target_include_directories(test-fastconformer-mask PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-fastconformer-mask PRIVATE ggml ggml-base crispasr_link_ggml_cpu)
+add_test(NAME fastconformer-mask COMMAND test-fastconformer-mask)
+set_tests_properties(fastconformer-mask PROPERTIES LABELS "unit;fastconformer" TIMEOUT 30)
 
 # ─── test-fastconformer-snap-layout — diff-harness conv snapshot layout vs the reference dumpers (hermetic, unit)
 add_executable(test-fastconformer-snap-layout test-fastconformer-snap-layout.cpp)
@@ -4172,6 +4380,29 @@ catch_discover_tests(test-speaker-identity
     PROPERTIES LABELS "unit"
 )
 
+# ─── test-voice-dir-reference — #584: a bare --voice-dir name reaches every
+# cloning backend as <voice-dir>/<name>.wav + <name>.txt, the same clone
+# reference `--voice <path> --ref-text` gives it, and the same file the consent
+# gate hashed. Temp files + a fake backend; no model.
+add_executable(test-voice-dir-reference test-voice-dir-reference.cpp)
+target_include_directories(test-voice-dir-reference PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/examples
+    ${PROJECT_SOURCE_DIR}/examples/cli
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/ggml/include
+)
+target_link_libraries(test-voice-dir-reference PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-lib
+    common
+    ggml
+)
+catch_discover_tests(test-voice-dir-reference
+    TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit"
+)
+
 # ─── test-speaker-identity-gguf — the speaker-identity stamp survives a real
 # GGUF round trip. test-speaker-identity is pure and cannot notice a read path
 # that is never reached; this writes an actual metadata-only GGUF, hands it to
@@ -4545,6 +4776,25 @@ target_link_libraries(test_audioseal_cosine PRIVATE
     audioseal
 )
 
+# ─── test-sentence-end-abbrev — --split-on-punct keeps German ordinals /
+# abbreviations inside the subtitle line (shared '.' rule with TTS chunking and
+# live translation). Compiles crispasr_output.cpp directly; no model load.
+add_executable(test-sentence-end-abbrev
+    test-sentence-end-abbrev.cpp
+    ${PROJECT_SOURCE_DIR}/examples/cli/crispasr_output.cpp
+)
+target_include_directories(test-sentence-end-abbrev PRIVATE
+    ${PROJECT_SOURCE_DIR}/examples/cli
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test-sentence-end-abbrev PRIVATE
+    Catch2::Catch2WithMain
+)
+catch_discover_tests(test-sentence-end-abbrev
+    TEST_SPEC "[sentence-end]"
+    PROPERTIES LABELS "unit;output"
+)
+
 # ─── test_server_chunking — Catch2 unit tests for the sentence splitter
 #used by / v1 / audio / speech long - form input(PLAN §75d / issue #66).
 #Pure functions, no backend dependency.
@@ -4554,6 +4804,7 @@ add_executable(test_server_chunking
 )
 target_include_directories(test_server_chunking PRIVATE
     ${PROJECT_SOURCE_DIR}/examples/cli
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_link_libraries(test_server_chunking PRIVATE
     Catch2::Catch2WithMain
@@ -4732,7 +4983,7 @@ target_include_directories(test-core-cqt PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-core-cqt PRIVATE Catch2::Catch2)
 catch_discover_tests(test-core-cqt
     TEST_PREFIX "core-cqt: "
-    PROPERTIES LABELS "unit;core"
+    PROPERTIES LABELS "unit"
 )
 
 # ─── test-core-midi-writer — core/midi_writer.h Standard MIDI File output ─────
@@ -4816,12 +5067,18 @@ target_link_libraries(test-align-ab-bench PRIVATE
     Catch2::Catch2WithMain
     Threads::Threads
 )
-catch_discover_tests(test-align-ab-bench
-    TEST_SPEC "[align][ab-bench]"
-    PROPERTIES LABELS "bench;align"
-)
+crispasr_discover_ab_tests(test-align-ab-bench "align")
 
 # ─── test-conformer-ab-bench — conformer_ibm.h paired A/B speed and parity bench ────
+# Same cause as #421 (see the hift-simdconv note above): the test compares the
+# baseline and accelerated shaw_block_attention loops for bit-identity, and with
+# contraction on, clang 14 / gcc -march=native on arm64 fuse their multiply-adds
+# differently once one loop vectorises (CI ubuntu-22.04-arm: 19.3% identical;
+# -ffp-contract=off restores 100% on every compiler/flag combo). Pin contraction
+# off for this test TU only; shipped kernels keep fmadd.
+if (NOT MSVC)
+    set_source_files_properties(test-conformer-ab-bench.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 add_executable(test-conformer-ab-bench test-conformer-ab-bench.cpp)
 target_include_directories(test-conformer-ab-bench PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -4831,10 +5088,7 @@ target_link_libraries(test-conformer-ab-bench PRIVATE
     Threads::Threads
     ggml
 )
-catch_discover_tests(test-conformer-ab-bench
-    TEST_SPEC "[conformer][ab-bench]"
-    PROPERTIES LABELS "bench;conformer"
-)
+crispasr_discover_ab_tests(test-conformer-ab-bench "conformer")
 
 # ─── test-cpu-ops-ab-bench — cpu_ops.h & conv.h paired A/B speed and parity bench ────
 add_executable(test-cpu-ops-ab-bench test-cpu-ops-ab-bench.cpp)
@@ -4846,10 +5100,7 @@ target_link_libraries(test-cpu-ops-ab-bench PRIVATE
     Threads::Threads
     ggml
 )
-catch_discover_tests(test-cpu-ops-ab-bench
-    TEST_SPEC "[cpu_ops][convt][ab-bench]"
-    PROPERTIES LABELS "bench;cpu_ops"
-)
+crispasr_discover_ab_tests(test-cpu-ops-ab-bench "cpu_ops;convt")
 
 # ─── test-firered-ab-bench — firered_asr & f5_tts paired A/B speed and parity bench ────
 add_executable(test-firered-ab-bench test-firered-ab-bench.cpp)
@@ -4861,10 +5112,7 @@ target_link_libraries(test-firered-ab-bench PRIVATE
     Threads::Threads
     ggml
 )
-catch_discover_tests(test-firered-ab-bench
-    TEST_SPEC "[firered][f5_tts][ab-bench]"
-    PROPERTIES LABELS "bench;firered"
-)
+crispasr_discover_ab_tests(test-firered-ab-bench "firered;f5_tts")
 
 # ─── test-voxcpm2-ab-bench — voxcpm2 & mel-band-roformer paired A/B speed and parity bench ────
 add_executable(test-voxcpm2-ab-bench test-voxcpm2-ab-bench.cpp)
@@ -4880,10 +5128,53 @@ target_link_libraries(test-voxcpm2-ab-bench PRIVATE
     Threads::Threads
     ggml
 )
-catch_discover_tests(test-voxcpm2-ab-bench
-    TEST_SPEC "[voxcpm2][roformer][ab-bench]"
-    PROPERTIES LABELS "bench;voxcpm2"
+crispasr_discover_ab_tests(test-voxcpm2-ab-bench "voxcpm2;roformer")
+
+# ─── test-kokoro-diarize-ab-bench — kokoro & diarize paired A/B speed and parity bench ────
+add_executable(test-kokoro-diarize-ab-bench test-kokoro-diarize-ab-bench.cpp)
+target_include_directories(test-kokoro-diarize-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/include
 )
+target_link_libraries(test-kokoro-diarize-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    kokoro
+    crispasr-core
+    Threads::Threads
+    ggml
+)
+crispasr_discover_ab_tests(test-kokoro-diarize-ab-bench "kokoro;diarize")
+
+# ─── test-cqt-diarize-ab-bench — cqt, cqt2010v2 & diarize_smooth paired A/B speed and parity bench ────
+add_executable(test-cqt-diarize-ab-bench test-cqt-diarize-ab-bench.cpp)
+target_include_directories(test-cqt-diarize-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(test-cqt-diarize-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-core
+    Threads::Threads
+    ggml
+)
+crispasr_discover_ab_tests(test-cqt-diarize-ab-bench "cqt;diarize")
+
+# ─── test-rvq-istft-ab-bench — rvq & istft paired A/B speed and parity bench ────
+add_executable(test-rvq-istft-ab-bench test-rvq-istft-ab-bench.cpp)
+target_include_directories(test-rvq-istft-ab-bench PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/ggml/include
+    ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(test-rvq-istft-ab-bench PRIVATE
+    Catch2::Catch2WithMain
+    crispasr-core
+    Threads::Threads
+    ggml
+)
+crispasr_discover_ab_tests(test-rvq-istft-ab-bench "rvq;istft")
 
 # ─── test-core-cross-attn — core/cross_attn.h manual path (ggml graph) ────────
 # Computes the header's cross-attention graph and compares to a plain-C++ MHA
@@ -5085,6 +5376,15 @@ catch_discover_tests(test-audio-formats
     PROPERTIES LABELS "unit;audio"
 )
 
+# Shared voice-reference WAV parser: header-only, no models or library linkage.
+add_executable(test-wav-reader test-wav-reader.cpp)
+target_include_directories(test-wav-reader PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-wav-reader PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-wav-reader
+    TEST_SPEC "[wav-reader]"
+    PROPERTIES LABELS "unit;audio"
+)
+
 # ─── test-audio-chunking — Catch2 unit tests for audio_chunking::find_energy_min_split
 #
 # Covers the energy-minimum detection helper directly: quiet window selection,
@@ -5262,6 +5562,33 @@ if(APPLE AND TARGET ggml-metal)
     endforeach()
 endif()
 
+# ─── CUDA SSM convolution capability and CPU fallback (#598) ──────────────
+# CUDA SSM capability is also exercised on CPU-only CI through an emulated
+# device and the real scheduler. A CUDA build additionally tests the real device.
+if(NOT GGML_BACKEND_DL)
+    add_executable(test-ssm-conv-fallback test-ssm-conv-fallback.cpp)
+    target_include_directories(test-ssm-conv-fallback PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
+    target_link_libraries(test-ssm-conv-fallback PRIVATE ggml ggml-base crispasr_link_ggml_cpu)
+    add_test(NAME ssm-conv-fallback COMMAND test-ssm-conv-fallback)
+    add_test(NAME ssm-conv-legacy-rejected COMMAND test-ssm-conv-fallback --legacy-support)
+    set_tests_properties(ssm-conv-fallback ssm-conv-legacy-rejected PROPERTIES LABELS "unit;ggml;backend" TIMEOUT 45)
+    set_tests_properties(ssm-conv-legacy-rejected PROPERTIES WILL_FAIL TRUE)
+    if(TARGET ggml-cuda)
+        add_executable(test-ssm-conv-cuda test-ssm-conv-fallback.cpp)
+        target_include_directories(test-ssm-conv-cuda PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
+        target_compile_definitions(test-ssm-conv-cuda PRIVATE CRISPASR_TEST_REAL_CUDA)
+        target_link_libraries(test-ssm-conv-cuda PRIVATE ggml ggml-base crispasr_link_ggml_cpu ggml-cuda)
+        add_test(NAME ssm-conv-cuda COMMAND test-ssm-conv-cuda)
+        set_tests_properties(ssm-conv-cuda PROPERTIES LABELS "unit;ggml;backend;cuda" TIMEOUT 60 SKIP_RETURN_CODE 4)
+        add_executable(test-xasr-cuda-live test-xasr-cuda-live.cpp)
+        target_include_directories(test-xasr-cuda-live PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/include)
+        target_link_libraries(test-xasr-cuda-live PRIVATE crispasr-lib ggml-cuda)
+        add_test(NAME xasr-cuda-live COMMAND test-xasr-cuda-live)
+        set_tests_properties(xasr-cuda-live PROPERTIES LABELS "live;cuda;xasr" TIMEOUT 300 SKIP_RETURN_CODE 4
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    endif()
+endif()
+
 # ─── test_ggml_audio_ops_backend — carried ggml audio-op backend patches ─────
 #
 # These run conv_transpose_1d and col2im_1d directly on a single GPU backend
@@ -5343,6 +5670,7 @@ add_test(NAME benchmark-quick
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 set_tests_properties(benchmark-quick PROPERTIES
     LABELS "benchmark"
+    SKIP_RETURN_CODE 2
     TIMEOUT 600)
 
 # ─── test-htdemucs-smoke — HTDemucs separation smoke test. This file existed
@@ -5365,6 +5693,14 @@ target_include_directories(test-mel-band-roformer-smoke PRIVATE
     ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(test-mel-band-roformer-smoke PRIVATE mel-band-roformer)
+
+add_executable(test-mini-bs-roformer test-mini-bs-roformer.cpp)
+target_include_directories(test-mini-bs-roformer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-mini-bs-roformer PRIVATE Catch2::Catch2WithMain mini-bs-roformer)
+add_test(NAME mini-bs-roformer-runtime
+    COMMAND test-mini-bs-roformer "[mini-bs-roformer]")
+set_tests_properties(mini-bs-roformer-runtime PROPERTIES
+    LABELS "unit;mini-bs-roformer" TIMEOUT 60)
 
 # --- test-f5-tts --- standalone F5-TTS DiT+Vocos smoke test
 add_executable(test-f5-tts test-f5-tts.cpp)
@@ -5629,6 +5965,48 @@ set_tests_properties(test-package-lib-bundle PROPERTIES
 # Discover Python before constructing commands or guarding their registration.
 # A later find_package leaves clean builds without the guarded unit tests.
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if (Python3_Interpreter_FOUND)
+    add_test(NAME test-vibevoice-converter-task
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_converter_task.py)
+    set_tests_properties(test-vibevoice-converter-task PROPERTIES LABELS "unit;vibevoice")
+endif()
+
+if (Python3_Interpreter_FOUND)
+    add_test(NAME mini-bs-roformer-converter
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-mini-bs-converter.py -v)
+    set_tests_properties(mini-bs-roformer-converter PROPERTIES LABELS "unit;mini-bs-roformer" TIMEOUT 60)
+    add_test(NAME mini-bs-roformer-validation-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_mini_bs_validation.py -v)
+    set_tests_properties(mini-bs-roformer-validation-controls PROPERTIES LABELS "unit;mini-bs-roformer" TIMEOUT 60)
+    add_test(NAME mini-bs-roformer-reference-streaming
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-mini-bs-reference-streaming.py -v)
+    set_tests_properties(mini-bs-roformer-reference-streaming PROPERTIES LABELS "unit;mini-bs-roformer" TIMEOUT 60)
+endif()
+
+if (Python3_Interpreter_FOUND)
+    add_test(NAME voice-isolator-converter
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-voice-isolator-converter.py -v)
+    set_tests_properties(voice-isolator-converter PROPERTIES LABELS "unit;voice-isolator" TIMEOUT 60)
+endif()
+
+if (CRISPASR_BUILD_EXAMPLES AND Python3_Interpreter_FOUND)
+    add_test(NAME mini-bs-roformer-quant-policy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-mini-bs-quant-policy.py
+            $<TARGET_FILE:crispasr-quantize>)
+    set_tests_properties(mini-bs-roformer-quant-policy PROPERTIES LABELS "unit;mini-bs-roformer" TIMEOUT 120)
+endif()
+
+# Mini BS RoFormer V2.5: actual shared Session/Python + CLI integration.
+# The model is explicit and environment-gated; absent weights skip, never pass.
+if (CRISPASR_BUILD_EXAMPLES AND BUILD_SHARED_LIBS AND Python3_Interpreter_FOUND)
+    add_test(NAME mini-bs-roformer-surface
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-mini-bs-roformer-surface.py
+            --crispasr $<TARGET_FILE:crispasr-cli>
+            --library $<TARGET_FILE:crispasr-lib>)
+    set_tests_properties(mini-bs-roformer-surface PROPERTIES
+        LABELS "integration;mini-bs-roformer" SKIP_RETURN_CODE 77 TIMEOUT 1800)
+endif()
+
 if(Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES)
     add_test(NAME granite-quant-policy
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-granite-quant-policy.py
@@ -5894,6 +6272,10 @@ if(UNIX AND Python3_EXECUTABLE)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_whisper_vad_timeline.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     set_tests_properties(test-whisper-vad-timeline PROPERTIES LABELS "unit;whisper" TIMEOUT 60)
+    add_test(NAME test-python-speaker-primitives
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_python_speaker_primitives.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(test-python-speaker-primitives PROPERTIES LABELS "unit;bindings;speaker" TIMEOUT 60)
     add_test(NAME test-python-legacy-pointer
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_python_legacy_pointer.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
@@ -6046,6 +6428,43 @@ if (CRISPASR_FUZZ)
     target_link_options(crispasr-fuzz-tokenizer PRIVATE -fsanitize=fuzzer)
 endif()
 
+# ─── test-core-env-gate — src/core/env_gate.h, the CrispEmbed-mirrored boolean
+# gate (hermetic, unit). Off spellings are 0/false/off/no, case-insensitive.
+add_executable(test-core-env-gate test-core-env-gate.cpp)
+target_include_directories(test-core-env-gate PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test-core-env-gate PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-core-env-gate
+    TEST_SPEC "[env-gate]"
+    PROPERTIES
+        LABELS unit
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+# ─── test-core-spm-piece — src/core/spm_piece.h, SentencePiece piece → text,
+# including byte-fallback <0xHH> pieces (#605: Haas-ja dropped rare kanji).
+add_executable(test-core-spm-piece test-core-spm-piece.cpp)
+target_include_directories(test-core-spm-piece PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test-core-spm-piece PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-core-spm-piece
+    TEST_SPEC "[spm-piece]"
+    PROPERTIES
+        LABELS unit
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+# ─── test-core-gap-fill-policy — src/core/gap_fill_policy.h, the #89 gap-fill
+# decisions shared by the CLI/server pass and the session C ABI (#605): the
+# CRISPASR_GAP_FILL tri-state, the confidence gate and the seam-duplicate rule.
+add_executable(test-core-gap-fill-policy test-core-gap-fill-policy.cpp)
+target_include_directories(test-core-gap-fill-policy PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test-core-gap-fill-policy PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-core-gap-fill-policy
+    TEST_SPEC "[gap-fill-policy]"
+    PROPERTIES
+        LABELS unit
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
 # ─── test-arch-backend-map — general.architecture → backend table (hermetic, unit)
 # Guards issue #335: the C ABI and the CLI each had their own copy of this map
 # and they drifted, so Session::open() could not open models the CLI could.
@@ -6060,6 +6479,17 @@ catch_discover_tests(test-arch-backend-map
         LABELS unit
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+
+# Malformed architecture metadata must not abort a process hosting the C ABI.
+# Metadata calls run in child processes; capacity controls also check complete
+# names, exact-fit buffers and output sentinels. No model weights are needed.
+if(BUILD_SHARED_LIBS AND Python3_Interpreter_FOUND)
+    add_test(NAME gguf-detector-metadata COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_gguf_detector_metadata.py
+        --library $<TARGET_FILE:crispasr-lib>)
+    set_tests_properties(gguf-detector-metadata PROPERTIES
+        LABELS "unit;c-abi;arch-map" TIMEOUT 120)
+endif()
 
 # ─── #551: real GGUF schema routing and C ABI/CLI rejection (no weights)
 add_executable(test-parakeet-gguf test-parakeet-gguf.cpp)
@@ -6550,7 +6980,7 @@ target_link_libraries(test-kaldi-fbank PRIVATE
     Catch2::Catch2WithMain
 )
 catch_discover_tests(test-kaldi-fbank
-    TEST_SPEC "[kaldi_fbank]"
+    TEST_SPEC "[kaldi_fbank],[lfr]"
     PROPERTIES LABELS "unit"
 )
 
@@ -6573,7 +7003,8 @@ catch_discover_tests(test-torchaudio-resample
 add_executable(test-ctc-stitch test-ctc-stitch.cpp)
 target_include_directories(test-ctc-stitch PRIVATE ${PROJECT_SOURCE_DIR}/examples/cli ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test-ctc-stitch PRIVATE Catch2::Catch2WithMain)
-catch_discover_tests(test-ctc-stitch TEST_SPEC "[ctc-stitch]" PROPERTIES LABELS "unit;omniasr")
+catch_discover_tests(test-ctc-stitch TEST_SPEC "[ctc-stitch],[ctc][unit]" TEST_LIST CTC_UNIT_TESTS PROPERTIES LABELS "unit")
+catch_discover_tests(test-ctc-stitch TEST_SPEC "[ctc][perf]" TEST_PREFIX "perf::" TEST_LIST CTC_BENCH_TESTS PROPERTIES LABELS "bench")
 
 # Phonon-2 reuses Parakeet; exercise its model alias and metadata through real surfaces.
 # examples/cli is added after tests, so its target does not exist yet here.
@@ -6675,3 +7106,277 @@ if(Python3_Interpreter_FOUND AND UNIX)
     add_test(NAME cann-nz-cache-lifecycle COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_cann_nz_lifecycle.py -v)
     set_tests_properties(cann-nz-cache-lifecycle PROPERTIES LABELS "unit;cann" TIMEOUT 60)
 endif()
+
+# Stateful production-runtime regressions for the post-v0.8.49 audit.
+# These sources include the runtime TU to access its internal graph builders;
+# they deliberately do not link a second copy of the corresponding backend.
+foreach(_runtime IN ITEMS arktts-cache meanvc2-conditioning)
+    add_executable(test-${_runtime} test-${_runtime}.cpp)
+    target_include_directories(test-${_runtime} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(test-${_runtime} PRIVATE Catch2::Catch2WithMain
+        crispasr-core ggml ggml-base crispasr_link_ggml_cpu)
+    catch_discover_tests(test-${_runtime} TEST_SPEC "[unit]"
+        PROPERTIES LABELS "unit")
+endforeach()
+target_link_libraries(test-meanvc2-conditioning PRIVATE crispasr-cpu-blas)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME qwen3-ultra-audit-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_qwen3_ultra_audit.py)
+    set_tests_properties(qwen3-ultra-audit-controls PROPERTIES LABELS "unit;qwen3-asr;alignment")
+    add_test(NAME qwen3-ultra-head-converter-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_qwen3_ultra_head_converter.py)
+    set_tests_properties(qwen3-ultra-head-converter-controls PROPERTIES LABELS "unit;qwen3-asr;alignment" SKIP_RETURN_CODE 77)
+    add_test(NAME qwen3-capture-live-audit-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_qwen3_capture_live_audit.py)
+    set_tests_properties(qwen3-capture-live-audit-controls PROPERTIES LABELS "unit;qwen3-tts;capture")
+    add_test(NAME benchmark-mel-ab-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_bench_mel_ab.py)
+    set_tests_properties(benchmark-mel-ab-controls PROPERTIES LABELS "unit;performance-parity;benchmark")
+    add_test(NAME post-release-model-gate-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_post_release_model_gate.py)
+    set_tests_properties(post-release-model-gate-controls PROPERTIES LABELS "unit;performance-parity;model-gates")
+    add_test(NAME performance-test-discovery-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_performance_test_discovery.py)
+    set_tests_properties(performance-test-discovery-controls PROPERTIES LABELS "unit;performance-parity;discovery")
+endif()
+
+if(Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES AND BUILD_SHARED_LIBS)
+    add_test(NAME haas-dispatch-entrypoints
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_haas_dispatch.py
+            --cli $<TARGET_FILE:crispasr-cli> --library $<TARGET_FILE:crispasr-lib>)
+    set_tests_properties(haas-dispatch-entrypoints PROPERTIES LABELS "unit;performance-parity;haas")
+endif()
+
+add_executable(test-core-istft-memory test-core-istft-memory.cpp)
+target_include_directories(test-core-istft-memory PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-core-istft-memory PRIVATE Threads::Threads)
+add_test(NAME istft-bounded-memory COMMAND test-core-istft-memory)
+set_tests_properties(istft-bounded-memory PROPERTIES LABELS "unit;performance-parity;istft")
+
+add_executable(test-voxcpm2-cpu-conv test-voxcpm2-cpu-conv.cpp)
+target_include_directories(test-voxcpm2-cpu-conv PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-voxcpm2-cpu-conv PRIVATE Catch2::Catch2WithMain Threads::Threads)
+catch_discover_tests(test-voxcpm2-cpu-conv TEST_SPEC "[unit]"
+    PROPERTIES LABELS "unit")
+
+# Compile and run the same independent iSTFT oracles with the actual CBLAS
+# feature target. A scalar-only pass cannot qualify the BLAS branch.
+if(CRISPASR_CPU_BLAS_AVAILABLE)
+    add_executable(test-core-istft-memory-blas test-core-istft-memory.cpp)
+    target_include_directories(test-core-istft-memory-blas PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(test-core-istft-memory-blas PRIVATE Threads::Threads crispasr-cpu-blas)
+    add_test(NAME istft-bounded-memory-blas COMMAND test-core-istft-memory-blas)
+    set_tests_properties(istft-bounded-memory-blas PROPERTIES LABELS "unit;performance-parity;istft;blas")
+    add_executable(test-core-istft-blas test-core-istft.cpp)
+    target_include_directories(test-core-istft-blas PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(test-core-istft-blas PRIVATE Catch2::Catch2WithMain
+        Threads::Threads crispasr-cpu-blas)
+    catch_discover_tests(test-core-istft-blas TEST_SPEC "[unit]"
+        TEST_PREFIX "blas::" PROPERTIES LABELS "unit")
+endif()
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(test-voxcpm2-cpu-conv PRIVATE OpenMP::OpenMP_CXX)
+    add_executable(test-parallel-for-openmp test-parallel-for.cpp)
+    target_include_directories(test-parallel-for-openmp PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(test-parallel-for-openmp PRIVATE Catch2::Catch2WithMain
+        Threads::Threads OpenMP::OpenMP_CXX)
+    catch_discover_tests(test-parallel-for-openmp TEST_SPEC "[parallel]"
+        TEST_PREFIX "openmp::" PROPERTIES LABELS "unit")
+    target_link_libraries(test-cpu-ops-ab-bench PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(test-conformer-ab-bench PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# Catch2 3.7 flattens semicolons in PROPERTIES during generated-script argument
+# forwarding. Set list-valued properties only once the actual cases exist.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/performance-test-properties.cmake")
+
+# These source-compiled controls use GCC/Clang flags. MSVC receives the full
+# production build and model surface test when weights are explicitly supplied.
+if (Python3_Interpreter_FOUND AND NOT MSVC)
+    add_test(NAME server-context
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test-server-context.py -v)
+    set_tests_properties(server-context PROPERTIES
+        LABELS "unit;server;context" TIMEOUT 120 ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
+    add_test(NAME scnet-math
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-math.py -v)
+    set_tests_properties(scnet-math PROPERTIES
+        LABELS "unit;scnet" TIMEOUT 120 ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
+    add_test(NAME scnet-recurrent-gemm
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-recurrent-gemm.py -v)
+    set_tests_properties(scnet-recurrent-gemm PROPERTIES
+        LABELS "unit;scnet" TIMEOUT 120 ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
+    add_test(NAME scnet-session-routing
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-session-routing.py -v)
+    set_tests_properties(scnet-session-routing PROPERTIES
+        LABELS "unit;scnet" TIMEOUT 120 ENVIRONMENT "CXX=${CMAKE_CXX_COMPILER}")
+endif()
+
+if (Python3_Interpreter_FOUND)
+    add_test(NAME scnet-validation-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_scnet_validation.py -v)
+    set_tests_properties(scnet-validation-controls PROPERTIES LABELS "unit;scnet" TIMEOUT 120)
+    # CI installs NumPy/gguf after configure. Keep these tests discoverable
+    # regardless of configure-time imports; the test environment supplies the
+    # numerical dependencies alongside the other Python unit controls.
+    add_test(NAME scnet-converter
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-converter.py -v)
+    set_tests_properties(scnet-converter PROPERTIES LABELS "unit;scnet" TIMEOUT 120)
+    add_test(NAME scnet-reference
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-reference.py -v)
+    set_tests_properties(scnet-reference PROPERTIES LABELS "unit;scnet" TIMEOUT 120)
+endif()
+
+# Quantizer diagnostics and row-wise Nemotron-H expert-bank storage. Uses
+# synthetic GGUFs and compares all bank bytes with equivalent 2-D matrices.
+if(Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES)
+    add_test(NAME test-quantizer-reporting
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-quantizer-reporting.py
+            $<TARGET_FILE:crispasr-quantize>)
+    set_tests_properties(test-quantizer-reporting PROPERTIES
+        LABELS "unit;gh;quantization"
+        TIMEOUT 120)
+
+    add_test(NAME test-quantizer-streaming
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-quantizer-streaming.py
+            $<TARGET_FILE:crispasr-quantize>)
+    set_tests_properties(test-quantizer-streaming PROPERTIES
+        LABELS "unit;gh;quantization"
+        TIMEOUT 180)
+
+    # Real /dev/full plus deterministic stdio failures in the production CLI.
+    # Interposition is Linux-specific; the real device check skips elsewhere.
+    set(quantizer_io_fault_args)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(quantizer-io-faults SHARED quantizer-io-faults.c)
+        target_link_libraries(quantizer-io-faults PRIVATE ${CMAKE_DL_LIBS})
+        list(APPEND quantizer_io_fault_args $<TARGET_FILE:quantizer-io-faults>)
+    endif()
+    add_test(NAME test-quantizer-io
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-quantizer-io.py
+            $<TARGET_FILE:crispasr-quantize> ${quantizer_io_fault_args})
+    set_tests_properties(test-quantizer-io PROPERTIES
+        LABELS "unit;gh;quantization"
+        TIMEOUT 120)
+endif()
+
+# SCNet routing and exact quantizer policy are model-free. Actual CLI/Session
+# inference requires explicitly supplied checkpoint bytes and skips if absent.
+if (Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES)
+    add_test(NAME scnet-quant-policy
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-quant-policy.py
+            $<TARGET_FILE:crispasr-quantize>)
+    set_tests_properties(scnet-quant-policy PROPERTIES LABELS "unit;scnet" TIMEOUT 120)
+endif()
+if (Python3_Interpreter_FOUND AND CRISPASR_BUILD_EXAMPLES AND BUILD_SHARED_LIBS)
+    add_test(NAME scnet-surface
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-scnet-surface.py
+            --crispasr $<TARGET_FILE:crispasr-cli>
+            --library $<TARGET_FILE:crispasr-lib>)
+    set_tests_properties(scnet-surface PROPERTIES
+        LABELS "integration;scnet" SKIP_RETURN_CODE 77 TIMEOUT 3600)
+endif()
+
+# Qwen3-TTS codec capture: model-free tests for exact token/response manifests.
+add_executable(test-qwen3-ultra-sidecar-oracle test-qwen3-ultra-head-oracle.cpp)
+target_compile_definitions(test-qwen3-ultra-sidecar-oracle PRIVATE ULTRA_TEST_SIDECAR)
+target_link_libraries(test-qwen3-ultra-sidecar-oracle PRIVATE qwen3_asr)
+
+add_executable(test-qwen3-ultra-sidecar test-qwen3-ultra-sidecar.cpp)
+target_link_libraries(test-qwen3-ultra-sidecar PRIVATE qwen3_asr)
+add_test(NAME qwen3-ultra-sidecar-controls COMMAND test-qwen3-ultra-sidecar)
+set_tests_properties(qwen3-ultra-sidecar-controls PROPERTIES LABELS "unit;qwen3-asr;alignment")
+
+add_executable(test-qwen3-ultra-hidden test-qwen3-ultra-hidden.cpp)
+target_link_libraries(test-qwen3-ultra-hidden PRIVATE qwen3_asr)
+add_test(NAME qwen3-ultra-hidden-controls COMMAND test-qwen3-ultra-hidden)
+set_tests_properties(qwen3-ultra-hidden-controls PROPERTIES LABELS "unit;qwen3-asr;alignment")
+
+add_executable(test-qwen3-ultra-head test-qwen3-ultra-head.cpp)
+add_test(NAME qwen3-ultra-head-controls COMMAND test-qwen3-ultra-head)
+set_tests_properties(qwen3-ultra-head-controls PROPERTIES LABELS "unit;qwen3-asr;alignment")
+
+add_executable(test-qwen3-ultra-features test-qwen3-ultra-features.cpp)
+add_test(NAME qwen3-ultra-features-reference COMMAND test-qwen3-ultra-features
+    ${PROJECT_SOURCE_DIR}/samples/jfk.wav ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/qwen3-ultra-features-f32le.bin)
+set_tests_properties(qwen3-ultra-features-reference PROPERTIES LABELS "unit;qwen3-asr;alignment")
+
+add_executable(test-qwen3-ultra-boundary test-qwen3-ultra-boundary.cpp)
+add_test(NAME qwen3-ultra-boundary-reference COMMAND test-qwen3-ultra-boundary)
+set_tests_properties(qwen3-ultra-boundary-reference PROPERTIES LABELS "unit;qwen3-asr;alignment")
+
+add_executable(test-qwen3-tts-capture test-qwen3-tts-capture.cpp)
+target_include_directories(test-qwen3-tts-capture PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/third_party/c2pa-audio/src
+)
+target_link_libraries(test-qwen3-tts-capture PRIVATE Catch2::Catch2WithMain Threads::Threads)
+catch_discover_tests(test-qwen3-tts-capture
+    TEST_SPEC "[unit][qwen3-tts][capture]"
+    PROPERTIES LABELS "unit;tts;qwen3-tts;capture"
+)
+
+add_executable(test-vibevoice-tts-generation test-vibevoice-tts-generation.cpp)
+target_include_directories(test-vibevoice-tts-generation PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-vibevoice-tts-generation PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-vibevoice-tts-generation PROPERTIES LABELS "unit;vibevoice")
+
+add_executable(test-vibevoice-tts-tokenizer test-vibevoice-tts-tokenizer.cpp)
+target_include_directories(test-vibevoice-tts-tokenizer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test-vibevoice-tts-tokenizer PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(test-vibevoice-tts-tokenizer)
+
+# Explicitly configured base-model cloning checks; no model downloads in CTest.
+if(Python3_EXECUTABLE AND CRISPASR_BUILD_EXAMPLES)
+    foreach(vibevoice_size IN ITEMS 1.5b 7b)
+        add_test(NAME vibevoice-clone-${vibevoice_size}-live
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_clone_live.py
+                --size ${vibevoice_size} --crispasr $<TARGET_FILE:crispasr-cli>
+                --output-dir ${CMAKE_CURRENT_BINARY_DIR}/vibevoice-clone-${vibevoice_size})
+        set_tests_properties(vibevoice-clone-${vibevoice_size}-live PROPERTIES
+            LABELS "live;tts;vibevoice;voice-cloning" SKIP_RETURN_CODE 77
+            RUN_SERIAL TRUE TIMEOUT 14400)
+    endforeach()
+endif()
+if(Python3_EXECUTABLE)
+    add_test(NAME sanitized-python-launch-controls
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_sanitized_python_launch.py -v)
+    set_tests_properties(sanitized-python-launch-controls PROPERTIES LABELS "unit;ci" TIMEOUT 90)
+    add_test(NAME ci-run-status-controls
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_ci_run_status.py -v)
+    set_tests_properties(ci-run-status-controls PROPERTIES LABELS "unit;ci" TIMEOUT 30)
+    add_test(NAME ssm-conv-cuda-contract
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_ssm_conv_cuda_contract.py -v)
+    set_tests_properties(ssm-conv-cuda-contract PROPERTIES LABELS "unit;ggml;backend")
+    add_test(NAME vibevoice-clone-live-controls
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_clone_live_controls.py)
+    set_tests_properties(vibevoice-clone-live-controls PROPERTIES LABELS "unit;vibevoice;voice-cloning")
+    add_test(NAME vibevoice-diffusion-config
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_diffusion_config.py)
+    set_tests_properties(vibevoice-diffusion-config PROPERTIES LABELS "unit;vibevoice" TIMEOUT 30)
+    add_test(NAME vibevoice-token-constraint
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_token_constraint.py)
+    set_tests_properties(vibevoice-token-constraint PROPERTIES LABELS "unit;vibevoice" TIMEOUT 30)
+    if(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_test(NAME vibevoice-base-cfg-rng
+            COMMAND ${CMAKE_COMMAND} -E env "CXX=${CMAKE_CXX_COMPILER}"
+                ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_base_cfg_rng.py)
+        set_tests_properties(vibevoice-base-cfg-rng PROPERTIES LABELS "unit;vibevoice;tts" TIMEOUT 60)
+    endif()
+    add_test(NAME vibevoice-reference-lifetime
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_vibevoice_reference_lifetime.py)
+    set_tests_properties(vibevoice-reference-lifetime PROPERTIES LABELS "unit;vibevoice;voice-cloning" TIMEOUT 30)
+endif()
+
+# Optional upstream CPU parity probe. No model or Python dependency is needed by
+# the normal unit suite; build this target explicitly, then run the companion
+# test_vibevoice_negative_history.py script with --probe and --output-dir.
+add_executable(vibevoice-negative-history-probe EXCLUDE_FROM_ALL vibevoice-negative-history-probe.cpp)
+target_include_directories(vibevoice-negative-history-probe PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(vibevoice-negative-history-probe PRIVATE crispasr-core ggml ggml-base crispasr_link_ggml_cpu Threads::Threads)
+
+include(${PROJECT_SOURCE_DIR}/cmake/SanitizedPythonTests.cmake)
+crispasr_preload_asan_for_python_tests(
+    gguf-detector-metadata haas-dispatch-entrypoints test-quantizer-io)

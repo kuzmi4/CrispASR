@@ -322,6 +322,17 @@ public:
     // override this, or its clones ship unattested and undisclosed.
     virtual std::string voice_bank_path() const { return {}; }
 
+    // True when this adapter resolves a bare `--voice` name against
+    // --voice-dir ITSELF, with a policy the shared step cannot reproduce
+    // (pocket-tts prefers a .safetensors embedding, qwen3-tts a .wav over a
+    // .gguf, tada's .wav clone is opt-in, vibevoice picks per-language packs).
+    //
+    // Every other CAP_VOICE_CLONING backend gets the shared resolution in
+    // crispasr_voice_reference.h before dispatch: `{"voice": "lanyan"}` with
+    // <voice-dir>/lanyan.wav (+ lanyan.txt) reaches it exactly as
+    // `--voice <voice-dir>/lanyan.wav --ref-text "..."` would. #584.
+    virtual bool resolves_voice_dir_itself() const { return false; }
+
     // Sample rate of `synthesize()` output PCM. Defaults to 24 kHz since most
     // TTS backends (kokoro, qwen3-tts, vibevoice, chatterbox, orpheus, indextts)
     // produce 24 kHz. Backends that emit a different rate (e.g. voxcpm2-tts at
@@ -355,6 +366,10 @@ public:
     // user didn't explicitly set --chunk-seconds or --vad. Backends whose
     // encoder degenerates on arbitrary-length chunks (e.g. parakeet-ja)
     // override this to get silence-bounded segments that match training.
+    // True when transcribe() reads params.context (ASR biasing text). Lets the
+    // server warn instead of silently dropping a per-request `context` (#588).
+    virtual bool honours_context() const { return false; }
+
     virtual bool prefers_vad() const { return false; }
 
     // Maximum VAD slice duration (seconds) the backend can decode reliably
@@ -364,6 +379,13 @@ public:
     // energy minima down to this cap before transcription. Only applied on
     // the VAD path when the user didn't pass an explicit --chunk-seconds.
     virtual int vad_slice_cap_seconds() const { return 0; }
+
+    // Whether the issue #89 gap-fill second pass runs by default on the capped
+    // VAD slices (crispasr_gap_fill.h). It exists for parakeet-ja's encoder,
+    // which blanks utterances inside a slice; a bounded-window model without
+    // that defect only gains noise from it (#605). CRISPASR_GAP_FILL overrides
+    // the default either way.
+    virtual bool gap_fill_by_default() const { return vad_slice_cap_seconds() > 0; }
 
     // ISO-639-1 code of the ONLY language this backend can produce, or nullptr
     // if it is multilingual / language-agnostic (the default). A monolingual

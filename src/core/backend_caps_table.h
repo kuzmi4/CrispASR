@@ -121,6 +121,7 @@ static const BackendCaps k_backend_caps[] = {
     {"mimo-asr", 272218u,
      "timestamps-ctc,token-confidence,language-detect,diarize,temperature,beam-search,flash-attn,punctuation-native,"
      "auto-download"},
+    {"mini-bs-roformer", 5251072u, "auto-download,separate"},
     {"mini-omni2", 2171136u, "temperature,auto-download,tts,s2s"},
     {"miotts", 73984u, "temperature,auto-download,tts"},
     {"moonshine", 12106u,
@@ -134,7 +135,7 @@ static const BackendCaps k_backend_caps[] = {
      "timestamps-ctc,token-confidence,diarize,temperature,beam-search,flash-attn,punctuation-toggle,auto-download"},
     {"moonshine-tiny-de-phreak87-onnx", 270336u, "punctuation-native,auto-download"},
     {"moss-audio", 271104u, "temperature,beam-search,punctuation-native,auto-download"},
-    {"moss-diarize", 270913u, "timestamps-native,diarize,beam-search,punctuation-native,auto-download"},
+    {"moss-diarize", 271169u, "timestamps-native,diarize,temperature,beam-search,punctuation-native,auto-download"},
     {"moss-transcribe", 270848u, "beam-search,punctuation-native,auto-download"},
     {"moss-tts", 206080u, "temperature,flash-attn,auto-download,tts,voice-cloning"},
     {"moss-tts-local", 206080u, "temperature,flash-attn,auto-download,tts,voice-cloning"},
@@ -192,6 +193,7 @@ static const BackendCaps k_backend_caps[] = {
      "timestamps-native,word-timestamps,token-confidence,diarize,temperature,beam-search,flash-attn,punctuation-toggle,"
      "auto-download,parallel-processors,unbounded-input,internal-chunking"},
     {"rvc-svc", 8192u, "auto-download"},
+    {"scnet", 5242880u, "separate"},
     {"sensevoice", 11346u, "timestamps-ctc,language-detect,diarize,flash-attn,punctuation-toggle,auto-download"},
     {"sesame", 73984u, "temperature,auto-download,tts"},
     {"sidon", 2097152u, "s2s"},
@@ -207,6 +209,7 @@ static const BackendCaps k_backend_caps[] = {
     {"vibevoice-1.5b", 468034u, "timestamps-ctc,diarize,flash-attn,punctuation-native,auto-download,tts,voice-cloning"},
     {"vibevoice-bitnet", 336962u, "timestamps-ctc,diarize,flash-attn,punctuation-native,auto-download,tts"},
     {"vibevoice-streaming", 8660034u, "timestamps-ctc,diarize,flash-attn,punctuation-native,auto-download,streaming"},
+    {"voice-isolator", 5251072u, "auto-download,separate"},
     {"voxcpm2-tts", 204800u, "auto-download,tts,voice-cloning"},
     {"voxcpm2-vae", 2097152u, "s2s"},
     {"voxtral", 1605482u,
@@ -223,6 +226,8 @@ static const BackendCaps k_backend_caps[] = {
     {"xasr", 270336u, "punctuation-native,auto-download"},
     {"zonos", 75008u, "temperature,flash-attn,auto-download,tts"},
     {"zonos-tts", 75008u, "temperature,flash-attn,auto-download,tts"},
+    {"zonos3", 65792u, "temperature,tts"},
+    {"zonos3-mini", 65792u, "temperature,tts"},
 };
 
 static const int k_backend_caps_count = (int)(sizeof(k_backend_caps) / sizeof(k_backend_caps[0]));

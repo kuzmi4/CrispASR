@@ -108,6 +108,8 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         int     crispasr_session_set_temperature(Pointer session, float temperature, long seed);
         int     crispasr_session_set_tts_seed(Pointer session, long seed);
         int     crispasr_session_set_max_new_tokens(Pointer session, int maxNewTokens);
+        int     crispasr_session_set_autochunk(Pointer session, int enabled, int chunkSeconds);
+        int     crispasr_session_set_max_new_tokens_per_second(Pointer session, float rate, int minimum);
         int     crispasr_session_set_frequency_penalty(Pointer session, float penalty);
         int     crispasr_session_set_tts_steps(Pointer session, int steps);
         int     crispasr_session_set_tts_num_candidates(Pointer session, int n);
@@ -187,6 +189,13 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         long crispasr_align_result_character_t0(Pointer result, int word, int i);
         long crispasr_align_result_character_t1(Pointer result, int word, int i);
         void   crispasr_align_result_free(Pointer result);
+        Pointer crispasr_align_words_ultra_abi(String alignerModel, String headModel,
+                String transcript, float[] pcm, int nSamples, int nThreads);
+        int crispasr_ultra_align_result_n_words(Pointer result);
+        String crispasr_ultra_align_result_word_text(Pointer result, int i);
+        double crispasr_ultra_align_result_word_start_ms(Pointer result, int i);
+        double crispasr_ultra_align_result_word_end_ms(Pointer result, int i);
+        void crispasr_ultra_align_result_free(Pointer result);
 
         // --- Standalone LID (PLAN #59) ---
         int crispasr_detect_language_pcm(float[] samples, int nSamples, int method,
@@ -501,6 +510,18 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         if (rc != 0) throw new IllegalStateException("set_max_new_tokens failed (rc=" + rc + ")");
     }
 
+    /** Control session-level auto-chunking for long audio (> 30 s). */
+    public void setAutochunk(boolean enabled, int chunkSeconds) {
+        int rc = Lib.INSTANCE.crispasr_session_set_autochunk(nativeHandle(), enabled ? 1 : 0, chunkSeconds);
+        if (rc != 0) throw new IllegalStateException("set_autochunk failed (rc=" + rc + ")");
+    }
+
+    /** Set a dynamic token budget proportional to piece audio length. */
+    public void setMaxNewTokensPerSecond(float rate, int minimum) {
+        int rc = Lib.INSTANCE.crispasr_session_set_max_new_tokens_per_second(nativeHandle(), rate, minimum);
+        if (rc != 0) throw new IllegalStateException("set_max_new_tokens_per_second failed (rc=" + rc + ")");
+    }
+
     /** Opt-in repeated generated-token penalty for autoregressive session backends. Pass <= 0 to disable. */
     public void setFrequencyPenalty(float penalty) {
         int rc = Lib.INSTANCE.crispasr_session_set_frequency_penalty(nativeHandle(), penalty);
@@ -673,7 +694,7 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         return translateText(text, sourceLanguage, targetLanguage, 256);
     }
 
-    /** RNNoise denoising of 48 kHz mono PCM. Throws if RNNoise is unavailable in the native build. */
+    /** RNNoise denoising of 16 kHz mono PCM, returning 16 kHz PCM. Throws if RNNoise is unavailable in the native build. */
     public static float[] enhanceAudioRnnoise(float[] pcm) {
         java.util.Objects.requireNonNull(pcm, "pcm");
         if (pcm.length == 0) return new float[0];
@@ -1463,6 +1484,48 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         }
     }
 
+    /** One experimental Ultra local-head word with owned text and times in seconds. */
+    public static final class UltraAlignedWord {
+        public final String text;
+        public final double start, end;
+        UltraAlignedWord(String text, double start, double end) {
+            this.text = text; this.start = start; this.end = end;
+        }
+    }
+
+    /**
+     * Experimental Ultra local-head alignment using base and sidecar GGUF paths.
+     * Audio must be mono 16 kHz PCM, at most 120 seconds. Returned times retain
+     * fractional-millisecond precision as seconds; no character spans are produced.
+     * Requires a native library exporting the Ultra local-head C ABI.
+     */
+    public static UltraAlignedWord[] alignWordsUltra(String alignerModel, String headModel,
+            String transcript, float[] pcm, int nThreads) {
+        for (String value : new String[]{alignerModel, headModel, transcript}) {
+            if (value == null || value.isEmpty() || value.indexOf('\0') >= 0)
+                throw new IllegalArgumentException("Model paths and transcript must be nonempty without NUL");
+        }
+        if (pcm == null || pcm.length == 0 || pcm.length > 120 * 16000)
+            throw new IllegalArgumentException("Audio must contain 1 to 1920000 mono 16 kHz samples");
+        Pointer result = Lib.INSTANCE.crispasr_align_words_ultra_abi(
+                alignerModel, headModel, transcript, pcm, pcm.length, nThreads);
+        if (result == null) throw new IllegalStateException("Ultra local-head alignment failed");
+        try {
+            int count = Lib.INSTANCE.crispasr_ultra_align_result_n_words(result);
+            if (count < 0) throw new IllegalStateException("Invalid Ultra alignment word count");
+            UltraAlignedWord[] words = new UltraAlignedWord[count];
+            for (int i = 0; i < count; i++) {
+                String text = Lib.INSTANCE.crispasr_ultra_align_result_word_text(result, i);
+                words[i] = new UltraAlignedWord(text == null ? "" : text,
+                        Lib.INSTANCE.crispasr_ultra_align_result_word_start_ms(result, i) / 1000.0,
+                        Lib.INSTANCE.crispasr_ultra_align_result_word_end_ms(result, i) / 1000.0);
+            }
+            return words;
+        } finally {
+            Lib.INSTANCE.crispasr_ultra_align_result_free(result);
+        }
+    }
+
     /** Run CTC forced alignment on transcript + audio. */
     public static AlignedWord[] alignWords(String alignerModel, String transcript,
                                             float[] pcm, long tOffsetCs, int nThreads) {
@@ -1512,8 +1575,9 @@ public final class CrispasrSession extends CrispasrSessionTasks implements AutoC
         try {
             float[] raw = outSpans[0].getFloatArray(0, n * 2);
             VADSpan[] spans = new VADSpan[n];
+            // The legacy C ABI returns centiseconds; VADSpan exposes seconds.
             for (int i = 0; i < n; i++)
-                spans[i] = new VADSpan(raw[i * 2], raw[i * 2 + 1]);
+                spans[i] = new VADSpan(raw[i * 2] / 100.0, raw[i * 2 + 1] / 100.0);
             return spans;
         } finally {
             Lib.INSTANCE.crispasr_vad_free(outSpans[0]);

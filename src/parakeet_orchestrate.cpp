@@ -8,6 +8,7 @@
 #include "core/parakeet_word_ranges.h"
 
 #include "core/asr_segment_group.h"
+#include "core/env_gate.h"
 #include "core/sys_mem.h"
 
 #include <algorithm>
@@ -720,6 +721,92 @@ struct enc_progress_bridge {
 };
 } // namespace
 
+bool parakeet_uses_haas_longform(const parakeet_context* ctx) {
+    return ctx && parakeet_predictor_is_kda(ctx) && !core_env::explicitly_off("CRISPASR_HAAS_LONGFORM");
+}
+
+namespace {
+
+// Issue #605: Haas-ja's own long-form recipe (see parakeet_uses_haas_longform):
+// quiet-point chunks of 30 s (or an explicit --chunk-seconds), one pass each,
+// no repair pass — upstream has none, and the #89 gap-fill only invented words
+// on this model. A chunk whose single-pass encode fails (VRAM) falls back to the
+// streamed encoder, like the SINGLE_PASS route.
+// Split one chunk's decode into subtitle-sized segments at pauses
+// (parakeet_cue_starts). Each segment's text is the concatenation of its own
+// tokens, exactly as the decoder builds the full text, so Japanese gets no
+// inserted spaces. Falls back to one segment when tokens cannot be mapped to
+// words one to one.
+std::vector<parakeet_seg> haas_result_to_cues(const parakeet_result* r, int64_t off) {
+    std::vector<parakeet_seg> out;
+    const auto ranges = core_parakeet_words::token_ranges(r->n_tokens, [&](int i) { return r->tokens[i].text; });
+    if (r->n_words <= 1 || ranges.size() != (size_t)r->n_words) {
+        parakeet_seg seg = result_to_seg(r, off);
+        if (!seg.text.empty() || !seg.words.empty())
+            out.push_back(std::move(seg));
+        return out;
+    }
+    std::vector<int64_t> t0, t1;
+    for (int i = 0; i < r->n_words; ++i) {
+        t0.push_back(r->words[i].t0);
+        t1.push_back(r->words[i].t1);
+    }
+    const auto starts = parakeet_cue_starts(t0, t1);
+    for (size_t k = 0; k < starts.size(); ++k) {
+        const int w0 = starts[k];
+        const int w1 = k + 1 < starts.size() ? starts[k + 1] : r->n_words;
+        parakeet_seg seg;
+        for (int wi = w0; wi < w1; ++wi) {
+            const auto& w = r->words[wi];
+            seg.words.push_back({w.text, w.t0, w.t1, w.p});
+        }
+        // Leading tokens before the first word's range (none in practice) ride
+        // with the first cue; trailing ones with the last.
+        const int tk0 = k == 0 ? 0 : ranges[(size_t)w0].first;
+        const int tk1 = k + 1 < starts.size() ? ranges[(size_t)w1].first : r->n_tokens;
+        for (int ti = tk0; ti < tk1; ++ti) {
+            const auto& t = r->tokens[ti];
+            seg.tokens.push_back({t.text, t.id, t.t0, t.t1, t.p});
+            seg.text += t.text;
+        }
+        if (!seg.text.empty() && seg.text[0] == ' ')
+            seg.text.erase(0, 1);
+        seg.t0 = seg.words.front().t0;
+        seg.t1 = seg.words.back().t1;
+        out.push_back(std::move(seg));
+    }
+    return out;
+}
+
+std::vector<parakeet_seg> transcribe_haas_longform(parakeet_context* ctx, const float* samples, int n_samples,
+                                                   int64_t t_offset_cs, const parakeet_orchestrate_opts& opts) {
+    const int SR = 16000;
+    const double chunk_s =
+        opts.chunk_seconds_explicit && opts.chunk_seconds > 0 ? (double)opts.chunk_seconds : kHaasChunkSeconds;
+    const auto bounds = parakeet_quiet_point_bounds(samples, n_samples, SR, chunk_s);
+    if (!opts.no_prints && bounds.size() > 1)
+        fprintf(stderr, "crispasr[parakeet]: route=haas-longform %zu chunk(s) of <= %.0f s cut at quiet points\n",
+                bounds.size(), chunk_s + kHaasSearchSeconds);
+    std::vector<parakeet_seg> out;
+    for (const auto& b : bounds) {
+        const int n = b.second - b.first;
+        const int64_t off = t_offset_cs + (int64_t)b.first * 100 / SR;
+        parakeet_result* r = parakeet_transcribe_ex(ctx, samples + b.first, n, off);
+        if (!r)
+            r = parakeet_transcribe_streamed_progress(ctx, samples + b.first, n, off, 30, 2, nullptr, nullptr);
+        if (r) {
+            for (auto& seg : haas_result_to_cues(r, off))
+                out.push_back(std::move(seg));
+            parakeet_result_free(r);
+        }
+        if (opts.on_progress)
+            opts.on_progress(b.second, n_samples);
+    }
+    return out;
+}
+
+} // namespace
+
 std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, const float* samples, int n_samples,
                                                        int64_t t_offset_cs, bool is_ja,
                                                        const parakeet_orchestrate_opts& opts, bool* failed) {
@@ -731,6 +818,9 @@ std::vector<parakeet_seg> parakeet_transcribe_segments(parakeet_context* ctx, co
             *failed = true;
         return std::vector<parakeet_seg>{};
     };
+
+    if (parakeet_uses_haas_longform(ctx))
+        return transcribe_haas_longform(ctx, samples, n_samples, t_offset_cs, opts);
 
     const int SR = 16000;
 

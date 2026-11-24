@@ -491,7 +491,8 @@ struct whisper_params {
     // Runs the CTC aligner (canary-ctc / wav2vec2 / qwen3-fa) without
     // requiring an ASR model or transcription step.
     bool align_only = false;
-    std::string text_file; // path to .txt or .srt (text extracted, timestamps stripped)
+    std::string ultra_head; // optional separately converted Ultra local-head GGUF
+    std::string text_file;  // path to .txt or .srt (text extracted, timestamps stripped)
     // Output granularity: "word" = one entry per aligned word; "segment" =
     // one entry per input SRT cue (or per non-empty .txt line), re-timed
     // from the word alignment; "auto" = segment for .srt input, word otherwise.
@@ -564,6 +565,8 @@ struct whisper_params {
     // Machine-readable provenance (watermark + C2PA) is always retained.
     // CLI: --no-spoken-disclaimer   Server: "spoken_disclaimer": false
     bool tts_no_spoken_disclaimer = false;
+    // Internal neutral disclosure request: suppress reference environment fallback.
+    bool tts_force_neutral_voice = false;
 
     // Turn off the imperceptible AI-content watermark on TTS output.
     // Equivalent to the CRISPASR_NO_WATERMARK env var; both emit a one-time
@@ -610,6 +613,12 @@ struct whisper_params {
     // WAV/PCM/f32 dispatch. Default 1.0 = no resample. The CLI ignores
     // this; only the server route reads it.
     float tts_speed = 1.0f;
+
+    // Opt-in Qwen3-TTS capture correlation and source-text pairing. These
+    // fields are populated only when CRISPASR_QWEN3_TTS_CAPTURE_DIR is enabled.
+    std::string tts_capture_request_id;
+    std::string tts_capture_source_text;
+    bool tts_capture_suppress = false;
 
     // Exact target duration in seconds for backends with native length control
     // (omnivoice; upstream OmniVoice `duration` parity). 0 = use the backend's

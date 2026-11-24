@@ -1,3 +1,226 @@
+## 2026-11-24 — Context-Assist production line merged onto upstream `main` past v0.8.55
+
+Upstream `main` (`1851d538`, 419 commits over the previous base, covering releases
+v0.8.50–v0.8.55) is merged under the Context-Assist patches. `VERSION` moves
+0.8.49 → 0.8.55 and the `ggml` pointer `e2ae679` → `7c0a9284`; the Metal cache-flush
+patch still applies unchanged.
+
+Two source conflicts, both resolved by keeping both sides:
+
+- `crispasr_c_api.cpp` — upstream's per-piece token budget (#574) restores
+  `max_new_tokens` after every piece; F3 still fails the whole call on a failed piece
+  instead of continuing with partial text. The restore now runs on that path too, so a
+  failed call does not leave the caller's session holding the piece budget.
+- `models/convert-parakeet-to-gguf.py` — F7's license/source metadata flags and
+  upstream's `--clean-mode` (Fluid Speech) both added a parameter in the same position;
+  the converter takes both.
+
+One fork-side test fix: upstream's `tests/test_session_utf8.py` compiles the extracted
+session entry points and had stubbed the pre-F3 shape, so it was red from the day the F3
+patch landed, on the old pin as well as here. The harness now supplies the error-category
+symbols and a `session_transcribe_lang_impl` that mirrors the production single-run
+branch (transcribe → hygiene → punc model → UTF-8 normalize → callbacks).
+
+New for the app in this base: session auto-chunking and piece-proportional token budgets
+(#574); the session beam-size re-enable fix for the backends that gate on `beam_size > 1`
+(canary, cohere, glm-asr, kyutai, firered, moonshine, omniasr, sensevoice — parakeet and
+nemotron are unaffected, the fork forwards their beam unconditionally); Fluid Speech Pro
+on the parakeet runtime (#595); the Qwen3-ForcedAligner-Ultra path (#579);
+fastconformer-ctc punctuation for punctuated vocabularies (#597); and the Q4_K/Q8_0
+PREC_F32 Metal kernels this ggml pin restores. The mel/STFT/LFR and conformer CPU
+acceleration is **not** new here — it shipped inside `ca-0.8.49.1`.
+
+Verification: build green (972 targets); the CI gate (`context-assist-tests` +
+`ctest -L unit -L context-assist`) 4/4; full local sweep
+`ctest -L "unit|context-assist" -LE live` 2283 tests, 2261 pass, and the 22 failures are
+21 Python tests with no `numpy` on this workstation plus `test-python-api-coverage`,
+which is red on upstream `main` too (two of its four unwrapped symbols are upstream's).
+Patches intact by content: 26/26 `Context-Assist` anchors in the same ten files, the TDT
+blank-dominant gate, the `reject_external_file` model gate, session beam forwarding for
+parakeet/nemotron, and the `unbounded-input`/`internal-chunking` verbs in the caps table.
+
+## 2026-11-24 — CUDA FA: head size 512 decode back to pre-sync speed on Turing
+
+- **Regression from the ggml sync:** upstream `bd37ba0d` (FA MMA support for padded head sizes) made hs512 f16 decode 19 % slower on T4 (alternating A/B, 5 rounds, 1.181–1.199; prefill +3.6 %; hs256/hs128/q8_0 unchanged). The new `min(..., DKQ/2)` / `min(..., DV)` bounds are no-ops when the head size needs no padding, but they change nvcc's register allocation: `flash_attn_ext_f16<512,512,1,8>` spills 96 B instead of 48 B at 255 registers, `<512,512,16,2>` 136 B.
+- **Fix** (ggml `7c0a9284`, CrispASR patch): `DKQp == DKQ` / `DVp == DV` select the old expressions at compile time; padded head sizes keep upstream's code. Stack back to 48 B for both; T4 A/B against our previous ggml pin: hs512 decode ×0.841 (0.837–0.843), hs512 prefill ×1.004, hs256 decode ×0.997, hs256 prefill ×0.999, hs128 ×1.002. Tool: `tools/kaggle/ggml-cuda-fa-fix-ab` (`AB_A`/`AB_B` revs for `ggml-cuda-fa-ab`).
+
+## 2026-11-23 — bt2-tts: runaway guard and per-request cap (#609)
+
+- **Breeze TTS 2 runaways (#609):** the model sometimes misses EOS and keeps talking after the text — it recites the instruction, then babbles to `max_new_tokens`. Upstream's own Python (`breezeblue-ai/breeze-tts` a43d19e, bf16) does the same at the same rate on the reporter's payloads (48 identical cases, parakeet round trip, runaway = 4+ extra words: ours 5, upstream 6 at CFG 1; ours 30, upstream 28 at CFG 4), so this is the model, and CFG 4 makes it far worse with a long instruction. EOS traces (`CRISPASR_BREEZE_EOS_TRACE`) show the end-of-speech probability is low (≤ 0.09) where the text should end in every runaway, so no EOS threshold can catch them.
+- **Length guard** (`src/breeze_tts_2.cpp` `length_budget`, on by default): a sampled attempt that runs past 40 + 10 frames per text token without ending is resampled (up to 3 tries, deterministic per seed), then given the full cap, so slow speech is never cut. Normal reads use ~4 frames/token. Kaggle T4, 130 runs: runaways 9 → 3 (the three left are short tails, ≤ 12.4 s), longest output 120 s → 12.4 s, total time −20 %; the 123 runs where it did not fire are frame-identical to unguarded. CPU, 32 runs: no false trigger. Off with `breeze_tts_2_set_length_guard(ctx, 0)` or `CRISPASR_BT2_LENGTH_GUARD=0`.
+- **Server `max_new_tokens`** (c12523fdf): the request's value was parsed but bt2-tts read the cap only at init; now applied per request. A backbone cache that fills before the cap is reported instead of ending as if EOS had come.
+- **Kaggle tooling:** `tools/kaggle/bt2-609-eos` (EOS traces + guard counts, `BT2_CPU_ONLY`), `bt2-609-cfg` (ours vs upstream at CFG 1/4), `bt2-609-guard-cpu`.
+
+## 2026-11-23 — arm64 builds run on Raspberry Pi 4/5 (#607); GPU plugin load errors reported (#606); VibeVoice references (#589, #608); ggml sync checked on CUDA and ARM
+
+- **arm64 Linux release on CPUs without SVE / dotprod (#607):** `build-linux-arm64` was built `GGML_NATIVE` on the runner (Neoverse, SVE), so v0.8.55 died with "Illegal instruction" on a Pi 5 (Cortex-A76) and a Pi 4. It now ships `GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS` CPU backends (armv8.0 … armv8.6, plus armv9.2 SME where the compiler accepts it) and picks one at run time. The library builds target `armv8.2-a+dotprod+fp16`, with an objdump gate against SVE instructions. A new release step runs the packaged CLI under qemu-user as `max,sve=off` (Pi 5-like) and `cortex-a72` (Pi 4) and checks the JFK transcript. CI proof: v0.8.55 rc 132 under qemu; the new package loads `armv8.2_2` and `armv8.0_1` and transcribes correctly.
+- **ggml fork** (`434c2d79`, guards in `ci/crispasr-patches.txt`, now 51):
+  - ARM NEON `ggml_vec_dot_f16_f32`. llama/31854 keeps F16 MUL_MAT's src1 in F32 and fused only x86, so ARM fell back to scalar. `ggml-cpu-perf-ab` on GitHub runners: ARM F16 geomean new/old 1.019 (was a regression before the fix), x86-64 0.363, q8_0 ≈ 0.99.
+  - armv9.2 SME CPU variants are added only if the compiler accepts `-march=armv9.2-a+…+sme`; GCC 11 (Ubuntu 22.04, our glibc floor) does not.
+  - `ggml-cuda.cu` declares the four NVML symbols it uses when `<nvml.h>` is absent (the NVML probe only dlopens the library). Minimal CUDA toolkits (Jimver sub-packages, redist zips) have no header.
+- **GPU plugin diagnostics (#606):** a `libggml-cuda.so` that does not load (missing `libcudart.so.13` / `libcublas.so.13`) was dropped silently and the run went to the CPU. `crispasr_report_unloaded_gpu_plugins` re-opens each GPU plugin next to the executable that did not register and prints the loader error plus the package to install (`cuda-cudart-<M>-0 libcublas-<M>-0`, or the ROCm major). The CLI warns in one line; `--diag` prints the full report. `docs/install.md` names the runtime libraries. CI (linux-backend-dl) asserts the message with a fake plugin linked against a deleted stub `libcublas.so.13`.
+- **VibeVoice voice references (#589, #608):** the WAV reader accepted only mono PCM16, so a stereo, 24-bit or float reference was dropped and the model spoke in its generic voice without saying so. `vibevoice_parse_wav_mono` now reads PCM 8/16/24/32-bit and float 32/64 (also WAVE_FORMAT_EXTENSIBLE), averages channels, and a reference that still yields no samples is an error. The stereo copy of the reporter's file gives sample-identical PCM to the mono one. #608 (contributed): the library's `set_voice_samples` keeps its temp WAV until synthesis, since VibeVoice reads the reference then.
+- **CUDA check of the ggml sync** (Kaggle T4, `tools/kaggle/ggml-sync-cuda-ab`): `test-backend-ops -b CUDA0` 20954/20954; parakeet and whisper JFK text identical CUDA vs CPU. Speed new/old (time, geomean): MUL_MAT 1.008, MUL_MAT_ID 0.853, FLASH_ATTN_EXT 1.085. Head sizes 64/128 are neutral and 72 is 3.7× faster, but 512 is 1.33–1.40× slower at decode and 1.15–1.20× at prefill, and 256 is 1.06×. gemma4-e2b uses head dim 512, so `tools/kaggle/ggml-cuda-fa-bisect` is bisecting it.
+- **Tooling:** `tools/check-workflow-run-blocks.py` treats custom `python3 {0}` / node shells as non-shell. New `ggml-cpu-perf-ab` workflow (old vs new ggml rev, ARM + x86 runners).
+
+## 2026-11-23 — ggml synced with upstream ggml + llama.cpp 1014775c; CTC beam search fixed; all local ctest green
+
+- **ggml sync** (fork `crispstrobe-ops` `717f46e9`): merged upstream ggml `d9fe7bff`, then the 118 llama.cpp ggml commits since `5676dfbe` (`scripts/sync-llama.last` → `1014775c`). Removed APIs ported in 20 files: `ggml_mul_mat_set_prec` / `ggml_flash_attn_ext_set_prec` → `ggml_prec_set_acc`; cohere's legacy `DIAG_MASK_INF` path → `ggml_soft_max_ext` with the mask.
+- **Custom patches audited** (`ci/crispasr-patches.txt`, 48 kept): dropped those upstream now owns (CPU #38 fixes, WebGPU ARANGE/POOL_2D, the CUDA per-head FA mask option); kept and re-merged our ops (SIGLU, AA_SNAKE_BETA, NORM_AFFINE, CONV_TRANSPOSE_2D on WebGPU), the sched src-rewire, Vulkan `GGML_VK_FORCE_NON_UMA` / `GGML_VK_FORCE_INTEGER_DOT_PRODUCT`, Metal FA/TQ refusals, the HIP fp8 typedef. New: bf16 SIGLU on CPU (upstream's GLU tests now cover bf16), CUDA SSM_CONV widths 2/7.
+- **Metal fusion alias bug** (new, upstream row 25 in `tools/upstream-prs/README.md`): a fused norm/mul/add chain whose output aliased an in-place residual ADD operand garbled Kokoro on Metal ("Hello world"). The full-fusion path now refuses overlapping buffers.
+- **CTC prefix beam search** (`src/core/ctc.h`): the two repeat-token rules were swapped (a repeat extended the prefix from `p_nb` and collapsed from `p_b`). Rewritten on a parent/token trie; new exact-probability tests.
+- **Tests:** all 22 failing local ctest entries fixed, including the zonos3 live test's Accelerate link, bit-identical tiled iSTFT, Catch2 label/`SKIP_RETURN_CODE` handling, licence-gated paraformer skip (77), and bash-3.2 / `TMPDIR` portability.
+- **CI:** windows-cublas installs `cuda_nvml_dev` (upstream's NVML probe includes `nvml.h`) and CUDA 11.8's own cuBLAS 11.11.3.6 (the pinned 11.8.1.74 predates the FP8 cublasLt attributes).
+- **Evidence:** Metal `test-backend-ops` all pass; Vulkan/MoltenVK 23327/23327; full-ci build all backends green; ASR outputs identical old vs new ggml for parakeet, wav2vec2, fastconformer-ctc, data2vec, hubert, moonshine, whisper; Kokoro CPU bit-identical. Not yet measured: CUDA Q4 and ARM CPU F16 matmul speed.
+
+## 2026-11-22 — Extended nightly: outetts repetition penalty, disclaimer strip, MinGW test build
+
+- **outetts** (`src/outetts.cpp`): the repetition penalty divided a token's logit once per previous OCCURRENCE (1.1^k). Upstream OuteTTS 0.3 samples through HF `generate(repetition_penalty)` / llama.cpp `repeat_penalty`, which penalise each distinct context token once. Now the same, over prompt + generated, through the shared `core/repetition_penalty.h` (moved from `breeze_cfg.h`, #594). The nightly roundtrip had failed on 11-17, 11-20 and 11-22 ("…over the le the crit doll the dou b…"); one seeded sample flipped with the runner CPU. Kaggle CPU A/B, 12 seeds, parakeet roundtrip: mean WER 0.176 → 0.019, exact 4/12 → 10/12, worst 0.89 → 0.11.
+- **Regression harness** (`tests/regression/run_one.py`): `strip_ai_disclaimer` compared words positionally, so ASR merging "This audio" into "Saudio" shifted every word and cosyvoice3-0.5b failed with a perfect phrase (WER 0.67). It now strips the best edit-distance-aligned prefix (n±3 words, ≤2 edits).
+- **msys2 build**: `test-core-gap-fill-policy` used POSIX `setenv`; now `_putenv_s` on Windows.
+
+## 2026-11-21 — VibeVoice on AMD Vulkan: integer-dot matmul NaNs; CLI follows the checkpoint (#589)
+
+- **ASR and voice cloning on Vulkan** (`ggml` `ef9e36f6`, backport of llama.cpp `411d548515`): ggml-vulkan's integer-dot matmul (MMQ) skipped the A-side shared-memory write for k steps past the end but still read those slots, so a stale or uninitialized scale reached `A.dm * (q_sum * B.d - B.s)` and produced NaN. RADV takes this path by default when the GPU has integer dot product (the reporter's RX 6800). VibeVoice-ASR 7B decoded only token 0 ("!!!!"), and base TTS lost cloning. Reproduced on an M1 with MoltenVK and `GGML_VK_FORCE_INTEGER_DOT_PRODUCT=1`:
+  - `test-backend-ops -o MUL_MAT`: 10 / 1619 NaN, a different set each run → 1619 / 1619 three times.
+  - ASR JFK: "!!!!" → the correct transcript.
+  - 1.5B base TTS: silence → clone; speaker cosine 0.737 vs 0.566 for the no-reference baseline.
+- **CLI follows the checkpoint, not the alias:** every VibeVoice GGUF auto-detects as `vibevoice` by file name, and a TTS checkpoint there used to fail with "use --backend vibevoice-tts". Under that alias, the base 7B was then treated as the realtime model and asked for a voice pack. Now a TTS checkpoint is kept for `--tts` and in server mode. Base checkpoints (1.5B, 7B) synthesize a generic voice without one and clone from a WAV. Only the realtime 0.5B requires a voice prompt: without one it garbles text ("quick brown farts" in an ASR roundtrip). New `vibevoice_is_realtime_tts()`; the library warns once when a realtime model runs without a voice.
+
+## 2026-11-21 — Haas-ja: subtitle-sized segments within a 30 s chunk (#605)
+
+- **Regression caught before release:** with the upstream long-form recipe (`ba4aec81`), each 30 s chunk came back as one segment, so `--output-srt` wrote 24-29 s cues (7 on the #605 file). With `--vad` the 30 s slices did the same (up to 25 s). The 12 s VAD slices used to double as cue boundaries.
+- **Fix:** `parakeet_cue_starts` cuts a chunk's words into segments at pauses of >= 0.6 s and before 12 s. Each segment's text is its own tokens concatenated, as the decoder builds the full text, so Japanese gets no spaces and the transcript is byte-identical. #605 file: 27 cues, median 1.4 s, max 9.7 s without VAD; 29 cues, max 8.9 s with `--vad`. Session C ABI: same 27 segments.
+
+## 2026-11-21 — Haas-ja: byte-fallback kanji restored; accuracy verified against the original model (#605)
+
+- **Bug:** Haas-ja's SentencePiece vocabulary spells kanji outside its 3,072 pieces as `<0xHH>` byte pieces (256 of them; parakeet-ja has none). `spiece_to_text` treated every `<...>` piece as a control token, so those characters vanished: 骨董品 → 骨品, and 娯, 徘徊, 焉, 竣, 踵, 癌, 塵 were lost. The new `core_spm::piece_to_text` (`src/core/spm_piece.h`) decodes byte pieces to their raw byte; consecutive tokens reassemble the character. `test-core-spm-piece` failed on the old behaviour.
+- **Verification** (`tools/kaggle/haas-ja-bench-verify`, upstream eval script, jacer v1.2): the original model reproduces its model card. FLEURS 3.67 / 2.98 / 2.35 % (card 3.67 / 2.98 / 2.34), JSUT 5.33 / 2.44 / 1.37 % (card 5.32 / 2.43 / 1.36). CrispASR Q8_0 on the same FLEURS audio: 3.77 / 3.11 / 2.54 % before the fix, 3.69 / 3.02 / 2.36 % after; 605 / 650 transcripts byte-identical to the original.
+
+## 2026-11-21 — Haas-ja uses its upstream long-form recipe (#605)
+
+- **Change:** Haas-ja no longer inherits parakeet-ja's #89 long-audio workarounds (VAD forced on, 12 s slices). Like upstream `haas_asr.transcribe_longform`, it cuts 30 s chunks at the quietest 0.1 s within 2 s of each target and decodes each in one pass. `parakeet_quiet_point_bounds` is a sample-exact port of `split_at_quiet_points` (unit-tested against the upstream Python). An explicit `--vad` caps slices at 30 s. The session C ABI takes the same route. `CRISPASR_HAAS_LONGFORM=0` restores the old path.
+- **Original model check:** Kaggle kernel `tools/kaggle/haas-ja-blueprint-longform` ran the upstream code (NeMo 2.7.3, flash-linear-attention 0.5.2, T4) on the #605 file. bf16 and fp32 gave identical text. Our port on the same chunks is byte-identical in 6 of 7 chunks; the seventh differs by one character (数の子 / 数子).
+- **Evidence** (bigram recall / precision, `tools/asr_coverage_score.py --strip-latin --reading`):
+  - #605 file vs whisper-turbo: 75.7 / 85.0 → 80.7 / 83.9. The original model scores 80.4 / 83.6.
+  - #605 file vs whisper-large-v3: 62.9 / 77.4 → 70.4 / 80.2.
+  - The two whisper references agree with each other only 72.1 / 79.0 on this audio, which bounds what any score against them means.
+  - #89 podcast: 96.9 / 96.8 → 95.7 / 97.3 (no regression).
+
+## 2026-11-21 — Gap-fill stops inventing subtitles on noisy JA audio (#605)
+
+- **Report:** Haas-ja on a 3-minute game stream (`--vad`, FireRed VAD) gave 45 cues with gap-fill against 19 without. Many were short and wrong: "隠しのように" in a pause, a 9 s "ーーっ。っ。" over game audio, "はい" doubled as "はい。".
+- **Cause:** the #89 gap-fill re-transcribes every >= 1 s empty span in a slice. On parakeet-ja that recovers speech its encoder blanked; on this audio the spans were pauses and sound effects, and a short window of noise makes the TDT decoder invent words. The CLI pass also lacked the seam guard the library's non-JA repair already had.
+- **Fix** (shared `src/core/gap_fill_policy.h`, used by the CLI/server pass and the session C ABI):
+  - Haas-ja (KDA predictor, new `parakeet_predictor_is_kda()`) defaults gap-fill off. `CRISPASR_GAP_FILL=1` forces it.
+  - A recovered run is kept only if its mean token confidence reaches 0.85 (`CRISPASR_GAP_FILL_MIN_CONF`). First-pass words sit at median 0.997, the junk at 0.1-0.6.
+  - A recovered word repeating a kept word within 0.5 s (punctuation-insensitive) is dropped.
+- **Evidence** (bigram recall / precision vs whisper-large-v3-turbo, `tools/asr_coverage_score.py --strip-latin --reading`, M1):
+  - #605 clip, CLI: Haas-ja default = the reporter's `GAP_FILL=0` output byte for byte (75.7 / 85.0, 19 cues; was 77.7 / 75.0, 49 cues). Forced on: 76.8 / 84.9, 21 cues. parakeet-ja: 76.0 / 75.0 → 75.5 / 77.8.
+  - #605 clip, session ABI: Haas-ja 79.0 / 67.1 → 78.2 / 83.7; parakeet-ja 78.7 / 59.6 → 77.4 / 68.8.
+  - #89 podcast (60 s / 120 s): parakeet-ja keeps every recovery (95.7 / 93.4 and 96.0 / 92.6, unchanged). Haas-ja without gap-fill 96.9 / 89.7 and 96.8 / 90.5, the same as with it.
+- **Tests:** `test-issue-605-gap-fill-junk` (scripted backend; failed before the fix on the pause junk and the seam duplicate) and `test-core-gap-fill-policy`.
+
+## 2026-11-20 — `--punc-model pcs` downloads the mixed-precision PCS file
+
+- **Change:** `pcs` now resolves to `pcs-xlmr-base-q4_k-mixed.gguf`, pinned to `cstr/pcs-xlmr-base-GGUF@a685c2ea` (SHA-256 `341c26b8…2839`, 167 MB). The file is Q4_K + imatrix with encoder layer 0 and the truecase head at Q8_0. The previous plain-Q4_K default stays selectable as `pcs-q4k`; the Q4_K + imatrix file is `pcs-q4k-imatrix`.
+- **Why:** both all-4-bit files lose a casing decision: "I'm OK" becomes "I'm ok" with plain Q4_K and "I'm oK" with Q4_K + imatrix. The mixed file matches the original model on CrispEmbed's PCS parity corpus: 67/67 on all four heads and 6/6 decoded lines exact. In an exact replay of the original graph, the `o` logit is +0.688; it is −0.238 for Q4_K + imatrix and +1.083 for F32. Selection and gate: CrispEmbed `docs/pcs-quality-root-cause.md` and `tests/results/pcs/mixed-q4-selection-20261120.json`.
+- **Tests:** `test_punc_resolve` covers the new default and both kept aliases. The Hub card now gives the correct upstream licence (Apache-2.0, not MIT) and every file's SHA-256.
+
+## 2026-11-20 — Mini-BS-RoFormer runs on Metal again (#568)
+
+- **Change:** the v0.8.50 CPU fallback on Metal is removed. `CRISPASR_MINI_BS_ROFORMER_METAL=0` (or `false`/`off`/`no`) forces the CPU as a kill switch; the old `=1` opt-in is now the default.
+- **Evidence:** physical Apple M1, main `c555668f`, ggml `97098170` (restored Q8_0/Q4_K PREC_F32 Metal kernels). F16/Q8_0/Q4_K × shared/per-stem decoder on speech plus a synthetic band: vocals RMS identical to CPU, vocals SDR within 0.02 dB, Metal-vs-CPU vocals SNR 63–84 dB. Details in `docs/mini-bs-roformer-validation.md`.
+
+## 2026-11-19 — ZONOS3-Mini TTS backend (#603)
+
+- **Backend:** `--backend zonos3` runs Zyphra/ZONOS3-Mini. The 11-layer hybrid has 9 Gated DeltaNet and 2 global GQA layers, Full AttnRes and a latent 64-expert top-2 MoE. It emits 10x4096 delayed codes at 15 Hz, decoded by the mossdual iSTFT codec at 44.1 kHz. The backend loads Zyphra's GGUFs unchanged (`backbone-ptq.gguf`: Q4_0 experts and Q8_0 mixer, Apache-2.0; `zac-keep2.gguf`), so there is no converter and no cstr/ upload. `src/zonos3/` is vendored from Zyphra's MIT ggml server at a50e141, trimmed only where our ggml lacks upstream's Metal `conv_1d_implicit` patch (encoder-only path).
+- **Wiring:** CLI adapter (`--voice <name>.embedding.npy`, `--codec-model`), C ABI session, bindings docs, caps table, Go LDFLAGS, feature matrix, live test `test-zonos3-live`, regression entry `zonos3-mini-en` (extended matrix). zonos3 is exempt from TTS sentence splitting: upstream generates the whole text in one pass.
+- **Diff harness** (`tools/zonos3_diff.py`, against the unmodified upstream `zonos3-cli --validate`, 185 prefill stages, greedy):
+  - input ids are exact;
+  - embeddings reach cos 1.000000;
+  - logits cos 0.99992 (EN) / 0.99970 (DE).
+  - The residual is ggml-version accumulation order (ours 0.26, upstream 0.27). It compounds through near-tie MoE expert flips (2nd/3rd-choice margins 0.0005–0.03).
+  - Control: upstream against itself with only `GGML_LLAMAFILE` toggled differs by the same order (logits cos 0.99994, a different greedy EOS).
+  - Codec only (our decoder on upstream codes): same sample count, cos 0.99997, SNR 42 dB, identical RMS.
+- **Roundtrip** (canary-1b-v2 ASR):
+  - greedy EN and DE are WER 0, for ours and upstream alike;
+  - sampled EN (Cillian) is WER 0;
+  - sampled DE (Wolfgang) differs only in the numeral form ("zwanzig" → "20").
+- **Open:** WAV cloning (`spk-encoder.gguf`, `zac-encoder.gguf`) and upstream text normalization (`zyphra-textnorm`) are not wired; there is no `-m auto` registry entry yet.
+
+## 2026-11-18 — Shared sentence-end rule for TTS chunking and subtitles
+
+- **Problem:** `crispasr_tts_split_sentences` and `--split-on-punct` ended a sentence at every ". ", so German ordinals and abbreviations split mid-phrase ("am 24. | November", "Dr. | Sieben", "z. | B.") — an audible pause in TTS, a broken subtitle cue.
+- **Fix:** `examples/cli/crispasr_sentence_end.h` reuses live translation's unit-tested `lt_ends_sentence` for the word ending in `.`; ellipses and a closing bracket/quote before the dot still end the piece. `CRISPASR_SENTENCE_ABBREV=0` restores the old rule.
+- **Measured** on 1,776 human-segmented UD German GSD r2.14 dev+test sentences joined into 356 five-sentence paragraphs (1,420 internal boundaries), both splitters: false splits 72 → 8, missed boundaries 147 → 148 ("der FR."), F1 0.921 → 0.942. Live translation (unchanged) 7 / 129. spaCy `de_core_news_sm` senter for comparison: 57 false / 63 missed — not adopted.
+- **Tests:** `test_server_chunking` (abbreviation case now keeps "Mr. Smith"; new year/ellipsis/bracket and opt-out cases) and new `test-sentence-end-abbrev` (text-only and word-timed display segments).
+
+## 2026-11-07 — Forced aligners join the nightly regression; Ultra GGUF published
+
+- **Aligner regression kind:** `tests/regression/manifest.json` gains `align_backends`, with `align_for()` and `compare_alignment()` in `run_one.py`. The nightly runs three entries:
+  - Qwen3-ForcedAligner-0.6B F16 and Ultra base F16, both compared with upstream `qwen-asr` word timestamps (exact locally, tolerance one 80 ms class);
+  - canary-ctc-aligner Q4_K, against a native capture.
+- **Selection:** `tools/regression_select.py` maps the aligner sources to these entries.
+- **Per-model schedule removed:** the weekly Ultra cron is dropped; the manual Ultra audit stays.
+- **Ultra published:** the F16 GGUF is published as `cstr/qwen3-forced-aligner-ultra-GGUF@992f8360` (Apache-2.0), with the registry name `qwen3-forced-aligner-ultra`.
+- **Dispatch fix:** the aligner dispatch also accepts the upstream `ForcedAligner` spelling, with a unit test.
+- **SCNet:** qualification 42371575575 passed with the new real-model short-input and short-tail controls (#566 review item 2 verified).
+
+## 2026-11-07 — v0.8.51 published to PyPI and verified
+
+v0.8.51 (`008a771c5`) shipped:
+
+- the VoxCPM2 long-sentence VAE fix (#164);
+- the session auto-chunking and token-budget controls (#574);
+- opt-in Qwen3-TTS capture (#576);
+- off-value handling in `env_gate` (#572).
+
+PyPI publication was blocked because the wheel workflow's `macos-14` runner label is now rejected. `06a620d59` moved all `macos-14` uses to `macos-15`, and the wheel run was redispatched as 42359206396. Native audit 42334728938 and wheel audit 42360358086 are accepted.
+
+Also merged: PRs #582 (Qwen3-ForcedAligner-Ultra base audit) and #583 (RE-USE CPU reference audit), both #579 groundwork.
+
+## 2026-11-03 — v0.8.50 published and verified
+
+Release 41675510092 (attempt 2 after a starved macOS job; 52 assets), wrappers 41675510012, Docker 41675510045. Native audit 41710437654 and wheel audit 41718388489 accepted. PyPI files came from wheel run 41706418193; a duplicate `workflow_run` wheel run (41710320363) rebuilt different bytes, so that run's cancelled GPU-index job was rerun and the audit pointed at it. Closed #562, #564, #569, #570; #568 open (Metal falls back to CPU).
+
+## 2026-11-03 — v0.8.50 tagged; integration fixes; publication pending
+
+`v0.8.50` → `5c96e5521` (annotated). Gates on that tree: CI and Lint on `f40f45d6e` (same tree), Lint Deep on `5c96e5521`, SCNet qualification 41615896059 (both sizes, on main at `b6ec24da2`). Integration fixes after the SCNet squash:
+
+- `b6ec24da2` collapsed duplicated Metal `setenv` guards, which had broken every build.
+- `759e78a12` stubbed the #570 consent helper in `test_issue560_lid_only.py`, and routed three SCNet `char*`→`float*` casts through `void*` for cppcheck 2.7.
+- #571 restored the `"MTL"` match in `core_cpu_backend::is_metal`.
+
+Release run 41675510092, wrappers 41675510012 and Docker 41675510045 were in flight at hand-off. Native and wheel audits are pending (PLAN lanes R1–R2).
+
+## 2026-11-03 — v0.8.50 Mini-BS-RoFormer, SCNet, MeanVC2, and #564/#567–#570
+
+Release v0.8.50 ships native Mini-BS-RoFormer V2.5 (#562) and SCNet/SCNet-large (#566)
+separation. SCNet is a squash of the qualified candidate `7b6a88360`, from hosted run 41520873570.
+On Metal, Mini-BS-RoFormer falls back to the CPU until #568 is fixed.
+Also included: the #564 MOSS-Diarize beam/sampling, the #567 parakeet-unified tokenizer fix,
+#569 (moss-audio no longer pads to 30 s: 11 s JFK gives 138 tokens, was 375), #570 (LID downloads
+need consent, verified locally with an empty cache), Haas-ja (#561), MeanVC2 and broad CPU
+performance work. Integration fixes: the Windows `setenv` guard and the duplicated guard
+left by the SCNet squash (`b6ec24da2`).
+
+## 2026-11-02 — Lint Deep green, #564 MOSS-Diarize sampling, #567 parakeet-unified tokenizer
+
+Lint Deep (cppcheck 2.7) is green again after four fixes: the ArkTTS destructor no
+longer calls a virtual, the Mini-BS-RoFormer finiteness lambda became a function,
+the parakeet KDA null check was simplified, and the new sampler comparator was split.
+#564: MOSS-Transcribe-Diarize now honours the Session/CLI beam size and gains
+optional HF-order sampling (temperature → top-k → top-p, seeded) via the shared
+`src/core/logit_sampler.h`; greedy remains default and beam search takes precedence.
+Hosted CPU acceptance **41417217786** passed on JFK (CLI and Python Session).
+#567: `cstr/parakeet-unified-en-0.6b-GGUF` shipped parakeet-rnnt-0.6b's token list
+(same size, different order). The unified `.nemo` is a tar holding its own
+`tokenizer.model`; the converter now uses it and asserts the last piece is `¥`.
+Both published files were rewritten (weights unchanged) and decode JFK exactly; the
+card now names the correct base model, RNNT decoder and NVIDIA Open Model License.
+Replies posted on #562 (Mini-BS-RoFormer usage) and draft PR #566 (SCNet review).
+
 ## 2026-10-31 — Context-Assist production line merged onto upstream v0.8.49
 
 Upstream `v0.8.49` is merged under the patches the `ca-0.8.44.x` releases carry

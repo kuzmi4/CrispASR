@@ -6,6 +6,7 @@
 #include "moonshine_onnx.h"
 #endif
 #include "core/arch_backend_map.h" // #335: general.architecture → backend table, SHARED with the C ABI
+#include "core/backend_aliases.h"
 #include "core/parakeet_gguf.h"
 
 // Forward declarations of per-backend constructors. Each is implemented in
@@ -63,6 +64,9 @@ std::unique_ptr<CrispasrBackend> crispasr_make_omniasr_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_mimo_asr_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_htdemucs_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_mel_band_roformer_backend();
+std::unique_ptr<CrispasrBackend> crispasr_make_mini_bs_roformer_backend();
+std::unique_ptr<CrispasrBackend> crispasr_make_voice_isolator_backend();
+std::unique_ptr<CrispasrBackend> crispasr_make_scnet_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_crepe_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_btc_chords_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_tabcnn_backend();
@@ -80,6 +84,7 @@ std::unique_ptr<CrispasrBackend> crispasr_make_paraformer_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_sensevoice_backend();
 std::unique_ptr<CrispasrBackend> crispasr_make_sidon_backend();
 std::unique_ptr<CrispasrBackend> crispasr_create_miotts_backend();
+std::unique_ptr<CrispasrBackend> crispasr_create_zonos3_backend();
 std::unique_ptr<CrispasrBackend> crispasr_create_arktts_backend();
 std::unique_ptr<CrispasrBackend> crispasr_create_bt2_tts_backend();
 std::unique_ptr<CrispasrBackend> crispasr_create_piano_transcription_backend();
@@ -130,7 +135,8 @@ std::unique_ptr<CrispasrBackend> crispasr_make_meanvc2_backend();
 // Factory
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name) {
+std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& requested_name) {
+    const std::string name = core_backend::canonical_runtime_name(requested_name);
     // "tiron" (#295) is a Whisper large-v3 checkpoint with inline <|speakerN|>
     // markers — it runs on the whisper backend, which auto-detects the speaker
     // vocab and enables the tiron constrained-decoding grammar. The alias only
@@ -148,8 +154,7 @@ std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name
         return crispasr_make_nemotron_backend();
     if (name == "phonon2")
         return crispasr_make_phonon2_backend();
-    if (name == "parakeet" || name == "haas" || name == "haas-asr" || name == "reazonspeech" || name == "quds" ||
-        name == "quds-fa")
+    if (name == "parakeet" || name == "reazonspeech" || name == "quds" || name == "quds-fa")
         return crispasr_make_parakeet_backend();
     if (name == "canary")
         return crispasr_make_canary_backend();
@@ -178,9 +183,11 @@ std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name
         return crispasr_make_higgs_stt_backend();
     if (name == "qwen3" || name == "qwen3-1.7b" || name == "qwen3_1.7b" || name == "qwen3_17b" || name == "mega-asr" ||
         name == "mega_asr" || name == "megaasr" || name == "raon-speech" || name == "raon-speech-9b" ||
-        name == "raon_speech")
+        name == "raon_speech" || name == "rumble-2-flash" || name == "rumble2" || name == "rumble" ||
+        name == "confucius4-r2t2" || name == "confucius4_r2t2" || name == "r2t2")
         return crispasr_make_qwen3_backend(name == "qwen3" || name == "qwen3-1.7b" || name == "qwen3_1.7b" ||
-                                           name == "qwen3_17b");
+                                           name == "qwen3_17b" || name == "confucius4-r2t2" ||
+                                           name == "confucius4_r2t2" || name == "r2t2");
     if (name == "fastconformer-ctc" || name == "fastconformer_ctc" || name == "canary-ctc" || name == "canary_ctc")
         return crispasr_make_fastconformer_ctc_backend();
     if (name == "wav2vec2" || name == "hubert" || name == "data2vec")
@@ -296,6 +303,13 @@ std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name
         return crispasr_make_glm_asr_backend();
     if (name == "htdemucs" || name == "demucs" || name == "htdemucs-ft")
         return crispasr_make_htdemucs_backend();
+    if (name == "scnet" || name == "scnet-large")
+        return crispasr_make_scnet_backend();
+    if (name == "mini-bs-roformer" || name == "mini_bs_roformer" || name == "mini-bs-roformer-v2.5")
+        return crispasr_make_mini_bs_roformer_backend();
+    if (name == "voice-isolator" || name == "voice_isolator" || name == "inworld-voice-isolator" ||
+        name == "voice-isolator-realtime")
+        return crispasr_make_voice_isolator_backend();
     if (name == "mel-band-roformer" || name == "mel_band_roformer" || name == "melbandroformer" || name == "mbr")
         return crispasr_make_mel_band_roformer_backend();
     if (name == "crepe" || name == "crepe-tiny" || name == "crepe-full" || name == "pitch")
@@ -367,6 +381,8 @@ std::unique_ptr<CrispasrBackend> crispasr_create_backend(const std::string& name
         return crispasr_make_confucius4_tts_backend();
     if (name == "parler-tts" || name == "parler_tts" || name == "parler" || name == "parlertts")
         return crispasr_make_parler_tts_backend();
+    if (name == "zonos3" || name == "zonos3-mini" || name == "zonos3_mini")
+        return crispasr_create_zonos3_backend();
     if (name == "zonos" || name == "zonos-tts" || name == "zonos_tts")
         return crispasr_make_zonos_backend();
     if (name == "csm" || name == "csm-tts" || name == "csm_tts" || name == "sesame" || name == "sesame-csm")
@@ -513,6 +529,8 @@ std::vector<std::string> crispasr_list_backends() {
         "parler-tts",
         "zonos",
         "zonos-tts",
+        "zonos3",
+        "zonos3-mini",
         "csm",
         "csm-tts",
         "sesame",
@@ -521,6 +539,9 @@ std::vector<std::string> crispasr_list_backends() {
         "omnivoice-singing",
         "htdemucs",
         "mel-band-roformer",
+        "mini-bs-roformer",
+        "voice-isolator",
+        "scnet",
         "crepe",
         "btc-chords",
         "tabcnn",
@@ -703,6 +724,24 @@ void crispasr_print_backend_matrix_json() {
 // Mappings are based on the value that each model's converter writes into
 // the GGUF file. When a converter doesn't write this key we fall back to
 // filename heuristics.
+// general.architecture -> backend via the shared table; "" when the file is not
+// GGUF, has no architecture key, or the architecture is unmapped.
+static std::string gguf_arch_backend(const std::string& model_path) {
+    struct gguf_init_params gip = {/*.no_alloc=*/true, /*.ctx=*/nullptr};
+    gguf_context* gctx = gguf_init_from_file(model_path.c_str(), gip);
+    if (!gctx)
+        return "";
+    std::string result;
+    const int key = gguf_find_key(gctx, "general.architecture");
+    if (key >= 0) {
+        const char* arch = gguf_get_val_str(gctx, key);
+        if (arch)
+            result = core_arch::backend_for_arch(arch);
+    }
+    gguf_free(gctx);
+    return result;
+}
+
 static std::string detect_backend_unchecked(const std::string& model_path) {
     if (model_path.empty())
         return "";
@@ -737,6 +776,12 @@ static std::string detect_backend_unchecked(const std::string& model_path) {
 
     if (contains_ci("htdemucs") || contains_ci("demucs"))
         return "htdemucs";
+    if (contains_ci("scnet"))
+        return "scnet";
+    if (contains_ci("mini-bs-roformer") || contains_ci("mini_bs_roformer"))
+        return "mini-bs-roformer";
+    if (contains_ci("voice-isolator") || contains_ci("voice_isolator"))
+        return "voice-isolator";
     if (contains_ci("mel-band-roformer") || contains_ci("mel_band_roformer") || contains_ci("roformer"))
         return "mel-band-roformer";
     if (contains_ci("crepe"))
@@ -827,6 +872,8 @@ static std::string detect_backend_unchecked(const std::string& model_path) {
         return "indextts";
     if (contains_ci("raon-speech") || contains_ci("raon_speech"))
         return "qwen3"; // #455 speech-to-text, not Raon-OpenTTS
+    if (contains_ci("rumble-2") || contains_ci("rumble2") || contains_ci("rumble_2"))
+        return "qwen3"; // #602 Reson8 Rumble-2-Flash (Qwen3-ASR fine-tune)
     if (contains_ci("f5-tts") || contains_ci("f5tts") || contains_ci("F5TTS") || contains_ci("raon"))
         return "f5-tts"; // #387 Raon-OpenTTS rides the f5-tts runtime
     if (contains_ci("pocket-tts") || contains_ci("pocket_tts") || contains_ci("pockettts"))
@@ -900,8 +947,15 @@ static std::string detect_backend_unchecked(const std::string& model_path) {
         return "dia";
     if (contains_ci("dia-tts") || contains_ci("dia_tts"))
         return "dia";
-    if (contains_ci("confucius4") || contains_ci("confucius4-tts") || contains_ci("confucius4_tts"))
-        return "confucius4-tts";
+    if (contains_ci("confucius4") || contains_ci("confucius4-tts") || contains_ci("confucius4_tts")) {
+        // "confucius4" names a family, not one architecture: Confucius4-R2T2
+        // (#445) is a Qwen3-ASR fine-tune (general.architecture=qwen3asr) that
+        // this name rule sent to the TTS backend (CI run 43170649072: exit 13,
+        // missing transformer.ln_f). A mapped GGUF architecture decides; the
+        // name only covers files without one.
+        const std::string by_arch = gguf_arch_backend(model_path);
+        return by_arch.empty() ? "confucius4-tts" : by_arch;
+    }
     if (contains_ci("dots-tts") || contains_ci("dots_tts") || contains_ci("dots.tts"))
         return "dots-tts";
     if (contains_ci("fireredtts3"))
@@ -910,6 +964,8 @@ static std::string detect_backend_unchecked(const std::string& model_path) {
         return "csm";
     if (contains_ci("parler") && contains_ci("tts"))
         return "parler-tts";
+    if (contains_ci("zonos3"))
+        return "zonos3";
     if (contains_ci("zonos"))
         return "zonos";
     if (contains_ci("hojo"))
@@ -957,20 +1013,7 @@ static std::string detect_backend_unchecked(const std::string& model_path) {
     // #335: the two used to be independent copies and had drifted by 113
     // architecture strings. The filename pass above hid that from CLI users
     // while every binding got a NULL session for the very same GGUF.
-    struct gguf_init_params gip = {/*.no_alloc=*/true, /*.ctx=*/nullptr};
-    gguf_context* gctx = gguf_init_from_file(model_path.c_str(), gip);
-    if (!gctx)
-        return "";
-
-    std::string result;
-    const int key = gguf_find_key(gctx, "general.architecture");
-    if (key >= 0) {
-        const char* arch = gguf_get_val_str(gctx, key);
-        if (arch)
-            result = core_arch::backend_for_arch(arch);
-    }
-    gguf_free(gctx);
-    return result;
+    return gguf_arch_backend(model_path);
 }
 
 std::string crispasr_detect_backend_from_gguf(const std::string& model_path) {

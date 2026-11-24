@@ -13,8 +13,11 @@
 // See qwen3-asr-todo.md for the full plan.
 
 #include "qwen3_asr.h"
+#include "core/gpu_layers.h"
 #include "core/quant_bcast.h"
 #include "core/crispasr_env.h"
+#include "core/qwen3_ultra_boundary.h"
+#include "core/qwen3_ultra_sidecar.h"
 #include "../crisp_audio/include/crisp_audio.h"
 #include "crispasr_imatrix.h"
 
@@ -128,6 +131,10 @@ struct qwen3_asr_hparams {
     // tower + Qwen3 LLM, plus a 2-layer EmbeddingAdaptor between them and a
     // 24 kHz, 8 s-chunked front end (see qwen3_asr_raon_encode_stages).
     bool raon_speech = false;
+    // #602 Reson8 Rumble-2-Flash (qwen3asr.variant = "rumble"): the system
+    // turn opens with control tokens (chat_template.jinja defaults
+    // "<digits><nofiller><verbatim>"); empty for every other model.
+    std::string system_prefix;
     float adaptor_eps = 1e-6f;
     uint32_t raon_chunk_samples = 192000;       // 8 s at 24 kHz
     uint32_t raon_samples_per_frame = 1920;     // 24 kHz / 12.5 Hz
@@ -338,6 +345,7 @@ static bool qwen3_asr_load_model(qwen3_asr_model& model, qwen3_asr_vocab& vocab,
         hp.eos_token_id = core_gguf::kv_u32(gctx, "qwen3asr.eos_token_id", hp.eos_token_id);
         hp.pad_token_id = core_gguf::kv_u32(gctx, "qwen3asr.pad_token_id", hp.pad_token_id);
         hp.raon_speech = core_gguf::kv_str(gctx, "qwen3asr.variant", "") == "raon-speech";
+        hp.system_prefix = core_gguf::kv_str(gctx, "qwen3asr.system_prefix", "");
         hp.adaptor_eps = core_gguf::kv_f32(gctx, "qwen3asr.adaptor.norm_eps", hp.adaptor_eps);
         hp.raon_chunk_samples = core_gguf::kv_u32(gctx, "qwen3asr.raon.chunk_samples", hp.raon_chunk_samples);
         hp.raon_samples_per_frame =
@@ -398,10 +406,8 @@ static bool qwen3_asr_load_model(qwen3_asr_model& model, qwen3_asr_vocab& vocab,
     // PLAN #69a: when CRISPASR_N_GPU_LAYERS is set and < total layers,
     // route layers [N..total) onto the CPU backend.
     core_gguf::WeightLoad wl;
-    int n_gpu_layers_env = -1;
-    if (const char* s = std::getenv("CRISPASR_N_GPU_LAYERS")) {
-        n_gpu_layers_env = std::atoi(s);
-    }
+    // Session n_gpu_layers, else CRISPASR_N_GPU_LAYERS (#610).
+    const int n_gpu_layers_env = core_gpu_layers::resolve();
     const int total_layers = (int)model.hparams.llm_n_layers;
     const bool do_split =
         backend_cpu && backend_cpu != backend && n_gpu_layers_env >= 0 && n_gpu_layers_env < total_layers;
@@ -1237,7 +1243,7 @@ static ggml_cgraph* qwen3_asr_build_graph_llm_from_embeds(qwen3_asr_context* ctx
 // Per layer, the new K/V are written into the persistent cache at positions
 // [n_past, n_past+n_tokens) and attention reads from [0, n_past+n_tokens).
 static ggml_cgraph* qwen3_asr_build_graph_llm_kv(qwen3_asr_context* ctx, int n_past, int n_tokens,
-                                                 bool last_token_only = true) {
+                                                 bool last_token_only = true, bool capture_hidden = false) {
     const auto& m = ctx->model;
     const auto& hp = m.hparams;
     const int d = (int)hp.llm_d_model;
@@ -1327,6 +1333,11 @@ static ggml_cgraph* qwen3_asr_build_graph_llm_kv(qwen3_asr_context* ctx, int n_p
 
     cur = ggml_rms_norm(ctx0, cur, eps);
     cur = ggml_mul(ctx0, cur, m.llm.output_norm_w);
+
+    if (capture_hidden) {
+        ggml_set_name(cur, "aligner_hidden");
+        ggml_set_output(cur);
+    }
 
     // Last-token-only lm_head (default): slice (d, T) → (d, 1) before
     // the big matmul. The autoregressive decode loop only ever needs the
@@ -1911,6 +1922,18 @@ static bool qwen3_asr_run_adaptor(qwen3_asr_context* ctx, const float* x, int N,
     return true;
 }
 
+// #602: control-token prefix of the system turn ("" when the model has none).
+// CRISPASR_QWEN3_SYSTEM_PREFIX overrides it, e.g. "<nodigits><filler><noverbatim>"
+// for Rumble-2-Flash's digits=false / filler=true / verbatim=false options.
+extern "C" const char* qwen3_asr_system_prefix(qwen3_asr_context* ctx) {
+    if (!ctx)
+        return "";
+    if (const char* e = getenv("CRISPASR_QWEN3_SYSTEM_PREFIX"))
+        if (!ctx->model.hparams.system_prefix.empty())
+            return e;
+    return ctx->model.hparams.system_prefix.c_str();
+}
+
 extern "C" bool qwen3_asr_is_raon_speech(qwen3_asr_context* ctx) {
     return ctx && ctx->model.hparams.raon_speech;
 }
@@ -2362,9 +2385,16 @@ extern "C" int qwen3_asr_lm_head_dim(struct qwen3_asr_context* ctx) {
 // minus the language-specific tokenizers (we whitespace-split words and let
 // each word go through the standard byte-level BPE encoder; CJK char-level
 // tokenization is a follow-up).
-extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
-                                     const char** words, int n_words, int64_t* out_start_ms, int64_t* out_end_ms) {
+static float* qwen3_asr_run_aligner_capture(struct qwen3_asr_context* ctx, const float* inputs_embeds, int n_tokens,
+                                            int* out_n_tokens, int* out_lm_head_dim, float** out_hidden);
+
+static int qwen3_asr_align_words_impl(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
+                                      const char** words, int n_words, int64_t* out_start_ms, int64_t* out_end_ms,
+                                      float* out_hidden, size_t hidden_capacity, bool mask_to_audio) {
     if (!ctx || !samples || n_samples <= 0 || !words || n_words <= 0 || !out_start_ms || !out_end_ms)
+        return -1;
+    const size_t hidden_dim = ctx->model.hparams.llm_d_model;
+    if (out_hidden && (hidden_dim == 0 || static_cast<size_t>(n_words) > hidden_capacity / hidden_dim / 2))
         return -1;
 
     constexpr int TIMESTAMP_TOKEN_ID = 151705;
@@ -2467,9 +2497,11 @@ extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float*
     }
     int n_t_out = 0, H = 0;
     float* logits;
+    float* hidden = nullptr;
     {
         qwen3_asr_bench_stage _b("aligner_forward");
-        logits = qwen3_asr_run_aligner(ctx, text_embeds, T_prompt, &n_t_out, &H);
+        logits =
+            qwen3_asr_run_aligner_capture(ctx, text_embeds, T_prompt, &n_t_out, &H, out_hidden ? &hidden : nullptr);
     }
     free(text_embeds);
     if (!logits) {
@@ -2485,10 +2517,16 @@ extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float*
     for (int t = 0; t < T_prompt; t++) {
         if (ids[t] != TIMESTAMP_TOKEN_ID)
             continue;
+        if (hidden && ts_classes.size() < static_cast<size_t>(n_words) * 2)
+            std::memcpy(out_hidden + ts_classes.size() * hidden_dim, hidden + static_cast<size_t>(t) * hidden_dim,
+                        hidden_dim * sizeof(float));
         const float* row = logits + (size_t)t * H;
         int best = 0;
         float mx = row[0];
-        for (int k = 1; k < H; k++) {
+        // Ultra's local-head reference masks classes beyond the audio duration
+        // before timestamp repair. The legacy aligner leaves them unchanged.
+        const int valid_classes = mask_to_audio ? qwen3_ultra_boundary::valid_timestamp_classes(n_samples, H) : H;
+        for (int k = 1; k < valid_classes; k++) {
             if (row[k] > mx) {
                 mx = row[k];
                 best = k;
@@ -2497,6 +2535,7 @@ extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float*
         ts_classes.push_back(best);
     }
     free(logits);
+    free(hidden);
 
     if ((int)ts_classes.size() != 2 * n_words) {
         fprintf(stderr,
@@ -2527,12 +2566,87 @@ extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float*
     return 0;
 }
 
+extern "C" int qwen3_asr_align_words(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
+                                     const char** words, int n_words, int64_t* out_start_ms, int64_t* out_end_ms) {
+    return qwen3_asr_align_words_impl(ctx, samples, n_samples, words, n_words, out_start_ms, out_end_ms, nullptr, 0,
+                                      false);
+}
+
+extern "C" int qwen3_asr_align_words_with_hidden(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
+                                                 const char** words, int n_words, int64_t* out_start_ms,
+                                                 int64_t* out_end_ms, float* out_hidden, size_t hidden_capacity) {
+    if (!out_hidden)
+        return -1;
+    return qwen3_asr_align_words_impl(ctx, samples, n_samples, words, n_words, out_start_ms, out_end_ms, out_hidden,
+                                      hidden_capacity, false);
+}
+
+extern "C" int qwen3_asr_align_words_ultra(struct qwen3_asr_context* ctx, const float* samples, int n_samples,
+                                           const char** words, int n_words, const char* head_gguf, double* out_start_ms,
+                                           double* out_end_ms) {
+    if (!ctx || !samples || n_samples <= 0 || !words || n_words <= 0 || n_words > 8192 || !head_gguf || !out_start_ms ||
+        !out_end_ms || ctx->model.hparams.llm_d_model != qwen3_ultra_head::qwen_dim)
+        return -1;
+    for (int i = 0; i < n_samples; ++i)
+        if (!std::isfinite(samples[i]))
+            return -1;
+    for (int i = 0; i < n_words; ++i)
+        if (!words[i] || !*words[i])
+            return -1;
+    try {
+        qwen3_ultra_sidecar::Package package;
+        if (!qwen3_ultra_sidecar::load(head_gguf, ctx->backend_cpu ? ctx->backend_cpu : ctx->backend, package))
+            return -8;
+        const size_t endpoints = static_cast<size_t>(n_words) * 2;
+        std::vector<int64_t> start(n_words), end(n_words);
+        std::vector<float> hidden(endpoints * qwen3_ultra_head::qwen_dim);
+        const int rc = qwen3_asr_align_words_impl(ctx, samples, n_samples, words, n_words, start.data(), end.data(),
+                                                  hidden.data(), hidden.size(), true);
+        if (rc != 0)
+            return rc;
+        std::vector<float> audio(samples, samples + n_samples);
+        std::vector<qwen3_ultra_boundary::Interval> coarse(n_words);
+        std::vector<double> corrections(endpoints);
+        for (int i = 0; i < n_words; ++i) {
+            coarse[i] = {static_cast<double>(start[i]), static_cast<double>(end[i])};
+            for (int endpoint = 0; endpoint < 2; ++endpoint) {
+                const size_t index = static_cast<size_t>(i) * 2 + endpoint;
+                qwen3_ultra_features::Features features{};
+                const double center = endpoint == 0 ? coarse[i].start : coarse[i].end;
+                if (!qwen3_ultra_features::extract(audio, center, package.mean, package.stddev, features, false))
+                    return -9;
+                std::array<float, qwen3_ultra_head::roles * qwen3_ultra_head::qwen_dim> context{};
+                std::array<float, qwen3_ultra_head::roles> mask{};
+                if (!qwen3_ultra_head::build_context(hidden.data(), hidden.size(), n_words, i, endpoint, context, mask))
+                    return -9;
+                std::array<float, qwen3_ultra_head::offsets> logits{};
+                if (!qwen3_ultra_head::run(package.weights, features[0].data(), context.data(), mask.data(), endpoint,
+                                           logits) ||
+                    !qwen3_ultra_boundary::decode_offset(logits, corrections[index]))
+                    return -9;
+            }
+        }
+        std::vector<qwen3_ultra_boundary::Interval> refined;
+        if (!qwen3_ultra_boundary::repair(coarse, corrections, static_cast<double>(n_samples) / 16.0, refined))
+            return -9;
+        for (int i = 0; i < n_words; ++i) {
+            out_start_ms[i] = refined[i].start;
+            out_end_ms[i] = refined[i].end;
+        }
+        return 0;
+    } catch (...) {
+        return -9;
+    }
+}
+
 // One full-T forward pass for the Qwen3-ForcedAligner. Same KV-cached
 // graph the ASR backend uses for prefill, but with last_token_only=false
 // so the lm_head sees every position. The KV cache is reset at the start
 // because forced alignment is one-shot — no autoregressive decode loop.
-extern "C" float* qwen3_asr_run_aligner(struct qwen3_asr_context* ctx, const float* inputs_embeds, int n_tokens,
-                                        int* out_n_tokens, int* out_lm_head_dim) {
+static float* qwen3_asr_run_aligner_capture(struct qwen3_asr_context* ctx, const float* inputs_embeds, int n_tokens,
+                                            int* out_n_tokens, int* out_lm_head_dim, float** out_hidden) {
+    if (out_hidden)
+        *out_hidden = nullptr;
     if (!ctx || !inputs_embeds || n_tokens <= 0)
         return nullptr;
     if (!ctx->kv_k) {
@@ -2570,7 +2684,8 @@ extern "C" float* qwen3_asr_run_aligner(struct qwen3_asr_context* ctx, const flo
         }
     }
 
-    ggml_cgraph* gf = qwen3_asr_build_graph_llm_kv(ctx, /*n_past=*/0, n_tokens, /*last_token_only=*/false);
+    ggml_cgraph* gf = qwen3_asr_build_graph_llm_kv(ctx, /*n_past=*/0, n_tokens, /*last_token_only=*/false,
+                                                   /*capture_hidden=*/out_hidden != nullptr);
     ggml_backend_sched_reset(ctx->sched);
     if (!ggml_backend_sched_alloc_graph(ctx->sched, gf)) {
         fprintf(stderr, "qwen3_asr: failed to alloc aligner graph\n");
@@ -2607,5 +2722,24 @@ extern "C" float* qwen3_asr_run_aligner(struct qwen3_asr_context* ctx, const flo
     if (!result)
         return nullptr;
     ggml_backend_tensor_get(out, result, 0, total * sizeof(float));
+    if (out_hidden) {
+        ggml_tensor* hidden = ggml_graph_get_tensor(gf, "aligner_hidden");
+        const size_t hidden_size = static_cast<size_t>(d) * n_tokens * sizeof(float);
+        if (!hidden || hidden->type != GGML_TYPE_F32 || ggml_nbytes(hidden) != hidden_size) {
+            free(result);
+            return nullptr;
+        }
+        *out_hidden = static_cast<float*>(malloc(hidden_size));
+        if (!*out_hidden) {
+            free(result);
+            return nullptr;
+        }
+        ggml_backend_tensor_get(hidden, *out_hidden, 0, hidden_size);
+    }
     return result;
+}
+
+extern "C" float* qwen3_asr_run_aligner(struct qwen3_asr_context* ctx, const float* inputs_embeds, int n_tokens,
+                                        int* out_n_tokens, int* out_lm_head_dim) {
+    return qwen3_asr_run_aligner_capture(ctx, inputs_embeds, n_tokens, out_n_tokens, out_lm_head_dim, nullptr);
 }

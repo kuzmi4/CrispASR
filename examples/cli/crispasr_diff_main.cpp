@@ -34,6 +34,7 @@
 #include <cmath>
 
 #include "crispasr_diff.h"
+#include "core/backend_aliases.h"
 #include "crispasr_dia_diff.h"
 #include "crispasr_openvoice_diff.h"
 #include "core/backend_validation.h"
@@ -43,6 +44,9 @@
 #include "voxtral4b.h"
 #include "htdemucs.h"
 #include "mel_band_roformer.h"
+#include "mini_bs_roformer.h"
+#include "voice_isolator.h"
+#include "scnet.h"
 #include "btc_chords.h"
 #include "tabcnn.h"
 #include "basic_pitch.h"
@@ -56,6 +60,7 @@
 #include "higgs_stt.h"
 #include "moss_transcribe_diarize.h"
 #include "qwen3_asr.h"
+#include "core/qwen3_prompt.h"
 #include "nemotron3_diar.h"
 #include "qwen3_tts.h"
 #include "omnivoice.h"
@@ -1809,7 +1814,7 @@ int main(int argc, char** argv) {
                 argv[0]);
         return 1;
     }
-    const std::string backend_name = argv[1];
+    const std::string backend_name = core_backend::canonical_runtime_name(argv[1]);
     const std::string model_path = argv[2];
     const std::string ref_path = argv[3];
     const std::string audio_path = argv[4];
@@ -1898,6 +1903,19 @@ int main(int argc, char** argv) {
         // model_path = voxtral-tts GGUF (F16 for a clean structural diff), ref_path =
         // ref GGUF from tools/reference_backends/voxtral_tts.py. Per-layer frame-0 LLM cos.
         return voxtral_tts_llm_diff(model_path.c_str(), ref_path.c_str(), /*verbosity=*/2);
+    }
+    if (backend_name == "scnet" || backend_name == "scnet-large") {
+        return scnet_diff(model_path.c_str(), ref_path.c_str(), audio_path.c_str(), /*verbosity=*/2);
+    }
+    if (backend_name == "voice-isolator" || backend_name == "voice_isolator") {
+        // Self-contained: the reference archive carries its own 48 kHz input
+        // (upstream kaiser_best resample of the harness audio); audio_path is unused.
+        (void)audio_path;
+        return voice_isolator_diff(model_path.c_str(), ref_path.c_str(), /*verbosity=*/1);
+    }
+    if (backend_name == "mini-bs-roformer" || backend_name == "mini_bs_roformer" ||
+        backend_name == "mini-bs-roformer-v2.5") {
+        return mini_bs_roformer_diff(model_path.c_str(), ref_path.c_str(), audio_path.c_str(), /*verbosity=*/2);
     }
     if (backend_name == "mel-band-roformer" || backend_name == "mbr") {
         // model_path = mel-band-roformer GGUF, ref_path = ref GGUF from
@@ -3488,14 +3506,10 @@ int main(int argc, char** argv) {
         std::vector<int32_t> own_ids;
         if ((stage_on("ids") || stage_on("logits")) && ref.has("trace_input_ids")) {
             auto ref_ids_f = ref.get_f32("trace_input_ids");
-            std::string text = "<|im_start|>system\n"
-                               "<|im_end|>\n"
-                               "<|im_start|>user\n"
-                               "<|audio_start|>";
-            for (int i = 0; i < N_enc_own; i++)
-                text += "<|audio_pad|>";
-            text += "<|audio_end|><|im_end|>\n"
-                    "<|im_start|>assistant\n";
+            // Same builder as the CLI / C ABI, so a model-specific system
+            // prefix (#602 Rumble control tokens) is part of what is diffed.
+            const std::string text = core_qwen3_prompt::build(
+                N_enc_own, core_qwen3_prompt::with_system_prefix(qwen3_asr_system_prefix(ctx), ""), "", "", "");
             int n_ids = 0;
             int32_t* ids = qwen3_asr_tokenize(ctx, text.c_str(), &n_ids);
             if (ids) {

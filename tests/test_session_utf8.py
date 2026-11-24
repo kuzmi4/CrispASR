@@ -40,6 +40,12 @@ struct crispasr_session { int best_of = 1; std::string backend = "qwen3-asr"; bo
 static std::string injected;
 static std::string callback_text;
 static bool session_language_satisfiable(crispasr_session*, const char*) { return true; }
+/* Context-Assist (F3): the extracted entry points classify a failed call instead of
+   returning a partial result, so the harness supplies the category symbols and the
+   shared implementation they delegate to. */
+static thread_local int g_last_error_category = 0;
+static const int CRISPASR_ERR_NONE = 0, CRISPASR_ERR_INPUT = 1, CRISPASR_ERR_GPU = 2, CRISPASR_ERR_MODEL = 3;
+static int crispasr_session_device(crispasr_session*) { return 0; }
 static crispasr_session_result* transcribe_autochunk(crispasr_session*, const float*, int, const char*) {
     auto* r = new crispasr_session_result;
     crispasr_session_seg seg;
@@ -54,6 +60,18 @@ static void apply_session_hygiene(crispasr_session_result*, bool) {}
 static void apply_session_punc_model(crispasr_session*, crispasr_session_result*) {}
 static void _fire_segment_callbacks(crispasr_session*, crispasr_session_result* r) {
     callback_text = r ? r->segments[0].text : "";
+}
+static crispasr_session_result* session_transcribe_lang_impl(crispasr_session* s, const float* pcm, int n_samples,
+                                                             const char* language) {
+    /* Mirrors the production single-run branch of the Context-Assist (F3) implementation,
+       which the extracted entry points delegate to: transcribe, then hygiene, punctuation
+       model, UTF-8 normalization and the segment callbacks. */
+    crispasr_session_result* r = transcribe_autochunk(s, pcm, n_samples, language);
+    apply_session_hygiene(r, true);
+    apply_session_punc_model(s, r);
+    normalize_session_result_utf8(r);
+    _fire_segment_callbacks(s, r);
+    return r;
 }
 '''
         for name in ('transcribe_lang', 'transcribe', 'result_segment_text', 'result_word_text',

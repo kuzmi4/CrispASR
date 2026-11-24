@@ -86,6 +86,9 @@ add_executable(${TARGET}
     crispasr_piano_cli.cpp
     crispasr_backend_beat_this.cpp
     crispasr_backend_mel_band_roformer.cpp
+    crispasr_backend_mini_bs_roformer.cpp
+    crispasr_backend_voice_isolator.cpp
+    crispasr_backend_scnet.cpp
     crispasr_backend_kyutai_stt.cpp
     crispasr_backend_firered_asr.cpp
     crispasr_backend_moonshine.cpp
@@ -95,6 +98,7 @@ add_executable(${TARGET}
     crispasr_backend_mimo_asr.cpp
     crispasr_backend_ark_asr.cpp
     crispasr_backend_miotts.cpp
+    crispasr_backend_zonos3.cpp
     crispasr_backend_arktts.cpp
     crispasr_backend_bt2_tts.cpp
     crispasr_backend_piano_transcription.cpp
@@ -294,6 +298,7 @@ target_link_libraries(crispasr-diff PRIVATE
     fireredtts3
     confucius4-tts
     miotts
+    zonos3_tts
     miocodec
     arktts
     meanvc2
@@ -355,6 +360,19 @@ target_link_libraries(mimo-tokenizer-smoke PRIVATE
     common
     crispasr-lib
     mimo_tokenizer
+    ${FFMPEG_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# crispasr-model-probe — JSON dump of non-text model outputs (titanet speaker
+# embedding, MiMo tokenizer RVQ codes) for tests/regression/run_one.py `probe`.
+# ---------------------------------------------------------------------------
+add_executable(crispasr-model-probe crispasr_model_probe.cpp)
+target_link_libraries(crispasr-model-probe PRIVATE
+    common
+    crispasr-lib
+    mimo_tokenizer
+    titanet
     ${FFMPEG_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )
@@ -437,6 +455,7 @@ target_link_libraries(${TARGET} PRIVATE
     moss_transcribe
     moss_transcribe_diarize
     miotts
+    zonos3_tts
     arktts
     meanvc2
     breeze_tts_2

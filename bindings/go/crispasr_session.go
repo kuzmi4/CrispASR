@@ -2,7 +2,7 @@ package whisper
 
 // Minimal TTS + S2S surface for the Go binding. Exposes the unified
 // CrispASR Session API for TTS-capable backends (kokoro, vibevoice,
-// qwen3-tts, moss-tts, orpheus, chatterbox, csm, dia, zonos-tts, speecht5, fastpitch,
+// qwen3-tts, moss-tts, orpheus, chatterbox, csm, dia, zonos-tts, zonos3, speecht5, fastpitch,
 // bananamind-tts, melotts, piper, parler-tts, outetts, indextts, voxcpm2-tts,
 // cosyvoice3-tts, pocket-tts, f5-tts, bark, kugelaudio, tada, lfm2-audio,
 // dots-tts, fireredtts3, ...)
@@ -361,6 +361,32 @@ func (s *CrispasrSession) SetMaxNewTokens(maxNewTokens int) error {
 	rc := C.crispasr_session_set_max_new_tokens(s.nativeHandle(), C.int(maxNewTokens))
 	if rc != 0 {
 		return errors.New("crispasr_session_set_max_new_tokens failed")
+	}
+	return nil
+}
+
+// SetAutochunk controls session-level auto-chunking for long audio.
+func (s *CrispasrSession) SetAutochunk(enabled bool, chunkSeconds int) error {
+	s.nativeHandle()
+	s.nativeHandle()
+	cEnabled := C.int(0)
+	if enabled {
+		cEnabled = 1
+	}
+	rc := C.crispasr_session_set_autochunk(s.nativeHandle(), cEnabled, C.int(chunkSeconds))
+	if rc != 0 {
+		return errors.New("crispasr_session_set_autochunk failed")
+	}
+	return nil
+}
+
+// SetMaxNewTokensPerSecond sets a dynamic token budget proportional to piece audio length.
+func (s *CrispasrSession) SetMaxNewTokensPerSecond(rate float32, minimum int) error {
+	s.nativeHandle()
+	s.nativeHandle()
+	rc := C.crispasr_session_set_max_new_tokens_per_second(s.nativeHandle(), C.float(rate), C.int(minimum))
+	if rc != 0 {
+		return errors.New("crispasr_session_set_max_new_tokens_per_second failed")
 	}
 	return nil
 }
@@ -943,7 +969,7 @@ func goProgressCallback(processed C.int, total C.int, user C.uintptr_t) {
 }
 
 //export goSegmentCallback
-func goSegmentCallback(text *C.char, t0 C.long, t1 C.long, index C.int, user C.uintptr_t) {
+func goSegmentCallback(text *C.char, t0 C.int64_t, t1 C.int64_t, index C.int, user C.uintptr_t) {
 	if user == 0 {
 		return
 	}
@@ -1327,7 +1353,7 @@ type Stem struct {
 
 // Separate splits stereo audio into its stems (#359).
 //
-// This is the verb for htdemucs and mel-band-roformer. They are not
+// This is the verb for htdemucs, mel-band-roformer, mini-bs-roformer and scnet. They are not
 // speech-to-speech models, so SpeechToSpeech returns no audio for them — the C
 // ABI has always had a separate five-function surface, and it was not bound
 // here.
@@ -1852,11 +1878,11 @@ func VADSegments(vadModelPath string, pcm []float32, sampleRate int, threshold f
 		return nil, nil
 	}
 	defer C.crispasr_vad_free(outSpans)
-	// outSpans is a flat array of [t0, t1, t0, t1, ...] with n pairs
+	// The legacy C ABI returns centiseconds; VADSpan exposes seconds.
 	spans := make([]VADSpan, int(n))
 	raw := unsafe.Slice((*float32)(unsafe.Pointer(outSpans)), int(n)*2)
 	for i := 0; i < int(n); i++ {
-		spans[i] = VADSpan{T0: float64(raw[i*2]), T1: float64(raw[i*2+1])}
+		spans[i] = VADSpan{T0: float64(raw[i*2]) / 100.0, T1: float64(raw[i*2+1]) / 100.0}
 	}
 	return spans, nil
 }
@@ -2562,7 +2588,7 @@ func DetectBackendFromGGUF(path string) (string, error) {
 	return C.GoString(&out[0]), nil
 }
 
-// EnhanceAudioRnnoise applies RNNoise denoising to 48 kHz mono PCM.
+// EnhanceAudioRnnoise applies RNNoise denoising to 16 kHz mono PCM; output is also 16 kHz.
 func EnhanceAudioRnnoise(pcm []float32) ([]float32, error) {
 	out := make([]float32, len(pcm))
 	rc := C.crispasr_enhance_audio_rnnoise(

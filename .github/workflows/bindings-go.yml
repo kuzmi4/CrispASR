@@ -1,6 +1,7 @@
 name: Bindings Tests (Go)
 on:
   push:
+    branches: [main]
     paths:
       - bindings/go/**
       - crispasr.h
@@ -27,8 +28,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   cgo-ldflags-drift:
     runs-on: ubuntu-22.04

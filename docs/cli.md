@@ -37,6 +37,9 @@ The 10 patterns that cover most usage:
 # Auto-download + transcribe
 crispasr -m auto --backend parakeet -f audio.wav
 
+# Japanese Haas-ja transcription (see haas-ja.md for model variants)
+crispasr --backend haas -m auto -f japanese.wav
+
 # VAD + SRT + sentence-split (best subtitle output)
 crispasr -m parakeet.gguf -f long.wav --vad -osrt --split-on-punct
 
@@ -135,7 +138,7 @@ crispasr --list-backends
 | Flag | Meaning |
 |---|---|
 | `--voice PATH` | GGUF voice pack or reference WAV. GGUF packs are used for VibeVoice/Qwen3-TTS/Orpheus style conditioning; WAV enables voice cloning (requires `--i-have-rights`) |
-| `--voice-dir PATH` | Server: directory of `<name>.gguf` or `<name>.wav` voice profiles. Enables `/v1/voices` listing and name-based voice selection in `/v1/audio/speech` |
+| `--voice-dir PATH` | Server: directory of `<name>.gguf` or `<name>.wav` (+ `<name>.txt` transcript) voice profiles. Enables `/v1/voices` listing and name-based voice selection in `/v1/audio/speech`. On the CLI too, a bare `--voice NAME` naming `<dir>/NAME.wav` is passed to cloning backends as that reference, with `NAME.txt` as `--ref-text` when unset (#584) |
 | `--ref-text "TEXT"` | Reference transcription for the ref audio (qwen3-tts, f5-tts). Auto-transcribed from `--voice <wav>` if omitted |
 | `--ref-asr BACKEND` | ASR backend to auto-transcribe the ref audio (default: `whisper`) |
 | `--instruct "TEXT"` | Natural-language voice/style description. For qwen3-tts: VoiceDesign mode (voice description) or CustomVoice mode (style control) |
@@ -476,10 +479,12 @@ multilingual / v3 / EN models behave very differently:
 | Variable | Default | Meaning |
 |---|---|---|
 | `CRISPASR_PARAKEET_STREAM_THRESHOLD` | non-JA 300, JA 12 | Single-pass cap (seconds). Audio ≤ this gets one full-attention pass; `0` disables single-pass entirely (always streamed). |
-| `CRISPASR_PARAKEET_VAD_SLICE_CAP` | non-JA 0, JA 12 | Max VAD slice duration (seconds); longer slices are re-split at energy minima before decoding. `0` = no cap. |
+| `CRISPASR_PARAKEET_VAD_SLICE_CAP` | non-JA 0, parakeet-ja 12, Haas-ja 30 | Max VAD slice duration (seconds); longer slices are re-split at energy minima before decoding. `0` = no cap. |
 | `CRISPASR_PARAKEET_ATT_CONTEXT` | unset | `"L,R"` switches the encoder to rel_pos_local_attn with that window (encoder frames, 1 = 80 ms) — NeMo's `change_attention_model` equivalent. `"-1,-1"` forces full attention. |
-| `CRISPASR_GAP_FILL` | 1 | Automatically re-transcribe any stretch of audio the transcript left empty and merge the recovered words back. `0` disables. |
+| `CRISPASR_GAP_FILL` | parakeet-ja and non-JA 1, Haas-ja 0 | Automatically re-transcribe any stretch of audio the transcript left empty and merge the recovered words back. `0` (or `false`/`off`/`no`) disables; `1` forces it on, also for Haas-ja, which does not drop speech the way parakeet-ja does and defaults off (#605). |
 | `CRISPASR_GAP_FILL_MIN_CS` | non-JA 300, JA 100 | Smallest empty stretch that triggers gap-fill, in centiseconds (300 = 3.0 s). Lower values catch shorter drops but may re-transcribe normal pauses, occasionally adding filler words. |
+| `CRISPASR_GAP_FILL_MIN_CONF` | 0.85 | JA gap-fill: keep a recovered stretch only if its mean token confidence reaches this value. Re-transcribed pauses, music and sound effects decode at low confidence; speech the first pass really dropped decodes at near 1.0. `0` keeps every recovery (pre-#605 behaviour). |
+| `CRISPASR_HAAS_LONGFORM` | 1 | Haas-ja: 30 s quiet-point chunks, one pass each, no forced VAD (the upstream `transcribe_longform` recipe, #605). `0` uses the parakeet-ja path (VAD, 12 s slices). |
 | `CRISPASR_PARAKEET_LONGFORM` | non-JA 1, JA 0 | `1` = silence-split single-pass above the cap; `0` = streamed fallback above the cap. |
 | `CRISPASR_PARAKEET_INTERNAL_CHUNKING` | non-JA on, JA off | `0` = revert to the dispatcher's chunk-30 + overlap-save + LCS-merge path (A/B). |
 | `CRISPASR_PARAKEET_STREAM_CHUNK` | 0 (auto: 8 JA / 30 non-JA) | Streamed-path encoder chunk size (seconds). |
@@ -824,6 +829,8 @@ upstream tools like SubtitleEdit.
 
 ### Standalone alignment — `--align-only` (issue #217)
 
+For the separately distributed Ultra fine-tune, see the [Qwen3 Ultra aligner guide](qwen3-ultra-aligner.md) for conversion, tested scope and the optional-head limitation.
+
 Aligns pre-existing text against audio without running ASR first.
 Accepts plain text (via `--ref-text` or `--text-file file.txt`), an
 unaligned `.srt` file, or a CrispASR `--output-json` transcription
@@ -1082,7 +1089,7 @@ a transcript or arbitrary UTF-8 string).
 |---|---|
 | `-l auto`, `--detect-language` | Auto-detect the input language. Backends without native lang-detect (cohere, canary, granite, voxtral, voxtral4b) get it via the LID pre-step |
 | `--lid-backend NAME` | Audio-LID provider: `whisper` (default), `silero` (95 langs, 16 MB), `ecapa` (107 or 45 langs, 40-43 MB), `firered` (120 langs, 544 MB), `probe` (ask the ASR model itself — cohere; no second model, and it can only return a language that model supports), or `off` / `none` |
-| `--lid-model FNAME` | Override the audio-LID model path (default: auto-downloads `ggml-tiny.bin` ~75 MB on first use) |
+| `--lid-model FNAME` | Override the audio-LID model path (default `ggml-tiny.bin`, ~75 MB; downloaded with `--auto-download` or after a TTY prompt, otherwise LID is skipped — #570) |
 
 **Silero evidence gate (#409).** On hard inputs — heavily compressed audio
 (MP3/OGG artifacts), very short or band-limited speech — the 16 MB

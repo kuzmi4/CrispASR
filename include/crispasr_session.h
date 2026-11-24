@@ -36,6 +36,7 @@ typedef struct whisper_full_params whisper_full_params;
 
 struct crispasr_align_result;
 typedef struct crispasr_align_result crispasr_align_result;
+typedef struct crispasr_ultra_align_result crispasr_ultra_align_result;
 struct crispasr_diarize_opts_abi;
 typedef struct crispasr_diarize_opts_abi crispasr_diarize_opts_abi;
 struct crispasr_diarize_seg_abi;
@@ -233,13 +234,20 @@ CRISPASR_SESSION_API void crispasr_parakeet_result_free(parakeet_result* r);
 // "metal"). Call before any crispasr_session_open*. NULL or "" = auto.
 CRISPASR_SESSION_API void crispasr_set_gpu_backend(const char* name);
 
+// Returns the backend-name byte count (0 for an unknown architecture), or
+// -1 for invalid arguments, -2 for an unreadable GGUF, -3 for a missing
+// general.architecture key, -4 for a non-string architecture value, or -5
+// if out_cap cannot hold the complete backend name plus its terminating NUL.
+// A short buffer never returns a truncated name.
+// After argument validation, failures leave the output string empty.
 CRISPASR_SESSION_API int crispasr_detect_backend_from_gguf(const char* path, char* out_name, int out_cap);
 // #433: EVERY backend that can open this file, newline-separated, primary
 // first. detect_backend() above is 1:1, which is not always the whole truth —
 // a voxcpm2 GGUF opens both as `voxcpm2-tts` and as `voxcpm2-vae` (the same
 // loader with vae_only=true; there is no separate VAE model). Returns bytes
-// written, or -5 if `out_cap` is too small — never a truncated list, because a
-// silently cut list would name fewer backends than exist.
+// written, the same errors as detect_backend(), or -5 if `out_cap` is too
+// small — never a truncated list, because a silently cut list would name fewer
+// backends than exist.
 CRISPASR_SESSION_API int crispasr_detect_backends_from_gguf(const char* path, char* out, int out_cap);
 CRISPASR_SESSION_API crispasr_session* crispasr_session_open_explicit(const char* model_path, const char* backend_name,
                                                                       int n_threads);
@@ -331,6 +339,8 @@ CRISPASR_SESSION_API int crispasr_detect_language_pcm(const float* samples, int3
                                                       const char* model_path, int32_t n_threads, int32_t use_gpu,
                                                       int32_t gpu_device, int32_t flash_attn, char* out_lang_buf,
                                                       int32_t out_lang_cap, float* out_confidence);
+// Denoise 16 kHz mono float PCM into caller-owned 16 kHz output of the same length.
+// Resampling to RNNoise's internal 48 kHz rate and back is handled internally.
 CRISPASR_SESSION_API int crispasr_enhance_audio_rnnoise(const float* in_pcm, int32_t n_samples, float* out_pcm,
                                                         int32_t out_cap);
 CRISPASR_SESSION_API int crispasr_text_detect_language(const char* text, const char* model_path, int32_t n_threads,
@@ -351,6 +361,19 @@ CRISPASR_SESSION_API const char* crispasr_align_result_character_text(crispasr_a
 CRISPASR_SESSION_API int64_t crispasr_align_result_character_t0(crispasr_align_result* r, int word, int i);
 CRISPASR_SESSION_API int64_t crispasr_align_result_character_t1(crispasr_align_result* r, int word, int i);
 CRISPASR_SESSION_API void crispasr_align_result_free(crispasr_align_result* r);
+// Experimental Ultra alignment with a separately converted local-head GGUF.
+// Audio is mono 16 kHz, limited to 120 seconds; times are milliseconds.
+// A null result means invalid input, load failure or alignment failure.
+CRISPASR_SESSION_API crispasr_ultra_align_result* crispasr_align_words_ultra_abi(const char* aligner_model,
+                                                                                 const char* head_model,
+                                                                                 const char* transcript,
+                                                                                 const float* samples,
+                                                                                 int32_t n_samples, int32_t n_threads);
+CRISPASR_SESSION_API int crispasr_ultra_align_result_n_words(const crispasr_ultra_align_result* r);
+CRISPASR_SESSION_API const char* crispasr_ultra_align_result_word_text(const crispasr_ultra_align_result* r, int i);
+CRISPASR_SESSION_API double crispasr_ultra_align_result_word_start_ms(const crispasr_ultra_align_result* r, int i);
+CRISPASR_SESSION_API double crispasr_ultra_align_result_word_end_ms(const crispasr_ultra_align_result* r, int i);
+CRISPASR_SESSION_API void crispasr_ultra_align_result_free(crispasr_ultra_align_result* r);
 CRISPASR_SESSION_API int crispasr_cache_ensure_file_abi(const char* filename, const char* url, int32_t quiet,
                                                         const char* cache_dir_override, char* out_buf, int32_t out_cap);
 CRISPASR_SESSION_API int crispasr_cache_dir_abi(const char* cache_dir_override, char* out_buf, int32_t out_cap);
@@ -864,6 +887,15 @@ CRISPASR_SESSION_API int crispasr_session_set_min_speech_tokens(crispasr_session
 CRISPASR_SESSION_API int crispasr_session_set_length_scale(crispasr_session* s, float scale);
 CRISPASR_SESSION_API int crispasr_session_set_best_of(crispasr_session* s, int n);
 CRISPASR_SESSION_API int crispasr_session_set_max_new_tokens(crispasr_session* s, int n);
+// Auto-chunking controls for long audio (issue #574).
+// enabled: 1 = enable, 0 = disable, < 0 = reset to default / env var.
+// chunk_seconds: > 0 sets chunk window in seconds; <= 0 resets to default (30 s).
+CRISPASR_SESSION_API int crispasr_session_set_autochunk(crispasr_session* s, int enabled, int chunk_seconds);
+// Piece-proportional token budget for chunked audio (issue #574).
+// rate > 0: each piece gets max(minimum, round(rate * piece_duration_seconds)).
+// If an explicit flat cap was set via crispasr_session_set_max_new_tokens, it acts as an upper ceiling.
+// rate <= 0 disables dynamic token budgets.
+CRISPASR_SESSION_API int crispasr_session_set_max_new_tokens_per_second(crispasr_session* s, float rate, int minimum);
 CRISPASR_SESSION_API int crispasr_session_set_frequency_penalty(crispasr_session* s, float penalty);
 // 0 on success, -1 on s == NULL, -2 for n > 1 on GigaAM (greedy only).
 CRISPASR_SESSION_API int crispasr_session_set_beam_size(crispasr_session* s, int n);

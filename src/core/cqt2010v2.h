@@ -32,8 +32,11 @@
 
 #pragma once
 
+#include "core/parallel_for.h"
+
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <vector>
 
 namespace core_cqt2010v2 {
@@ -70,7 +73,7 @@ inline void reflect_pad(const float* x, int n, int pad, std::vector<float>& out)
 // nnaudio.downsampling_by_n with match_torch_exactly=True: zero-pad
 // (L-1)/2 on BOTH sides, then a VALID stride-2 correlation with the FIR.
 // Output length = floor((n + 2*((L-1)/2) - L) / 2) + 1.
-inline void decimate_by_2(const float* x, int n, const float* fir, int L, std::vector<float>& out) {
+inline void decimate_by_2(const float* x, int n, const float* fir, int L, std::vector<float>& out, int n_threads = 0) {
     const int pad = (L - 1) / 2;
     const int padded = n + 2 * pad;
     if (padded < L) {
@@ -79,17 +82,38 @@ inline void decimate_by_2(const float* x, int n, const float* fir, int L, std::v
     }
     const int T = (padded - L) / 2 + 1;
     out.assign((size_t)T, 0.0f);
-    for (int t = 0; t < T; t++) {
-        const int base = 2 * t - pad; // index into x of tap 0
-        double acc = 0.0;
-        int k0 = 0, k1 = L;
-        if (base < 0)
-            k0 = -base;
-        if (base + L > n)
-            k1 = n - base;
-        for (int k = k0; k < k1; k++)
-            acc += (double)x[base + k] * (double)fir[k];
-        out[(size_t)t] = (float)acc;
+
+    const char* env_serial = std::getenv("CRISPASR_CQT2010_SERIAL");
+    const bool force_serial = (env_serial && env_serial[0] == '1');
+
+    if (force_serial || T <= 16) {
+        for (int t = 0; t < T; t++) {
+            const int base = 2 * t - pad; // index into x of tap 0
+            double acc = 0.0;
+            int k0 = 0, k1 = L;
+            if (base < 0)
+                k0 = -base;
+            if (base + L > n)
+                k1 = n - base;
+            for (int k = k0; k < k1; k++)
+                acc += (double)x[base + k] * (double)fir[k];
+            out[(size_t)t] = (float)acc;
+        }
+    } else {
+        core_parallel::for_each_chunk_work(T, n_threads, (uint64_t)std::min(L, n), 65536, [&](int t_start, int t_end) {
+            for (int t = t_start; t < t_end; t++) {
+                const int base = 2 * t - pad;
+                double acc = 0.0;
+                int k0 = 0, k1 = L;
+                if (base < 0)
+                    k0 = -base;
+                if (base + L > n)
+                    k1 = n - base;
+                for (int k = k0; k < k1; k++)
+                    acc += (double)x[base + k] * (double)fir[k];
+                out[(size_t)t] = (float)acc;
+            }
+        });
     }
 }
 
@@ -97,7 +121,7 @@ inline void decimate_by_2(const float* x, int n, const float* fir, int L, std::v
 // correlation with the whole kernel bank.
 // Writes re/im as [n_filters * T], filter-major.
 inline int octave_complex(const Params& p, const Kernels& kern, const float* x, int n, int hop, std::vector<float>& re,
-                          std::vector<float>& im) {
+                          std::vector<float>& im, int n_threads = 0) {
     const int pad = p.n_fft / 2;
     std::vector<float> xp;
     reflect_pad(x, n, pad, xp);
@@ -107,20 +131,47 @@ inline int octave_complex(const Params& p, const Kernels& kern, const float* x, 
     const int T = (padded - p.n_fft) / hop + 1;
     re.assign((size_t)p.n_filters * (size_t)T, 0.0f);
     im.assign((size_t)p.n_filters * (size_t)T, 0.0f);
-    for (int k = 0; k < p.n_filters; k++) {
-        const float* kr = kern.real + (size_t)k * (size_t)p.n_fft;
-        const float* ki = kern.imag + (size_t)k * (size_t)p.n_fft;
-        for (int t = 0; t < T; t++) {
-            const float* seg = xp.data() + (size_t)t * (size_t)hop;
-            double ar = 0.0, ai = 0.0;
-            for (int nn = 0; nn < p.n_fft; nn++) {
-                const double v = (double)seg[nn];
-                ar += v * (double)kr[nn];
-                ai += v * (double)ki[nn];
+
+    const char* env_serial = std::getenv("CRISPASR_CQT2010_SERIAL");
+    const bool force_serial = (env_serial && env_serial[0] == '1');
+
+    if (force_serial || p.n_filters <= 2) {
+        for (int k = 0; k < p.n_filters; k++) {
+            const float* kr = kern.real + (size_t)k * (size_t)p.n_fft;
+            const float* ki = kern.imag + (size_t)k * (size_t)p.n_fft;
+            for (int t = 0; t < T; t++) {
+                const float* seg = xp.data() + (size_t)t * (size_t)hop;
+                double ar = 0.0, ai = 0.0;
+                for (int nn = 0; nn < p.n_fft; nn++) {
+                    const double v = (double)seg[nn];
+                    ar += v * (double)kr[nn];
+                    ai += v * (double)ki[nn];
+                }
+                re[(size_t)k * (size_t)T + (size_t)t] = (float)ar;
+                im[(size_t)k * (size_t)T + (size_t)t] = (float)ai;
             }
-            re[(size_t)k * (size_t)T + (size_t)t] = (float)ar;
-            im[(size_t)k * (size_t)T + (size_t)t] = (float)ai;
         }
+    } else {
+        core_parallel::for_each_chunk_work(p.n_filters, n_threads, (uint64_t)T * p.n_fft * 2, 65536,
+                                           [&](int k_start, int k_end) {
+                                               for (int k = k_start; k < k_end; k++) {
+                                                   const float* kr = kern.real + (size_t)k * (size_t)p.n_fft;
+                                                   const float* ki = kern.imag + (size_t)k * (size_t)p.n_fft;
+                                                   float* re_k = re.data() + (size_t)k * (size_t)T;
+                                                   float* im_k = im.data() + (size_t)k * (size_t)T;
+                                                   for (int t = 0; t < T; t++) {
+                                                       const float* seg = xp.data() + (size_t)t * (size_t)hop;
+                                                       double ar = 0.0, ai = 0.0;
+                                                       for (int nn = 0; nn < p.n_fft; nn++) {
+                                                           const double v = (double)seg[nn];
+                                                           ar += v * (double)kr[nn];
+                                                           ai += v * (double)ki[nn];
+                                                       }
+                                                       re_k[t] = (float)ar;
+                                                       im_k[t] = (float)ai;
+                                                   }
+                                               }
+                                           });
     }
     return T;
 }
@@ -133,7 +184,8 @@ inline int octave_complex(const Params& p, const Kernels& kern, const float* x, 
 // caller ever needs the complex CQT, restore it at that point — do not "fix"
 // it here, because the magnitude path is what the parity numbers were measured
 // against.
-inline int magnitude(const Params& p, const Kernels& kern, const float* x, int n_samples, std::vector<float>& out) {
+inline int magnitude(const Params& p, const Kernels& kern, const float* x, int n_samples, std::vector<float>& out,
+                     int n_threads = 0) {
     out.clear();
     if (!x || n_samples <= 0 || !kern.real || !kern.imag || !kern.lowpass || !kern.sqrt_lengths)
         return 0;
@@ -151,12 +203,13 @@ inline int magnitude(const Params& p, const Kernels& kern, const float* x, int n
         if (L > 0) {
             hop /= 2;
             std::vector<float> dn;
-            decimate_by_2(cur.data(), (int)cur.size(), kern.lowpass, kern.lowpass_len, dn);
+            decimate_by_2(cur.data(), (int)cur.size(), kern.lowpass, kern.lowpass_len, dn, n_threads);
             cur.swap(dn);
             if (cur.empty() || hop < 1)
                 return 0;
         }
-        const int t = octave_complex(p, kern, cur.data(), (int)cur.size(), hop, re_lv[(size_t)L], im_lv[(size_t)L]);
+        const int t =
+            octave_complex(p, kern, cur.data(), (int)cur.size(), hop, re_lv[(size_t)L], im_lv[(size_t)L], n_threads);
         if (t == 0)
             return 0;
         if (L == 0)
@@ -179,21 +232,44 @@ inline int magnitude(const Params& p, const Kernels& kern, const float* x, int n
         return 0;
 
     out.assign((size_t)T * (size_t)p.n_bins, 0.0f);
-    for (int b = 0; b < total; b++) {
-        const int f = b - drop;
-        if (f < 0)
-            continue;
-        const int block = b / p.n_filters; // 0 = lowest octave
-        const int k = b % p.n_filters;
-        const int L = p.n_octaves - 1 - block;
-        const float* rp = re_lv[(size_t)L].data() + (size_t)k * (size_t)T;
-        const float* ip = im_lv[(size_t)L].data() + (size_t)k * (size_t)T;
-        const double s = (double)kern.sqrt_lengths[f];
-        for (int t = 0; t < T; t++) {
-            const double r = (double)rp[t] * s;
-            const double i = (double)ip[t] * s;
-            out[(size_t)t * (size_t)p.n_bins + (size_t)f] = (float)std::sqrt(r * r + i * i);
+    const char* env_serial = std::getenv("CRISPASR_CQT2010_SERIAL");
+    const bool force_serial = (env_serial && env_serial[0] == '1');
+    if (force_serial || total <= 4) {
+        for (int b = 0; b < total; b++) {
+            const int f = b - drop;
+            if (f < 0)
+                continue;
+            const int block = b / p.n_filters; // 0 = lowest octave
+            const int k = b % p.n_filters;
+            const int L = p.n_octaves - 1 - block;
+            const float* rp = re_lv[(size_t)L].data() + (size_t)k * (size_t)T;
+            const float* ip = im_lv[(size_t)L].data() + (size_t)k * (size_t)T;
+            const double s = (double)kern.sqrt_lengths[f];
+            for (int t = 0; t < T; t++) {
+                const double r = (double)rp[t] * s;
+                const double i = (double)ip[t] * s;
+                out[(size_t)t * (size_t)p.n_bins + (size_t)f] = (float)std::sqrt(r * r + i * i);
+            }
         }
+    } else {
+        core_parallel::for_each_chunk_work(total, n_threads, (uint64_t)T * 4, 65536, [&](int b_start, int b_end) {
+            for (int b = b_start; b < b_end; b++) {
+                const int f = b - drop;
+                if (f < 0)
+                    continue;
+                const int block = b / p.n_filters; // 0 = lowest octave
+                const int k = b % p.n_filters;
+                const int L = p.n_octaves - 1 - block;
+                const float* rp = re_lv[(size_t)L].data() + (size_t)k * (size_t)T;
+                const float* ip = im_lv[(size_t)L].data() + (size_t)k * (size_t)T;
+                const double s = (double)kern.sqrt_lengths[f];
+                for (int t = 0; t < T; t++) {
+                    const double r = (double)rp[t] * s;
+                    const double i = (double)ip[t] * s;
+                    out[(size_t)t * (size_t)p.n_bins + (size_t)f] = (float)std::sqrt(r * r + i * i);
+                }
+            }
+        });
     }
     return T;
 }
@@ -202,7 +278,7 @@ inline int magnitude(const Params& p, const Kernels& kern, const float* x, int n
 // over BOTH axes of the whole example. In place on a [T * n_bins] buffer.
 //
 // `div_no_nan`: a constant spectrogram (max == min) yields 0, not NaN.
-inline void normalized_log(float* v, size_t n, float eps = 1e-10f) {
+inline void normalized_log(float* v, size_t n, float eps = 1e-10f, int n_threads = 0) {
     if (!v || n == 0)
         return;
     double lo = 0.0, hi = 0.0;
@@ -223,8 +299,18 @@ inline void normalized_log(float* v, size_t n, float eps = 1e-10f) {
             v[i] = 0.0f;
         return;
     }
-    for (size_t i = 0; i < n; i++)
-        v[i] = (float)(((double)v[i] - lo) / hi);
+
+    const char* env_serial = std::getenv("CRISPASR_CQT2010_SERIAL");
+    const bool force_serial = (env_serial && env_serial[0] == '1');
+    if (force_serial || n <= 1024) {
+        for (size_t i = 0; i < n; i++)
+            v[i] = (float)(((double)v[i] - lo) / hi);
+    } else {
+        core_parallel::for_each_chunk_work((int)n, n_threads, 2, 65536, [&](int i_start, int i_end) {
+            for (int i = i_start; i < i_end; i++)
+                v[i] = (float)(((double)v[i] - lo) / hi);
+        });
+    }
 }
 
 } // namespace core_cqt2010v2

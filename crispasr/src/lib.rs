@@ -629,7 +629,7 @@ impl Session {
 
     /// List of backend names the loaded CrispASR library was compiled with.
     pub fn available_backends() -> Vec<String> {
-        let mut buf = vec![0i8; 256];
+        let mut buf = vec![0 as c_char; 256];
         let mut n = unsafe {
             crispasr_sys::crispasr_session_available_backends(buf.as_mut_ptr(), buf.len() as i32)
         };
@@ -669,7 +669,7 @@ impl Session {
     /// backend that genuinely declares no capabilities is a different answer.
     pub fn backend_caps(backend: &str) -> Result<Vec<String>, String> {
         let name = CString::new(backend).map_err(|e| format!("invalid backend: {e}"))?;
-        let mut buf = [0i8; 1024];
+        let mut buf = [0 as c_char; 1024];
         let n = unsafe {
             crispasr_sys::crispasr_backend_caps_abi(
                 name.as_ptr(),
@@ -702,7 +702,7 @@ impl Session {
         // so the buffer is never guessed and never silently truncated.
         let need = unsafe { crispasr_sys::crispasr_backend_caps_list_abi(std::ptr::null_mut(), 0) };
         let cap = if need < 0 { (-need) as usize } else { 65536 };
-        let mut buf = vec![0i8; cap.max(1024)];
+        let mut buf = vec![0 as c_char; cap.max(1024)];
         let n = unsafe {
             crispasr_sys::crispasr_backend_caps_list_abi(buf.as_mut_ptr(), buf.len() as i32)
         };
@@ -750,7 +750,7 @@ impl Session {
         let path = CString::new(model_path).map_err(|e| format!("invalid path: {e}"))?;
         // Sized for the longest plausible list; the ABI returns -5 rather than
         // truncating, so a too-small buffer can never under-report.
-        let mut buf = [0i8; 512];
+        let mut buf = [0 as c_char; 512];
         let n = unsafe {
             crispasr_sys::crispasr_detect_backends_from_gguf(
                 path.as_ptr(),
@@ -773,7 +773,7 @@ impl Session {
     /// Detect the backend from a GGUF file without opening it.
     pub fn detect_backend(model_path: &str) -> Result<String, String> {
         let path = CString::new(model_path).map_err(|e| format!("invalid path: {e}"))?;
-        let mut buf = [0i8; 64];
+        let mut buf = [0 as c_char; 64];
         let n = unsafe {
             crispasr_sys::crispasr_detect_backend_from_gguf(
                 path.as_ptr(),
@@ -2056,6 +2056,28 @@ impl Session {
         };
         if rc != 0 {
             return Err(format!("set_max_new_tokens failed (rc={})", rc));
+        }
+        Ok(())
+    }
+
+    /// Control session-level auto-chunking for long audio (> 30 s).
+    pub fn set_autochunk(&self, enabled: bool, chunk_seconds: i32) -> Result<(), String> {
+        let rc = unsafe {
+            crispasr_sys::crispasr_session_set_autochunk(self.handle, if enabled { 1 } else { 0 }, chunk_seconds)
+        };
+        if rc != 0 {
+            return Err(format!("set_autochunk failed (rc={})", rc));
+        }
+        Ok(())
+    }
+
+    /// Set a dynamic token budget proportional to piece audio length.
+    pub fn set_max_new_tokens_per_second(&self, rate: f32, minimum: i32) -> Result<(), String> {
+        let rc = unsafe {
+            crispasr_sys::crispasr_session_set_max_new_tokens_per_second(self.handle, rate, minimum)
+        };
+        if rc != 0 {
+            return Err(format!("set_max_new_tokens_per_second failed (rc={})", rc));
         }
         Ok(())
     }
@@ -3424,6 +3446,80 @@ pub fn align_words(
         crispasr_sys::crispasr_align_result_free(res);
     }
     Ok(out)
+}
+
+/// A refined Ultra local-head word interval, in seconds.
+/// Fractional milliseconds are preserved independently of generic alignment.
+#[derive(Clone, Debug)]
+pub struct UltraAlignedWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Run experimental Qwen Ultra local-head forced alignment.
+///
+/// Requires converted base and local-head GGUF paths and nonempty mono 16 kHz
+/// PCM of at most 120 seconds. Paths and transcript must be nonempty and contain
+/// no NUL. Native failure returns an error; a successful empty result returns an
+/// empty vector. Word text is copied before the native result is freed.
+/// The local head runs on CPU; broader language and GPU acceptance remain open.
+pub fn align_words_ultra(
+    aligner_model: &str,
+    head_model: &str,
+    transcript: &str,
+    pcm: &[f32],
+    n_threads: i32,
+) -> Result<Vec<UltraAlignedWord>, String> {
+    if aligner_model.is_empty() || head_model.is_empty() || transcript.is_empty() {
+        return Err("alignment paths and transcript must be nonempty".into());
+    }
+    if pcm.is_empty() || pcm.len() > 120 * 16000 {
+        return Err("Ultra alignment requires between 1 and 1920000 mono 16 kHz samples".into());
+    }
+    let base = CString::new(aligner_model).map_err(|e| format!("aligner_model NUL: {e}"))?;
+    let head = CString::new(head_model).map_err(|e| format!("head_model NUL: {e}"))?;
+    let text = CString::new(transcript).map_err(|e| format!("transcript NUL: {e}"))?;
+    let result = unsafe {
+        crispasr_sys::crispasr_align_words_ultra_abi(
+            base.as_ptr(),
+            head.as_ptr(),
+            text.as_ptr(),
+            pcm.as_ptr(),
+            pcm.len() as i32,
+            n_threads,
+        )
+    };
+    if result.is_null() {
+        return Err("Ultra alignment failed".into());
+    }
+    struct OwnedResult(*mut crispasr_sys::CrispasrUltraAlignResult);
+    impl Drop for OwnedResult {
+        fn drop(&mut self) {
+            unsafe { crispasr_sys::crispasr_ultra_align_result_free(self.0) };
+        }
+    }
+    let owned = OwnedResult(result);
+    let mut words = Vec::new();
+    unsafe {
+        let count = crispasr_sys::crispasr_ultra_align_result_n_words(owned.0);
+        if count < 0 {
+            return Err("invalid native alignment word count".into());
+        }
+        for i in 0..count {
+            let text = crispasr_sys::crispasr_ultra_align_result_word_text(owned.0, i);
+            words.push(UltraAlignedWord {
+                text: if text.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr(text).to_string_lossy().into_owned()
+                },
+                start: crispasr_sys::crispasr_ultra_align_result_word_start_ms(owned.0, i) / 1000.0,
+                end: crispasr_sys::crispasr_ultra_align_result_word_end_ms(owned.0, i) / 1000.0,
+            });
+        }
+    }
+    Ok(words)
 }
 
 // =========================================================================
