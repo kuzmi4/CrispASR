@@ -1,3 +1,13 @@
+### Context-Assist: blank gate by margin + depth ramp (2026-11-25, claimed)
+
+Branch `hints/margin-ramp` off `context-assist` (`d61a2b881`); plan is Recheo's
+`plans/term-hints-margin-ramp.md` (F1-F5). `CRISPASR_HW_BLANK_MARGIN` moves the blank
+gate from "blank is the argmax" to "blank leads the best non-blank token by more than
+M nat"; `CRISPASR_HW_RAMP="D,hi,lo"` scales the text-mode boost with the matched depth.
+Both switches off unless set, so the default is the previous behaviour and the C ABI is
+untouched. Next: the A/B on Recheo's stand decides whether either becomes the default
+before `ca-0.8.55.2`; until then no tag.
+
 ### ASR final checkpoint / handoff (2026-11-18)
 
 - Final user instruction authorizes the normal checkpoint push. See

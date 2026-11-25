@@ -2833,7 +2833,7 @@ static std::vector<parakeet_emitted_token> parakeet_tdt_beam_decode(parakeet_con
                 top_ids.push_back(blank_id);
 
             // Do not turn a blank-dominant frame into speech through a lower-ranked beam alternative.
-            if (std::max_element(logits.begin(), logits.begin() + n_vocab_blk) - logits.begin() == blank_id)
+            if (core_context_bias::blank_dominates(ctx->hotword_trie, logits.data(), n_vocab_blk, blank_id))
                 top_ids.assign(1, blank_id);
 
             for (int id : top_ids) {
@@ -3910,6 +3910,7 @@ extern "C" int parakeet_set_hotwords(struct parakeet_context* ctx, const char** 
     ctx->hotword_boost = boost;
     ctx->hotword_trie = core_context_bias::build_trie(hw_list, tokenize, boost);
     ctx->hotword_trie.fold_case(ctx->vocab.id_to_token, (int32_t)ctx->model.hparams.blank_id);
+    ctx->hotword_trie.load_tuning();
     return inserted;
 }
 

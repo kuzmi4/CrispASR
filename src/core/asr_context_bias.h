@@ -17,8 +17,12 @@
 
 #pragma once
 
+#include "crispasr_env.h" // CRISPASR_HW_BLANK_MARGIN / CRISPASR_HW_RAMP (load_tuning)
+
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <queue>
 #include <string>
@@ -92,7 +96,48 @@ struct Trie {
     std::vector<std::vector<int32_t>> vocab_ids; // tokens whose folded text ends at a vocab node
     std::vector<std::u32string> folded;          // folded text per token ID ("" never matches)
 
+    // Term-hint tuning, read once per set_hotwords by load_tuning() — never per
+    // frame. Both switches off = the behaviour of every earlier `ca-*` pin.
+    bool gate_by_margin = false; // blank gate by `blank_margin` instead of argmax
+    float blank_margin = 0.0f;   // nat; above this the step belongs to the decoder
+    float ramp_d = 0.0f;         // depth at which the ramp reaches `ramp_hi`; 0 = no ramp
+    float ramp_hi = 1.0f;
+    float ramp_lo = 1.0f;
+
     Trie() { nodes.emplace_back(); } // root node at index 0
+
+    // `CRISPASR_HW_BLANK_MARGIN=<nat>` and `CRISPASR_HW_RAMP="<D>,<hi>,<lo>"`.
+    // A missing or malformed value leaves that switch off (previous behaviour),
+    // so a typo in the env never silently changes decoding.
+    void load_tuning() {
+        if (const char* m = crispasr_env::get("CRISPASR_HW_BLANK_MARGIN")) {
+            char* end = nullptr;
+            const float v = std::strtof(m, &end);
+            if (end != m && v >= 0.0f) {
+                gate_by_margin = true;
+                blank_margin = v;
+            }
+        }
+        float d = 0.0f, hi = 0.0f, lo = 0.0f;
+        const char* r = crispasr_env::get("CRISPASR_HW_RAMP");
+        if (r && std::sscanf(r, "%f,%f,%f", &d, &hi, &lo) == 3 && d > 2.0f && lo >= 0.0f && hi >= lo) {
+            ramp_d = d;
+            ramp_hi = hi;
+            ramp_lo = lo;
+        }
+    }
+
+    // Boost multiplier at match depth `d` (code points): `ramp_lo` at d == 2,
+    // `ramp_hi` from d >= `ramp_d`, linear in between. 1 without a ramp.
+    float depth_factor(int d) const {
+        if (ramp_d <= 0.0f)
+            return 1.0f;
+        if (d >= ramp_d)
+            return ramp_hi;
+        if (d <= 2)
+            return ramp_lo;
+        return ramp_lo + (ramp_hi - ramp_lo) * (float)(d - 2) / (ramp_d - 2.0f);
+    }
 
     // Insert a hotword as a sequence of token IDs with a given boost score.
     void insert(const std::vector<int32_t>& token_ids, float boost) {
@@ -238,6 +283,25 @@ inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
     st.node = (it != trie.nodes[cur].children.end()) ? it->second : 0;
 }
 
+// True when the step must be left to the decoder untouched. Off-trie (no
+// tuning loaded) this is the old rule: blank is the unbiased argmax. On-trie it
+// is the margin rule — a pause lets blank win by a lot, and only such a lead
+// closes the door; a blank that squeaks past the next token inside a word still
+// gets the hint. `blank_id < 0` (canary, tests) has no gate at all.
+inline bool blank_dominates(const Trie& trie, const float* logits, int n_vocab, int blank_id) {
+    if (blank_id < 0 || blank_id >= n_vocab)
+        return false;
+    if (!trie.gate_by_margin)
+        return std::max_element(logits, logits + n_vocab) - logits == blank_id;
+    if (n_vocab < 2)
+        return true;
+    float best = logits[blank_id == 0 ? 1 : 0];
+    for (int v = 0; v < n_vocab; v++)
+        if (v != blank_id && logits[v] > best)
+            best = logits[v];
+    return logits[blank_id] - best > trie.blank_margin;
+}
+
 // Apply bias to logits for the current frame. For each token_id that
 // continues the current match (from the current node or any suffix via
 // failure links), add `boost` to logits[token_id].
@@ -249,23 +313,26 @@ inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
 //     ▁П, or common starts like ▁Про) pulled fillers, pauses and ordinary
 //     words into hotword starts, and the predictor finished them with
 //     training-data prompts ("Субтитры делал …", "Продолжение следует…").
-//   - Blank gate. When `blank_id` is in range and blank already wins the
-//     unbiased argmax, the step is left untouched: the bias picks between
-//     words, it never turns a pause into a word. -1 disables the gate.
+//   - Blank gate. When blank_dominates() holds, the step is left untouched: the
+//     bias picks between words, it never turns a pause into a word. -1
+//     disables the gate.
 // A hotword of a single token therefore gets no boost at all.
 // Text mode (fold_case): the same limits over the folded text — a token gets
-// `default_boost` when its whole text continues a form from the current match
-// (no endpoint bonus); a form started only by a lone "▁" is not started at all.
+// `default_boost × depth_factor(d)` when its whole text continues a form from
+// the current match (no endpoint bonus); a form started only by a lone "▁" is
+// not started at all.
 inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, int n_vocab, float default_boost,
                        int blank_id) {
     if (trie.empty() || st.node == 0)
         return;
-    if (blank_id >= 0 && blank_id < n_vocab && std::max_element(logits, logits + n_vocab) - logits == blank_id)
+    if (blank_dominates(trie, logits, n_vocab, blank_id))
         return;
 
     if (trie.text_mode()) {
-        if (trie.text[(size_t)st.node].depth < 2)
+        const int depth = trie.text[(size_t)st.node].depth;
+        if (depth < 2)
             return;
+        const float boost = default_boost * trie.depth_factor(depth);
         // Walk the form text and the vocab text together; every vocab token met
         // on the way continues the form. Each token is reached once.
         std::vector<std::pair<int, int>> stack{{st.node, 0}}; // (text node, vocab node)
@@ -278,7 +345,7 @@ inline void apply_bias(const Trie& trie, const MatchState& st, float* logits, in
                     continue;
                 for (int32_t id : trie.vocab_ids[(size_t)it->second])
                     if (id < n_vocab)
-                        logits[id] += default_boost;
+                        logits[id] += boost;
                 stack.push_back({t_child, it->second});
             }
         }

@@ -5,6 +5,7 @@
 #include "core/asr_context_bias.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include <vector>
 #include <string>
@@ -444,6 +445,128 @@ TEST_CASE("fold_case: the blank gate holds in text mode", "[context_bias]") {
     pause[kTextBlank] = 0.5f;
     apply_bias(trie, st, pause.data(), (int)pause.size(), 2.0f, kTextBlank);
     REQUIRE(pause[2] == 0.0f);
+}
+
+// ── Env-driven tuning (Context-Assist: margin gate, depth ramp) ───────
+
+namespace {
+// Sets `key` for load_tuning() and clears it again, so one case cannot leak
+// into the next and the developer's shell stays clean.
+struct ScopedEnv {
+    std::string key;
+    explicit ScopedEnv(std::string k, const char* v) : key(std::move(k)) {
+        if (v)
+            setenv(key.c_str(), v, 1);
+        else
+            unsetenv(key.c_str());
+    }
+    ~ScopedEnv() { unsetenv(key.c_str()); }
+};
+
+// ▁С is already matched; `Р` (3) is the best non-blank, `э` (10) never
+// continues a form.
+std::vector<float> frame(float blank, float other) {
+    std::vector<float> lg(kText.size(), 0.0f);
+    lg[kTextBlank] = blank;
+    lg[10] = other;
+    return lg;
+}
+
+// ▁С matched in a fresh trie with the margin set to `margin` (nullptr = unset).
+std::vector<float> after_margin(const char* margin, float blank, float other, float boost) {
+    const ScopedEnv env("CRISPASR_HW_BLANK_MARGIN", margin);
+    Trie trie = text_trie({"Сре"}, 5.0f);
+    trie.load_tuning();
+    MatchState st;
+    advance(trie, st, 1);
+    auto lg = frame(blank, other);
+    apply_bias(trie, st, lg.data(), (int)lg.size(), boost, kTextBlank);
+    return lg;
+}
+} // namespace
+
+TEST_CASE("margin gate: a narrow blank lead still takes the hint", "[context_bias]") {
+    // Blank leads `Р` by 2.0 nat — a blank in the middle of a word. The plan's
+    // case: `▁ворк` + blank −1.83 over `▁три` had to give way to the hint.
+    // The gate closes only above the margin, so 2 < 3 keeps the hint alive.
+    REQUIRE(after_margin("3", 3.0f, 1.0f, 2.0f)[2] == 2.0f); // 2 < 3 → boosted
+    REQUIRE(after_margin("1", 3.0f, 1.0f, 2.0f)[2] == 0.0f); // 2 > 1 → a pause
+    REQUIRE(after_margin(nullptr, 3.0f, 1.0f, 2.0f)[2] == 0.0f); // no tuning = old gate
+}
+
+TEST_CASE("margin gate: unset keeps the argmax rule bit for bit", "[context_bias]") {
+    // No tuning and blank is not argmax: the flat boost, nothing else moves.
+    const auto lg = after_margin(nullptr, 0.5f, 1.0f, 2.0f);
+    REQUIRE(lg[2] == 2.0f);
+    REQUIRE(lg[3] == 2.0f); // Р continues the form too
+    REQUIRE(lg[10] == 1.0f);
+    REQUIRE(lg[kTextBlank] == 0.5f);
+}
+
+TEST_CASE("margin gate: -1 has no gate at any margin", "[context_bias]") {
+    const char* const margins[] = {"0", "100", nullptr};
+    for (const char* margin : margins) {
+        const ScopedEnv env("CRISPASR_HW_BLANK_MARGIN", margin);
+        Trie trie = text_trie({"Сре"}, 5.0f);
+        trie.load_tuning();
+        MatchState st;
+        advance(trie, st, 1);
+        auto lg = frame(100.0f, 0.0f);
+        apply_bias(trie, st, lg.data(), (int)lg.size(), 2.0f, -1);
+        REQUIRE(lg[2] == 2.0f);
+    }
+}
+
+TEST_CASE("ramp: the boost climbs with the matched depth", "[context_bias]") {
+    Trie trie;
+    {
+        const ScopedEnv env("CRISPASR_HW_RAMP", "6,2,0.5");
+        trie.load_tuning();
+    }
+    REQUIRE(trie.depth_factor(2) == 0.5f);
+    REQUIRE(trie.depth_factor(6) == 2.0f);
+    REQUIRE(trie.depth_factor(11) == 2.0f);
+    for (int d = 2; d < 6; d++)
+        REQUIRE(trie.depth_factor(d) <= trie.depth_factor(d + 1));
+
+    // ...and apply_bias multiplies by it: at depth 2 the boost is halved.
+    const ScopedEnv env("CRISPASR_HW_RAMP", "6,2,0.5");
+    Trie t = text_trie({"Сре"}, 5.0f);
+    t.load_tuning();
+    MatchState st;
+    advance(t, st, 1); // ▁С — match depth 2
+    auto lg = frame(0.0f, 1.0f);
+    apply_bias(t, st, lg.data(), (int)lg.size(), 2.0f, kTextBlank);
+    REQUIRE(lg[2] == 1.0f); // 2 × r(2) = 2 × 0.5
+}
+
+TEST_CASE("ramp: unset or malformed keeps the flat boost", "[context_bias]") {
+    const char* const ramps[] = {nullptr, "6,2", "2,2,0.5", "6,0.5,2"};
+    for (const char* ramp : ramps) {
+        const ScopedEnv env("CRISPASR_HW_RAMP", ramp);
+        Trie trie = text_trie({"Сре"}, 5.0f);
+        trie.load_tuning();
+        MatchState st;
+        advance(trie, st, 1);
+        auto lg = frame(0.0f, 1.0f);
+        apply_bias(trie, st, lg.data(), (int)lg.size(), 2.0f, kTextBlank);
+        REQUIRE(lg[2] == 2.0f);
+        REQUIRE(lg[3] == 2.0f);
+    }
+}
+
+TEST_CASE("ramp: the start and a lone ▁ stay unboosted", "[context_bias]") {
+    const ScopedEnv env("CRISPASR_HW_RAMP", "4,2,0.5");
+    Trie trie = text_trie({"Сре"}, 5.0f);
+    trie.load_tuning();
+    auto before = frame(0.0f, 1.0f);
+    auto lg = before;
+    MatchState st;
+    apply_bias(trie, st, lg.data(), (int)lg.size(), 2.0f, kTextBlank); // at the root
+    REQUIRE(lg == before);
+    advance(trie, st, 9); // a lone ▁, depth 1
+    apply_bias(trie, st, lg.data(), (int)lg.size(), 2.0f, kTextBlank);
+    REQUIRE(lg == before);
 }
 
 TEST_CASE("fold_utf8: ASCII and Cyrillic fold, ё stays apart from е", "[context_bias]") {

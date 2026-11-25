@@ -1,3 +1,31 @@
+## 2026-11-25 - Context-Assist: term-hint blank gate by margin, depth ramp
+
+The text-mode bias had two measured limits of its own shape, not of its plumbing: the
+blank gate keyed on the unbiased argmax, so a blank that won a word-internal frame by
+1.8 nat shut the hint out exactly where it was needed (`ворк три` stayed `ворктри`); and
+every continuation token got the same `+boost`, so the same strength was loud enough to
+steal a word after one letter (`СЛ` -> `Серкит`) and too quiet three letters in (`и`
+after `▁Д` trailed by 13 nat).
+
+Two env-gated switches in `src/core/asr_context_bias.h`, read once per `set_hotwords`
+(`Trie::load_tuning`) and stored in the trie, so `apply_bias` keeps its signature and all
+five decoders pick the behaviour up unchanged:
+
+- `CRISPASR_HW_BLANK_MARGIN=<nat>` - the step is left to the decoder only when blank
+  leads the best non-blank token by more than the margin; below it the hint may pull.
+  `blank_dominates()` is shared with the parakeet beam's blank-dominant-frame guard so
+  greedy and beam cannot drift apart. `blank_id < 0` still has no gate.
+- `CRISPASR_HW_RAMP="<D>,<hi>,<lo>"` - the text-mode boost becomes
+  `boost x r(depth)`, `r` linear from `lo` at depth 2 to `hi` from depth `D`, clipped
+  above. Start behaviour (root and depth < 2) is untouched.
+
+Unset or malformed values leave the previous behaviour bit for bit, which is what the
+`ca-*` pins in the app rely on, so nothing changes for a caller that does not ask.
+Tests: `tests/test_context_bias.cpp` covers the margin window, the unset and `-1` paths,
+`r(2) = lo`, `r(D) = r(D+5) = hi`, monotonicity, and that the root and a lone blank
+separator stay unboosted under a ramp. C ABI headers untouched.
+Whether either switch becomes the default is decided by the stand A/B, not here.
+
 ## 2026-11-24 — Context-Assist production line merged onto upstream `main` past v0.8.55
 
 Upstream `main` (`1851d538`, 419 commits over the previous base, covering releases
