@@ -99,7 +99,7 @@ struct Trie {
     // Term-hint tuning, read once per set_hotwords by load_tuning() — never per
     // frame. The margin gate is on by default (the 2026-11-25 A/B winner); the
     // ramp stays off unless asked for.
-    float blank_margin = 1.0f; // nat; above this the step belongs to the decoder
+    float blank_margin = 0.5f; // nat; above this the step belongs to the decoder
     float ramp_d = 0.0f;       // depth at which the ramp reaches `ramp_hi`; 0 = no ramp
     float ramp_hi = 1.0f;
     float ramp_lo = 1.0f;
@@ -107,7 +107,7 @@ struct Trie {
     Trie() { nodes.emplace_back(); } // root node at index 0
 
     // `CRISPASR_HW_BLANK_MARGIN=<nat>` and `CRISPASR_HW_RAMP="<D>,<hi>,<lo>"`.
-    // 1 nat is the A/B default: a step is left to the decoder only when blank
+    // 0.5 nat is the A/B default: a step is left to the decoder only when blank
     // leads the best non-blank token by more than that, so a blank that squeaks
     // past the next token inside a word no longer shuts the hint out. `=0`
     // restores the argmax gate of the earlier pins (blank wins by any amount);

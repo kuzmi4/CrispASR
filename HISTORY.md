@@ -19,20 +19,20 @@ five decoders pick the behaviour up unchanged:
   `boost x r(depth)`, `r` linear from `lo` at depth 2 to `hi` from depth `D`, clipped
   above. Start behaviour (root and depth < 2) is untouched.
 
-Defaults come from the stand A/B of 2026-11-25 (runner B, engine lane, one round, the
-shipped GGUFs, the same corpus as the app's tune): the margin gate at 1 nat is on, the
-ramp is off. Both were measured at every strength 2-6 in greedy and beam 4, and at the
-strength each model ships with:
+Defaults come from the stand A/B of 2026-11-25 (engine lane for the three GGUFs that run
+without a language, the app lane for nemotron; one round; the shipped GGUFs; the same
+corpus as the app's tune). Every model was measured at every strength 2-6 in its modes
+and at the strength it ships with: the margin gate at 0.5 nat is on, the ramp is off.
 
-- parakeet-v3 (2): bit for bit the same summary in all twelve configurations at 1, 2 and
-  3 nat, so the gate costs nothing on the model the app defaults to.
+- parakeet-v3 (2): bit for bit the same summary in all twelve configurations at 0.5, 1, 2
+  and 3 nat, so the gate costs nothing on the model the app defaults to.
 - parakeet-ultra (4): one more term in each mode at 4, 5 and 6, no new control error,
-  hallucination or merge, reproduced in a second session. At 2 nat it is one term better
-  at strength 6 and the same everywhere else.
-- gigaam-v3 (3): one more term and one fewer merge at 3, clean; at 2 nat it is one term
-  better at 3 but adds a hallucination in `dis-06` - the reason the default is 1 nat and
-  not 2. At strengths 5 and 6 the gate trades `ClickHouse` and `postmortem` for
-  `Terraform`, one term fewer; the catalog does not use those strengths.
+  hallucination or merge, reproduced in a second session.
+- gigaam-v3 (3): one more term at 3, clean. At 1 nat the same term comes with one more
+  term lost at strengths 5 and 6 - not used by the catalog, but not free either.
+- nemotron-3.5-asr-0.6b (5): unchanged at 0.5 nat; at 1 nat beam loses
+  `point-to-point`, which is why the default is 0.5 and not 1. Same +1 hallucination
+  either way.
 - `=0` restores the argmax gate of the earlier pins, `=100` turns the gate off.
 - The ramp was rejected as a default, not as an implementation: on parakeet-v3 it doubles
   term recall (beam 10 -> 19-20 of 29) but the lowest grid point already costs two new

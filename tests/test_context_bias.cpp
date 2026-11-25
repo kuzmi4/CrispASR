@@ -497,14 +497,14 @@ TEST_CASE("margin gate: a narrow blank lead still takes the hint", "[context_bia
     // The gate closes only above the margin, so 2 < 3 keeps the hint alive.
     REQUIRE(after_margin("3", 3.0f, 1.0f, 2.0f)[2] == 2.0f); // 2 < 3 → boosted
     REQUIRE(after_margin("1", 3.0f, 1.0f, 2.0f)[2] == 0.0f); // 2 > 1 → a pause
-    REQUIRE(after_margin(nullptr, 3.0f, 1.0f, 2.0f)[2] == 0.0f); // the 1-nat default
+    REQUIRE(after_margin(nullptr, 3.0f, 1.0f, 2.0f)[2] == 0.0f); // the 0.5-nat default
 }
 
-TEST_CASE("margin gate: 1 nat by default, 0 restores the argmax rule", "[context_bias]") {
-    // A 0.5-nat blank lead is inside a word: the default margin lets the hint in.
-    REQUIRE(after_margin(nullptr, 1.5f, 1.0f, 2.0f)[2] == 2.0f);
+TEST_CASE("margin gate: 0.5 nat by default, 0 restores the argmax rule", "[context_bias]") {
+    // A quarter-nat blank lead is inside a word: the default lets the hint in.
+    REQUIRE(after_margin(nullptr, 1.25f, 1.0f, 2.0f)[2] == 2.0f);
     // `=0` is the gate of the earlier pins: any blank lead wins.
-    REQUIRE(after_margin("0", 1.5f, 1.0f, 2.0f)[2] == 0.0f);
+    REQUIRE(after_margin("0", 1.25f, 1.0f, 2.0f)[2] == 0.0f);
 
     // Blank not leading at all: the flat boost, nothing else moves.
     const auto lg = after_margin("0", 0.5f, 1.0f, 2.0f);
