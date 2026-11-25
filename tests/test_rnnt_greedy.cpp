@@ -228,13 +228,13 @@ TEST_CASE("rnnt_greedy_loop hints: blank does not move the match", "[rnnt_greedy
     CHECK(ids(run(m, trie_of({{1, 2}}, 4.0f), 4.0f)) == std::vector<int>{1, 2});
 }
 
-TEST_CASE("rnnt_greedy_loop hints: blank that wins unbiased stays blank", "[rnnt_greedy]") {
+TEST_CASE("rnnt_greedy_loop hints: a clear blank lead stays blank", "[rnnt_greedy]") {
     // Forms [1 2 3] and [2 3]. After 1 2 the bias on 3 would sum to 20, but
-    // frame 1 is a pause: blank at 0.5 beats every unbiased logit, so the bias
-    // is not applied and nothing is emitted — a hint never turns a pause into
-    // a word.
+    // frame 1 is a pause: blank at 2.5 leads every unbiased logit by more than
+    // the 2-nat default margin, so the bias is not applied and nothing is
+    // emitted — a hint never turns a pause into a word.
     const Trie trie = trie_of({{1, 2, 3}, {2, 3}}, 4.0f);
-    table_model m{{{row(1, 100.0f, 0.0f), row(2, 100.0f, 0.0f), row(0, 0.0f, 1000.0f)}, {row(0, 0.0f, 0.5f)}}};
+    table_model m{{{row(1, 100.0f, 0.0f), row(2, 100.0f, 0.0f), row(0, 0.0f, 1000.0f)}, {row(0, 0.0f, 2.5f)}}};
     CHECK(ids(run(m, trie, 4.0f)) == std::vector<int>{1, 2});
 }
 

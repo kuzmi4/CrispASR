@@ -19,8 +19,33 @@ five decoders pick the behaviour up unchanged:
   `boost x r(depth)`, `r` linear from `lo` at depth 2 to `hi` from depth `D`, clipped
   above. Start behaviour (root and depth < 2) is untouched.
 
-Unset or malformed values leave the previous behaviour bit for bit, which is what the
-`ca-*` pins in the app rely on, so nothing changes for a caller that does not ask.
+Defaults come from the stand A/B of 2026-11-25 (runner B, engine lane, one round, the
+shipped GGUFs, the same corpus as the app's tune): the margin gate at 1 nat is on, the
+ramp is off. Both were measured at every strength 2-6 in greedy and beam 4, and at the
+strength each model ships with:
+
+- parakeet-v3 (2): bit for bit the same summary in all twelve configurations at 1, 2 and
+  3 nat, so the gate costs nothing on the model the app defaults to.
+- parakeet-ultra (4): one more term in each mode at 4, 5 and 6, no new control error,
+  hallucination or merge, reproduced in a second session. At 2 nat it is one term better
+  at strength 6 and the same everywhere else.
+- gigaam-v3 (3): one more term and one fewer merge at 3, clean; at 2 nat it is one term
+  better at 3 but adds a hallucination in `dis-06` - the reason the default is 1 nat and
+  not 2. At strengths 5 and 6 the gate trades `ClickHouse` and `postmortem` for
+  `Terraform`, one term fewer; the catalog does not use those strengths.
+- `=0` restores the argmax gate of the earlier pins, `=100` turns the gate off.
+- The ramp was rejected as a default, not as an implementation: on parakeet-v3 it doubles
+  term recall (beam 10 -> 19-20 of 29) but the lowest grid point already costs two new
+  control errors and a hallucination in beam, above what rule B allows, and the damage
+  lands on the filler cases. On parakeet-ultra it does win, so the handle stays for a
+  re-run. Unset keeps the flat boost, and a malformed value is ignored - a typo in the
+  env never silently changes decoding.
+
+One engine rule now applies to every backend that has hotwords, including canary, where
+`blank_id` is the EOS piece: a hint may now win a step that EOS won by less than 1 nat.
+Canary is not in the app's catalog and was not measured, so its behaviour is unverified
+rather than assumed good. Nemotron is equally unmeasured here: the engine lane drives it
+without a language and it returns empty text on this corpus, so the run says nothing.
 Tests: `tests/test_context_bias.cpp` covers the margin window, the unset and `-1` paths,
 `r(2) = lo`, `r(D) = r(D+5) = hi`, monotonicity, and that the root and a lone blank
 separator stay unboosted under a ramp. C ABI headers untouched.

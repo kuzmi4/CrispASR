@@ -97,26 +97,28 @@ struct Trie {
     std::vector<std::u32string> folded;          // folded text per token ID ("" never matches)
 
     // Term-hint tuning, read once per set_hotwords by load_tuning() — never per
-    // frame. Both switches off = the behaviour of every earlier `ca-*` pin.
-    bool gate_by_margin = false; // blank gate by `blank_margin` instead of argmax
-    float blank_margin = 0.0f;   // nat; above this the step belongs to the decoder
-    float ramp_d = 0.0f;         // depth at which the ramp reaches `ramp_hi`; 0 = no ramp
+    // frame. The margin gate is on by default (the 2026-11-25 A/B winner); the
+    // ramp stays off unless asked for.
+    float blank_margin = 1.0f; // nat; above this the step belongs to the decoder
+    float ramp_d = 0.0f;       // depth at which the ramp reaches `ramp_hi`; 0 = no ramp
     float ramp_hi = 1.0f;
     float ramp_lo = 1.0f;
 
     Trie() { nodes.emplace_back(); } // root node at index 0
 
     // `CRISPASR_HW_BLANK_MARGIN=<nat>` and `CRISPASR_HW_RAMP="<D>,<hi>,<lo>"`.
-    // A missing or malformed value leaves that switch off (previous behaviour),
-    // so a typo in the env never silently changes decoding.
+    // 1 nat is the A/B default: a step is left to the decoder only when blank
+    // leads the best non-blank token by more than that, so a blank that squeaks
+    // past the next token inside a word no longer shuts the hint out. `=0`
+    // restores the argmax gate of the earlier pins (blank wins by any amount);
+    // `=100` effectively turns the gate off. A malformed value is ignored - a
+    // typo in the env never silently changes decoding.
     void load_tuning() {
         if (const char* m = crispasr_env::get("CRISPASR_HW_BLANK_MARGIN")) {
             char* end = nullptr;
             const float v = std::strtof(m, &end);
-            if (end != m && v >= 0.0f) {
-                gate_by_margin = true;
+            if (end != m && v >= 0.0f)
                 blank_margin = v;
-            }
         }
         float d = 0.0f, hi = 0.0f, lo = 0.0f;
         const char* r = crispasr_env::get("CRISPASR_HW_RAMP");
@@ -283,18 +285,14 @@ inline void advance(const Trie& trie, MatchState& st, int32_t token_id) {
     st.node = (it != trie.nodes[cur].children.end()) ? it->second : 0;
 }
 
-// True when the step must be left to the decoder untouched. Off-trie (no
-// tuning loaded) this is the old rule: blank is the unbiased argmax. On-trie it
-// is the margin rule — a pause lets blank win by a lot, and only such a lead
-// closes the door; a blank that squeaks past the next token inside a word still
-// gets the hint. `blank_id < 0` (canary, tests) has no gate at all.
+// True when the step must be left to the decoder untouched: blank leads the
+// best non-blank token by more than `trie.blank_margin`. A pause lets blank win
+// by a lot and only such a lead closes the door; a blank that squeaks past the
+// next token inside a word still gives the hint its chance. `blank_margin = 0`
+// is the old argmax rule. `blank_id < 0` (canary, tests) has no gate at all.
 inline bool blank_dominates(const Trie& trie, const float* logits, int n_vocab, int blank_id) {
-    if (blank_id < 0 || blank_id >= n_vocab)
+    if (blank_id < 0 || blank_id >= n_vocab || n_vocab < 2)
         return false;
-    if (!trie.gate_by_margin)
-        return std::max_element(logits, logits + n_vocab) - logits == blank_id;
-    if (n_vocab < 2)
-        return true;
     float best = logits[blank_id == 0 ? 1 : 0];
     for (int v = 0; v < n_vocab; v++)
         if (v != blank_id && logits[v] > best)

@@ -320,11 +320,17 @@ TEST_CASE("blank gate: no bias when blank wins unbiased", "[context_bias]") {
     advance(trie, st, 1); // the decoder started the form on its own
     const int V = 10, blank = 9;
 
-    // Pause: blank is the unbiased argmax — logits stay untouched.
+    // Pause: blank leads the field by more than the margin — logits stay untouched.
     std::vector<float> pause(V, 0.0f);
-    pause[blank] = 0.5f;
+    pause[blank] = 3.0f;
     apply_bias(trie, st, pause.data(), V, 4.0f, blank);
     REQUIRE(pause[2] == 0.0f);
+
+    // A blank that only squeaks past the next token inside a word is not a pause.
+    std::vector<float> narrow(V, 0.0f);
+    narrow[blank] = 0.5f;
+    apply_bias(trie, st, narrow.data(), V, 4.0f, blank);
+    REQUIRE(narrow[2] == 9.0f); // boost 4 + the ID-mode endpoint boost 5
 
     // Speech: another token wins — the continuation is boosted.
     std::vector<float> speech(V, 0.0f);
@@ -442,7 +448,7 @@ TEST_CASE("fold_case: the blank gate holds in text mode", "[context_bias]") {
     MatchState st;
     advance(trie, st, 1);
     std::vector<float> pause(kText.size(), 0.0f);
-    pause[kTextBlank] = 0.5f;
+    pause[kTextBlank] = 3.0f;
     apply_bias(trie, st, pause.data(), (int)pause.size(), 2.0f, kTextBlank);
     REQUIRE(pause[2] == 0.0f);
 }
@@ -491,12 +497,17 @@ TEST_CASE("margin gate: a narrow blank lead still takes the hint", "[context_bia
     // The gate closes only above the margin, so 2 < 3 keeps the hint alive.
     REQUIRE(after_margin("3", 3.0f, 1.0f, 2.0f)[2] == 2.0f); // 2 < 3 → boosted
     REQUIRE(after_margin("1", 3.0f, 1.0f, 2.0f)[2] == 0.0f); // 2 > 1 → a pause
-    REQUIRE(after_margin(nullptr, 3.0f, 1.0f, 2.0f)[2] == 0.0f); // no tuning = old gate
+    REQUIRE(after_margin(nullptr, 3.0f, 1.0f, 2.0f)[2] == 0.0f); // the 1-nat default
 }
 
-TEST_CASE("margin gate: unset keeps the argmax rule bit for bit", "[context_bias]") {
-    // No tuning and blank is not argmax: the flat boost, nothing else moves.
-    const auto lg = after_margin(nullptr, 0.5f, 1.0f, 2.0f);
+TEST_CASE("margin gate: 1 nat by default, 0 restores the argmax rule", "[context_bias]") {
+    // A 0.5-nat blank lead is inside a word: the default margin lets the hint in.
+    REQUIRE(after_margin(nullptr, 1.5f, 1.0f, 2.0f)[2] == 2.0f);
+    // `=0` is the gate of the earlier pins: any blank lead wins.
+    REQUIRE(after_margin("0", 1.5f, 1.0f, 2.0f)[2] == 0.0f);
+
+    // Blank not leading at all: the flat boost, nothing else moves.
+    const auto lg = after_margin("0", 0.5f, 1.0f, 2.0f);
     REQUIRE(lg[2] == 2.0f);
     REQUIRE(lg[3] == 2.0f); // Р continues the form too
     REQUIRE(lg[10] == 1.0f);
